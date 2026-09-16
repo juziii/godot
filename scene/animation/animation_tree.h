@@ -488,6 +488,11 @@ private:
 	mutable bool validation_dirty = true;
 
 	void _update_properties() const;
+#ifndef _3D_DISABLED
+	bool batch_graph_checked = false;
+	String batch_graph_reason;
+	bool _prepare_batch_graph() override;
+#endif
 	void _update_connections();
 	void _add_validation_error(const StringName &p_path, const String &p_error, int p_input_index = -1) const;
 	void _update_properties_for_node(const StringName &p_base_path, const Ref<AnimationNode> &p_node) const;

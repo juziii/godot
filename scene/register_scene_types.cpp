@@ -40,6 +40,10 @@
 #include "scene/animation/animation_blend_space_2d.h"
 #include "scene/animation/animation_blend_tree.h"
 #include "scene/animation/animation_mixer.h"
+#ifndef _3D_DISABLED
+#include "scene/animation/animation_batch_processor.h"
+#include "scene/3d/skeleton_animation_pose.h"
+#endif
 #include "scene/animation/animation_node_extension.h"
 #include "scene/animation/animation_node_state_machine.h"
 #include "scene/animation/animation_player.h"
@@ -602,6 +606,10 @@ void register_scene_types() {
 	GDREGISTER_CLASS(AwaitTweener);
 
 	GDREGISTER_ABSTRACT_CLASS(AnimationMixer);
+#ifndef _3D_DISABLED
+	GDREGISTER_CLASS(AnimationBatchProcessor);
+	GDREGISTER_CLASS(SkeletonAnimationPose);
+#endif
 	GDREGISTER_CLASS(AnimationPlayer);
 	GDREGISTER_CLASS(AnimationTree);
 	GDREGISTER_CLASS(AnimationNode);

@@ -32,6 +32,7 @@
 #include "animation_tree.compat.inc"
 
 #include "core/config/engine.h"
+#include "core/profiling/profiling.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "scene/animation/animation_blend_tree.h"
@@ -635,6 +636,7 @@ void AnimationRootNode::_animation_node_removed(const ObjectID &p_oid, const Str
 ////////////////////
 
 void AnimationTree::set_root_animation_node(const Ref<AnimationRootNode> &p_animation_node) {
+	finish_pending_animation();
 	if (root_animation_node.is_valid()) {
 		root_animation_node->disconnect(SNAME("tree_changed"), callable_mp(this, &AnimationTree::_tree_changed));
 		root_animation_node->disconnect(SNAME("node_updated"), callable_mp(this, &AnimationTree::_node_updated));
@@ -661,7 +663,8 @@ Ref<AnimationRootNode> AnimationTree::get_root_animation_node() const {
 }
 
 bool AnimationTree::_blend_pre_process(double p_delta, int p_track_count, const AHashMap<NodePath, int> &p_track_map) {
-	_update_properties(); // If properties need updating, update them.
+	GodotProfileZone("Animation.Graph");
+	if (!is_batch_evaluating()) { _update_properties(); } // Binding happens on the main thread.
 
 	if (root_animation_node.is_null()) {
 		process_state = AnimationNode::ProcessState();
@@ -758,6 +761,10 @@ PackedStringArray AnimationTree::get_configuration_warnings() const {
 }
 
 void AnimationTree::_tree_changed() {
+#ifndef _3D_DISABLED
+	finish_pending_animation();
+	batch_graph_checked = false;
+#endif
 	if (properties_dirty) {
 		return;
 	}
@@ -767,6 +774,10 @@ void AnimationTree::_tree_changed() {
 }
 
 void AnimationTree::_node_updated(const ObjectID &p_oid) {
+#ifndef _3D_DISABLED
+	finish_pending_animation();
+	batch_graph_checked = false;
+#endif
 	// This is for when the animation in AnimationNodeAnimation changes.
 	// or a connection in AnimationNodeBlendTree changes.
 
@@ -980,6 +991,7 @@ void AnimationTree::_notification(int p_what) {
 }
 
 void AnimationTree::set_animation_player(const NodePath &p_path) {
+	finish_pending_animation();
 	animation_player = p_path;
 	if (p_path.is_empty()) {
 		set_root_node(NodePath(".."));
@@ -1058,6 +1070,7 @@ void AnimationTree::_validate_property(PropertyInfo &p_property) const {
 }
 
 bool AnimationTree::_set(const StringName &p_name, const Variant &p_value) {
+	finish_pending_animation();
 #ifndef DISABLE_DEPRECATED
 	String name = p_name;
 	if (name == "process_callback") {
@@ -1091,6 +1104,7 @@ bool AnimationTree::_set(const StringName &p_name, const Variant &p_value) {
 }
 
 bool AnimationTree::_get(const StringName &p_name, Variant &r_ret) const {
+	const_cast<AnimationTree *>(this)->finish_pending_animation();
 #ifndef DISABLE_DEPRECATED
 	if (p_name == "process_callback") {
 		r_ret = get_callback_mode_process();

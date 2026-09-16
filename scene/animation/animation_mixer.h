@@ -38,10 +38,17 @@
 #include "scene/resources/audio/audio_stream_polyphonic.h"
 
 class AnimatedValuesBackup;
+#ifndef _3D_DISABLED
+class AnimationBatchProcessor;
+class SkeletonAnimationPose;
+#endif
 
 class AnimationMixer : public Node {
 	GDCLASS(AnimationMixer, Node);
 	friend AnimatedValuesBackup;
+#ifndef _3D_DISABLED
+	friend class AnimationBatchProcessor;
+#endif
 #ifdef TOOLS_ENABLED
 	bool editing = false;
 	bool dummy = false;
@@ -357,6 +364,43 @@ protected:
 	virtual void _remove_animation(const StringName &p_name);
 	virtual void _rename_animation(const StringName &p_from_name, const StringName &p_to_name);
 
+#ifndef _3D_DISABLED
+	struct BatchPoseBinding {
+		ObjectID skeleton_id;
+		Ref<SkeletonAnimationPose> pose;
+	};
+	LocalVector<BatchPoseBinding> batch_poses;
+	struct BatchMethodEvent {
+        int instance = 0, track = 0;
+        ObjectID target;
+        StringName method;
+        Vector<Variant> arguments;
+        bool deferred = false;
+    };
+    LocalVector<BatchMethodEvent> batch_method_events;
+    struct BatchAudioEvent { int instance = 0, track = 0, key = -1; };
+    LocalVector<BatchAudioEvent> batch_audio_events;
+    int batch_event_instance = 0, batch_event_track = 0;
+    struct BatchResourceSignal { Ref<Resource> target; StringName signal, value; };
+    LocalVector<BatchResourceSignal> batch_resource_signals;
+	LocalVector<Pair<StringName, StringName>> batch_signals;
+	HashSet<StringName> batch_safe_methods;
+	bool batch_bindings_checked = false;
+	String batch_binding_reason;
+	bool batch_evaluating = false;
+	bool batch_event_pass = false;
+	bool batch_publishing = false;
+	bool batch_succeeded = false;
+	double batch_delta = 0;
+	AnimationBatchProcessor *batch_owner = nullptr;
+	String batch_fallback_reason;
+	virtual bool _prepare_batch_graph();
+	bool _prepare_batch(double p_delta);
+	void _evaluate_batch();
+	void _publish_batch();
+	SkeletonAnimationPose *_get_batch_pose(ObjectID p_id) const;
+#endif
+
 	/* ---- Blending processor ---- */
 	virtual void _process_animation(double p_delta, bool p_update_only = false);
 
@@ -458,6 +502,17 @@ public:
 	void make_animation_instance(const StringName &p_name, const PlaybackInfo &p_playback_info);
 	void clear_animation_instances();
 	virtual void advance(double p_time);
+#ifndef _3D_DISABLED
+	void finish_pending_animation();
+	bool is_batch_evaluating() const { return batch_evaluating; }
+	void queue_resource_signal(const Ref<Resource> &p_target, const StringName &p_signal, const StringName &p_value);
+	void queue_animation_signal(const StringName &p_signal, const StringName &p_animation);
+#else
+	bool is_batch_evaluating() const { return false; }
+	void finish_pending_animation() {}
+	void queue_resource_signal(const Ref<Resource> &p_target, const StringName &p_signal, const StringName &p_value);
+	void queue_animation_signal(const StringName &p_signal, const StringName &p_animation) { call_deferred(SNAME("emit_signal"), p_signal, p_animation); }
+#endif
 	virtual void clear_caches(); // Must be called by hand if an animation was modified after added.
 
 	/* ---- Capture feature ---- */

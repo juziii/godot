@@ -29,6 +29,10 @@
 /**************************************************************************/
 
 #include "animation_mixer.h"
+#ifndef _3D_DISABLED
+#include "animation_batch_processor.h"
+#include "scene/3d/skeleton_animation_pose.h"
+#endif
 #include "animation_mixer.compat.inc"
 
 #include "core/config/engine.h"
@@ -467,6 +471,7 @@ void AnimationMixer::_set_process(bool p_process, bool p_force) {
 }
 
 void AnimationMixer::set_active(bool p_active) {
+	finish_pending_animation();
 	if (active == p_active) {
 		return;
 	}
@@ -485,6 +490,7 @@ bool AnimationMixer::is_active() const {
 }
 
 void AnimationMixer::set_root_node(const NodePath &p_path) {
+	finish_pending_animation();
 	root_node = p_path;
 	_clear_caches();
 }
@@ -494,6 +500,7 @@ NodePath AnimationMixer::get_root_node() const {
 }
 
 void AnimationMixer::set_deterministic(bool p_deterministic) {
+	finish_pending_animation();
 	deterministic = p_deterministic;
 	_clear_caches();
 }
@@ -585,6 +592,10 @@ bool AnimationMixer::is_dummy() const {
 /* -------------------------------------------- */
 
 void AnimationMixer::_clear_caches(bool p_clear_track_cache) {
+#ifndef _3D_DISABLED
+	finish_pending_animation();
+	batch_bindings_checked = false;
+#endif
 	_init_root_motion_cache();
 	_clear_audio_streams();
 	_clear_playing_caches();
@@ -1026,13 +1037,14 @@ bool AnimationMixer::_update_caches() {
 
 void AnimationMixer::_process_animation(double p_delta, bool p_update_only) {
 	GodotProfileZone("AnimationMixer::process_animation");
-	_blend_init();
+	finish_pending_animation();
+	{ GodotProfileZone("Animation.Prepare"); _blend_init(); }
 	if (cache_valid && _blend_pre_process(p_delta, track_count, track_map)) {
 		_blend_capture(p_delta);
-		_blend_calc_total_weight();
-		_blend_process(p_delta, p_update_only);
+		{ GodotProfileZone("Animation.Weights"); _blend_calc_total_weight(); }
+		{ GodotProfileZone("Animation.SampleBlend"); _blend_process(p_delta, p_update_only); }
 		clear_animation_instances();
-		_blend_apply();
+		{ GodotProfileZone("Animation.Publish"); _blend_apply(); }
 		_blend_post_process();
 		emit_signal(SNAME("mixer_applied"));
 	} else {
@@ -1060,6 +1072,15 @@ Variant AnimationMixer::_post_process_key_value(const Ref<Animation> &p_anim, in
 }
 
 Variant AnimationMixer::post_process_key_value(const Ref<Animation> &p_anim, int p_track, Variant p_value, ObjectID p_object_id, int p_object_sub_idx) {
+#ifndef _3D_DISABLED
+	if (batch_evaluating) {
+		if (p_anim->track_get_type(p_track) == Animation::TYPE_POSITION_3D && p_object_sub_idx >= 0) {
+			SkeletonAnimationPose *pose = _get_batch_pose(p_object_id);
+			if (pose) { return Vector3(p_value) * pose->get_motion_scale(); }
+		}
+		return p_value;
+	}
+#endif
 	if (is_GDVIRTUAL_CALL_post_process_key_value) {
 		Variant res;
 		if (GDVIRTUAL_CALL(_post_process_key_value, p_anim, p_track, p_value, p_object_id, p_object_sub_idx, res)) {
@@ -1234,11 +1255,19 @@ void AnimationMixer::_blend_calc_total_weight() {
 }
 
 void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
+#ifndef _3D_DISABLED
+	int batch_instance_index = -1;
+	uint32_t batch_method_cursor = 0;
+	uint32_t batch_audio_cursor = 0;
+#endif
 	// Apply value/transform/blend/bezier blends to track caches and execute method/audio/animation tracks.
 #ifdef TOOLS_ENABLED
 	bool can_call = is_inside_tree() && !Engine::get_singleton()->is_editor_hint();
 #endif // TOOLS_ENABLED
 	for (const AnimationInstance &ai : animation_instances) {
+#ifndef _3D_DISABLED
+		batch_event_instance = ++batch_instance_index;
+#endif
 		const Ref<Animation> &a = ai.animation;
 		double time = ai.playback_info.time;
 		double delta = ai.playback_info.delta;
@@ -1263,6 +1292,22 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 		int count = tracks.size();
 		for (int i = 0; i < count; i++) {
 			const Animation::Track *animation_track = tracks_ptr[i];
+#ifndef _3D_DISABLED
+            batch_event_track = i;
+            if (batch_event_pass && animation_track->type == Animation::TYPE_METHOD) {
+                while (batch_method_cursor < batch_method_events.size()) {
+                    const BatchMethodEvent &event = batch_method_events[batch_method_cursor];
+                    if (event.instance != batch_instance_index || event.track != i) { break; }
+                    _call_object(event.target, event.method, event.arguments, event.deferred);
+                    batch_method_cursor++;
+                }
+                continue;
+            }
+#endif
+#ifndef _3D_DISABLED
+			const bool event_track = animation_track->type == Animation::TYPE_METHOD || animation_track->type == Animation::TYPE_AUDIO;
+			if (batch_event_pass && !event_track) { continue; }
+#endif
 			if (!animation_track->enabled) {
 				continue;
 			}
@@ -1734,12 +1779,31 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 					}
 				} break;
 				case Animation::TYPE_AUDIO: {
+#ifndef _3D_DISABLED
+                    if (batch_evaluating) {
+                        BatchAudioEvent event;
+                        event.instance = batch_instance_index;
+                        event.track = i;
+                        if (seeked) { event.key = a->track_find_key(i, time, Animation::FIND_MODE_NEAREST, true); }
+                        else {
+                            LocalVector<int> keys;
+                            a->track_get_key_indices_in_range(i, time, delta, start, end, &keys, looped_flag);
+                            if (!keys.is_empty()) { event.key = keys[keys.size() - 1]; }
+                        }
+                        batch_audio_events.push_back(event);
+                        continue;
+                    }
+#endif
+
 					// The end of audio should be observed even if the blend value is 0, build up the information and store to the cache for that.
 					TrackCacheAudio *t = static_cast<TrackCacheAudio *>(track);
 					Object *t_obj = ObjectDB::get_instance(t->object_id);
 					Node *asp = t_obj ? Object::cast_to<Node>(t_obj) : nullptr;
 					if (!t_obj || !asp) {
 						t->playing_streams.clear();
+#ifndef _3D_DISABLED
+						if (batch_event_pass) { batch_audio_cursor++; }
+#endif
 						continue;
 					}
 					ObjectID oid = a->get_instance_id();
@@ -1761,7 +1825,20 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 						continue;
 					}
 					// Find stream.
-					int idx = -1;
+                    int idx = -1;
+#ifndef _3D_DISABLED
+                    if (batch_event_pass) {
+                        const BatchAudioEvent &event = batch_audio_events[batch_audio_cursor++];
+                        idx = event.key;
+                        if (seeked && map.has(idx)) {
+                            t->audio_stream_playback->stop_stream(map[idx].index);
+                            map.erase(idx);
+                        }
+                    } else
+#endif
+                    {
+
+
 					if (seeked) {
 						// Audio key may be playbacked from the middle, should use FIND_MODE_NEAREST.
 						// Then, check the current playing stream to prevent to playback doubly.
@@ -1778,6 +1855,7 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 							idx = to_play[to_play.size() - 1];
 						}
 					}
+                    }
 					if (idx < 0) {
 						continue;
 					}
@@ -1913,9 +1991,33 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 }
 
 void AnimationMixer::_blend_apply() {
+#ifndef _3D_DISABLED
+	if (batch_evaluating) {
+		for (const KeyValue<Animation::TrackCacheID, TrackCache *> &kv : track_cache) {
+			TrackCache *track = kv.value;
+			if (track->type != Animation::TYPE_POSITION_3D || (!deterministic && Math::is_zero_approx(track->total_weight))) { continue; }
+			TrackCacheTransform *t = static_cast<TrackCacheTransform *>(track);
+			if (t->root_motion) {
+				root_motion_position = root_motion_cache.loc;
+				root_motion_rotation = root_motion_cache.rot;
+				root_motion_scale = root_motion_cache.scale - Vector3(1, 1, 1);
+				root_motion_position_accumulator = t->loc;
+				root_motion_rotation_accumulator = t->rot;
+				root_motion_scale_accumulator = t->scale;
+			} else {
+				SkeletonAnimationPose *pose = _get_batch_pose(t->skeleton_id);
+				if (pose) { pose->set_bone_components(t->bone_idx, t->loc, t->rot, t->scale, (t->loc_used ? 1 : 0) | (t->rot_used ? 2 : 0) | (t->scale_used ? 4 : 0)); }
+			}
+		}
+		return;
+	}
+#endif
 	// Finally, set the tracks.
 	for (const KeyValue<Animation::TrackCacheID, TrackCache *> &K : track_cache) {
 		TrackCache *track = K.value;
+#ifndef _3D_DISABLED
+		if (batch_publishing && track->type == Animation::TYPE_POSITION_3D) { continue; }
+#endif
 		bool is_zero_amount = Math::is_zero_approx(track->total_weight);
 		if (!deterministic && is_zero_amount) {
 			continue;
@@ -2088,6 +2190,19 @@ void AnimationMixer::_blend_apply() {
 }
 
 void AnimationMixer::_call_object(ObjectID p_object_id, const StringName &p_method, const Vector<Variant> &p_params, bool p_deferred) {
+#ifndef _3D_DISABLED
+    if (batch_evaluating) {
+        BatchMethodEvent event;
+        event.instance = batch_event_instance;
+        event.track = batch_event_track;
+        event.target = p_object_id;
+        event.method = p_method;
+        event.arguments = p_params;
+        event.deferred = p_deferred;
+        batch_method_events.push_back(event);
+        return;
+    }
+#endif
 	// Separate function to use alloca() more efficiently
 	const Variant **argptrs = (const Variant **)alloca(sizeof(Variant *) * p_params.size());
 	const Variant *args = p_params.ptr();
@@ -2127,6 +2242,7 @@ void AnimationMixer::advance(double p_time) {
 }
 
 void AnimationMixer::clear_caches() {
+	finish_pending_animation();
 	_clear_caches();
 }
 
@@ -2567,6 +2683,9 @@ AnimationMixer::AnimationMixer() {
 }
 
 AnimationMixer::~AnimationMixer() {
+#ifndef _3D_DISABLED
+	finish_pending_animation();
+#endif
 }
 
 void AnimatedValuesBackup::set_data(const AHashMap<Animation::TrackCacheID, AnimationMixer::TrackCache *, HashHasher> &p_data) {

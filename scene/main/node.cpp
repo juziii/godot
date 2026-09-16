@@ -29,6 +29,9 @@
 /**************************************************************************/
 
 #include "node.h"
+#ifndef _3D_DISABLED
+#include "scene/animation/animation_batch_processor.h"
+#endif
 #include "node.compat.inc"
 
 STATIC_ASSERT_INCOMPLETE_TYPE(class, Mesh);
@@ -1745,6 +1748,9 @@ void Node::add_sibling(RequiredParam<Node> p_sibling, bool p_force_readable_name
 }
 
 void Node::remove_child(RequiredParam<Node> p_child) {
+#ifndef _3D_DISABLED
+	if (Thread::is_main_thread()) { AnimationBatchProcessor::finish_pending_frames(); }
+#endif
 	ERR_FAIL_COND_MSG(data.tree && !Thread::is_main_thread(), "Removing children from a node inside the SceneTree is only allowed from the main thread. Use call_deferred(\"remove_child\",node).");
 	EXTRACT_PARAM_OR_FAIL(child, p_child);
 	ERR_FAIL_COND_MSG(data.blocked > 0, "Parent node is busy adding/removing children, `remove_child()` can't be called at this time. Consider using `remove_child.call_deferred(child)` instead.");
@@ -4165,6 +4171,9 @@ Node::Node() {
 }
 
 Node::~Node() {
+#ifndef _3D_DISABLED
+	if (Thread::is_main_thread()) { AnimationBatchProcessor::finish_pending_frames(); }
+#endif
 	data.grouped.clear();
 	data.owned.clear();
 	data.children.clear();

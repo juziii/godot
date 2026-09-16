@@ -257,12 +257,12 @@ AnimationNode::NodeTimeInfo AnimationNodeAnimation::_process(ProcessState &p_pro
 		if (p_process_state.tree && !p_test_only) {
 			// AnimationTree uses seek to 0 "internally" to process the first key of the animation, which is used as the start detection.
 			if (is_started) {
-				p_process_state.tree->call_deferred(SNAME("emit_signal"), SceneStringName(animation_started), animation);
+				p_process_state.tree->queue_animation_signal(SceneStringName(animation_started), animation);
 			}
 			// Finished.
 			if (Animation::is_less_approx(prev_playback_time, anim_size) && Animation::is_greater_or_equal_approx(cur_playback_time, anim_size)) {
 				cur_playback_time = anim_size;
-				p_process_state.tree->call_deferred(SNAME("emit_signal"), SceneStringName(animation_finished), animation);
+				p_process_state.tree->queue_animation_signal(SceneStringName(animation_finished), animation);
 			}
 		}
 	}

@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "skeleton_3d.h"
+#include "skeleton_animation_pose.h"
 #include "skeleton_3d.compat.inc"
 
 #include "core/object/callable_mp.h"
@@ -356,7 +357,6 @@ void Skeleton3D::_notification(int p_what) {
 			updating = true;
 
 			Bone *bonesptr = bones.ptr();
-			int len = bones.size();
 
 			LocalVector<bool> bone_global_pose_dirty_backup;
 
@@ -387,66 +387,7 @@ void Skeleton3D::_notification(int p_what) {
 
 			emit_signal(SceneStringName(skeleton_updated));
 
-			// Update skins.
-			RenderingServer *rs = RenderingServer::get_singleton();
-			for (SkinReference *E : skin_bindings) {
-				const Skin *skin = E->skin.operator->();
-				RID skeleton = E->skeleton;
-				uint32_t bind_count = skin->get_bind_count();
-
-				if (E->bind_count != bind_count) {
-					RS::get_singleton()->skeleton_allocate_data(skeleton, bind_count);
-					E->bind_count = bind_count;
-					E->skin_bone_indices.resize(bind_count);
-					E->skin_bone_indices_ptrs = E->skin_bone_indices.ptrw();
-				}
-
-				if (E->skeleton_version != version) {
-					for (uint32_t i = 0; i < bind_count; i++) {
-						StringName bind_name = skin->get_bind_name(i);
-
-						if (bind_name != StringName()) {
-							// Bind name used, use this.
-							bool found = false;
-							for (int j = 0; j < len; j++) {
-								if (bonesptr[j].name == bind_name) {
-									E->skin_bone_indices_ptrs[i] = j;
-									found = true;
-									break;
-								}
-							}
-
-							if (!found) {
-								ERR_PRINT("Skin bind #" + itos(i) + " contains named bind '" + String(bind_name) + "' but Skeleton3D has no bone by that name.");
-								E->skin_bone_indices_ptrs[i] = 0;
-							}
-						} else if (skin->get_bind_bone(i) >= 0) {
-							int bind_index = skin->get_bind_bone(i);
-							if (bind_index >= len) {
-								ERR_PRINT("Skin bind #" + itos(i) + " contains bone index bind: " + itos(bind_index) + " , which is greater than the skeleton bone count: " + itos(len) + ".");
-								E->skin_bone_indices_ptrs[i] = 0;
-							} else {
-								E->skin_bone_indices_ptrs[i] = bind_index;
-							}
-						} else {
-							ERR_PRINT("Skin bind #" + itos(i) + " does not contain a name nor a bone index.");
-							E->skin_bone_indices_ptrs[i] = 0;
-						}
-					}
-
-					E->skeleton_version = version;
-				}
-
-				for (uint32_t i = 0; i < bind_count; i++) {
-					uint32_t bone_index = E->skin_bone_indices_ptrs[i];
-					ERR_CONTINUE(bone_index >= (uint32_t)len);
-					Transform3D bind_pose_transform = skin->get_bind_pose(i);
-					if (bonesptr[bone_index].is_skin_scaled) {
-						bind_pose_transform = bind_pose_transform.scaled(bonesptr[bone_index].skin_scale);
-					}
-					rs->skeleton_bone_set_transform(skeleton, i, bonesptr[bone_index].global_pose * bind_pose_transform);
-				}
-			}
+			_update_skin_transforms();
 
 			if (!modifiers.is_empty()) {
 				// Restore unmodified bone poses.
@@ -656,6 +597,7 @@ int Skeleton3D::add_bone(const String &p_name) {
 	int new_idx = bones.size() - 1;
 	name_to_bone_index.insert(p_name, new_idx);
 	process_order_dirty = true;
+	animation_pose_binding_version++;
 	version++;
 	rest_dirty = true;
 	_make_dirty();
@@ -768,6 +710,7 @@ void Skeleton3D::set_bone_parent(int p_bone, int p_parent) {
 
 	bones[p_bone].parent = p_parent;
 	process_order_dirty = true;
+	animation_pose_binding_version++;
 	rest_dirty = true;
 	_make_dirty();
 }
@@ -786,6 +729,7 @@ void Skeleton3D::unparent_bone_and_rest(int p_bone) {
 
 	bones[p_bone].parent = -1;
 	process_order_dirty = true;
+	animation_pose_binding_version++;
 
 	rest_dirty = true;
 	_make_dirty();
@@ -821,6 +765,7 @@ void Skeleton3D::set_bone_rest(int p_bone, const Transform3D &p_rest) {
 	ERR_FAIL_INDEX(p_bone, bone_size);
 
 	bones[p_bone].rest = p_rest;
+	animation_pose_binding_version++;
 	rest_dirty = true;
 	_make_dirty();
 	_make_bone_global_pose_subtree_dirty(p_bone);
@@ -878,6 +823,7 @@ void Skeleton3D::clear_bones() {
 	nested_set_offset_to_bone_index.clear();
 
 	process_order_dirty = true;
+	animation_pose_binding_version++;
 	version++;
 	_make_dirty();
 }
@@ -1499,4 +1445,126 @@ Skeleton3D::~Skeleton3D() {
 	for (SkinReference *E : skin_bindings) {
 		E->skeleton_node = nullptr;
 	}
+}
+
+void Skeleton3D::_update_skin_transforms() {
+	Bone *bonesptr = bones.ptr();
+	int len = bones.size();
+	// Update skins.
+	RenderingServer *rs = RenderingServer::get_singleton();
+	for (SkinReference *E : skin_bindings) {
+		const Skin *skin = E->skin.operator->();
+		RID skeleton = E->skeleton;
+		uint32_t bind_count = skin->get_bind_count();
+
+		if (E->bind_count != bind_count) {
+			RS::get_singleton()->skeleton_allocate_data(skeleton, bind_count);
+			E->bind_count = bind_count;
+			E->skin_bone_indices.resize(bind_count);
+			E->skin_bone_indices_ptrs = E->skin_bone_indices.ptrw();
+		}
+
+		if (E->skeleton_version != version) {
+			for (uint32_t i = 0; i < bind_count; i++) {
+				StringName bind_name = skin->get_bind_name(i);
+
+				if (bind_name != StringName()) {
+					// Bind name used, use this.
+					bool found = false;
+					for (int j = 0; j < len; j++) {
+						if (bonesptr[j].name == bind_name) {
+							E->skin_bone_indices_ptrs[i] = j;
+							found = true;
+							break;
+						}
+					}
+
+					if (!found) {
+						ERR_PRINT("Skin bind #" + itos(i) + " contains named bind '" + String(bind_name) + "' but Skeleton3D has no bone by that name.");
+						E->skin_bone_indices_ptrs[i] = 0;
+					}
+				} else if (skin->get_bind_bone(i) >= 0) {
+					int bind_index = skin->get_bind_bone(i);
+					if (bind_index >= len) {
+						ERR_PRINT("Skin bind #" + itos(i) + " contains bone index bind: " + itos(bind_index) + " , which is greater than the skeleton bone count: " + itos(len) + ".");
+						E->skin_bone_indices_ptrs[i] = 0;
+					} else {
+						E->skin_bone_indices_ptrs[i] = bind_index;
+					}
+				} else {
+					ERR_PRINT("Skin bind #" + itos(i) + " does not contain a name nor a bone index.");
+					E->skin_bone_indices_ptrs[i] = 0;
+				}
+			}
+
+			E->skeleton_version = version;
+		}
+
+		for (uint32_t i = 0; i < bind_count; i++) {
+			uint32_t bone_index = E->skin_bone_indices_ptrs[i];
+			ERR_CONTINUE(bone_index >= (uint32_t)len);
+			Transform3D bind_pose_transform = skin->get_bind_pose(i);
+			if (bonesptr[bone_index].is_skin_scaled) {
+				bind_pose_transform = bind_pose_transform.scaled(bonesptr[bone_index].skin_scale);
+			}
+			rs->skeleton_bone_set_transform(skeleton, i, bonesptr[bone_index].global_pose * bind_pose_transform);
+		}
+	}
+}
+
+bool Skeleton3D::_publish_animation_pose(SkeletonAnimationPose *p_pose) {
+ ERR_FAIL_COND_V(!p_pose || p_pose->skeleton_id != get_instance_id() || p_pose->skeleton_version != version || p_pose->binding_version != animation_pose_binding_version || p_pose->bones.size() != bones.size(), false);
+ updating = true;
+ if (has_connections(SceneStringName(pose_updated))) {
+  for (uint32_t i = 0; i < bones.size(); i++) {
+   Bone &b = bones[i];
+   const auto &p = p_pose->bones[i];
+   b.pose_cache = p.base;
+   b.pose_position = p.base_position;
+   b.pose_rotation = p.base_rotation;
+   b.pose_scale = p.base_scale;
+   b.pose_cache_dirty = false;
+   b.global_pose = p.base_global;
+   bone_global_pose_dirty[b.nested_set_offset] = false;
+  }
+  dirty = false;
+  emit_signal(SceneStringName(pose_updated));
+ }
+ for (uint32_t i = 0; i < bones.size(); i++) {
+  Bone &b = bones[i];
+  const auto &p = p_pose->bones[i];
+  b.pose_cache = p.local;
+  b.pose_position = p.position;
+  b.pose_rotation = p.rotation;
+  b.pose_scale = p.scale;
+  b.pose_cache_dirty = false;
+  b.global_pose = p.global;
+  bone_global_pose_dirty[b.nested_set_offset] = false;
+ }
+ dirty = false;
+ emit_signal(SceneStringName(skeleton_updated));
+ for (const auto &skin : p_pose->skins) {
+  for (uint32_t i = 0; i < skin.transforms.size(); i++) {
+   RenderingServer::get_singleton()->skeleton_bone_set_transform(skin.rendering_skeleton, i, skin.transforms[i]);
+  }
+ }
+ // Match normal modifier publication: attachments/skins see final poses, animation sees base poses.
+ for (uint32_t i = 0; i < bones.size(); i++) {
+  Bone &b = bones[i];
+  const auto &p = p_pose->bones[i];
+  b.pose_cache = p.base;
+  b.pose_position = p.base_position;
+  b.pose_rotation = p.base_rotation;
+  b.pose_scale = p.base_scale;
+  b.pose_cache_dirty = false;
+  b.global_pose = p.base_global;
+#ifndef DISABLE_DEPRECATED
+  b.pose_global_no_override = p.base_global;
+#endif
+  bone_global_pose_dirty[b.nested_set_offset] = false;
+ }
+ updating = false;
+ update_flags = UPDATE_FLAG_NONE;
+ dirty = false;
+ return true;
 }

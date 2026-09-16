@@ -37,10 +37,12 @@
 typedef int BoneId;
 
 class Skeleton3D;
+class SkeletonAnimationPose;
 
 class SkinReference : public RefCounted {
 	GDCLASS(SkinReference, RefCounted)
 	friend class Skeleton3D;
+	friend class SkeletonAnimationPose;
 
 	Skeleton3D *skeleton_node = nullptr;
 	RID skeleton;
@@ -86,6 +88,9 @@ public:
 
 private:
 	friend class SkinReference;
+	friend class SkeletonAnimationPose;
+	void _update_skin_transforms();
+	bool _publish_animation_pose(SkeletonAnimationPose *p_pose);
 
 	enum UpdateFlag {
 		UPDATE_FLAG_NONE = 1,
@@ -188,6 +193,7 @@ private:
 	float motion_scale = 1.0;
 
 	uint64_t version = 1;
+	uint64_t animation_pose_binding_version = 1;
 
 	void _update_process_order() const;
 

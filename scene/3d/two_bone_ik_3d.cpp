@@ -778,68 +778,7 @@ void TwoBoneIK3D::_process_ik(Skeleton3D *p_skeleton, double p_delta) {
 }
 
 void TwoBoneIK3D::_process_joints(double p_delta, Skeleton3D *p_skeleton, TwoBoneIK3DSetting *p_setting, const Vector3 &p_destination, const Vector3 &p_pole_destination) {
-	Vector3 destination = p_destination;
-
-	// Make vector from root to destination.
-	p_setting->root_pos = p_skeleton->get_bone_global_pose(p_setting->root_bone.bone).origin; // New root position.
-	Vector3 root_to_destination = destination - p_setting->root_pos;
-	if (root_to_destination.is_zero_approx()) {
-		return; // Abort.
-	}
-
-	double rd_len_sq = root_to_destination.length_squared();
-	// Compare the distance to the target with the length of the bones.
-	if (rd_len_sq >= p_setting->cached_length_sq) {
-		// Result is straight.
-		Vector3 rd_nrm = root_to_destination.normalized();
-		p_setting->mid_pos = p_setting->root_pos + rd_nrm * p_setting->root_joint_solver_info->length;
-		p_setting->end_pos = p_setting->mid_pos + rd_nrm * p_setting->mid_joint_solver_info->length;
-	} else {
-		// Check if the target can be reached by subtracting the lengths of the bones.
-		// If not, push out target to normal of the root bone sphere.
-		double sub = p_setting->root_joint_solver_info->length - p_setting->mid_joint_solver_info->length;
-		if (rd_len_sq < sub * sub) {
-			Vector3 push_nrm = (destination - p_setting->root_pos).normalized();
-			destination = p_setting->root_pos + push_nrm * Math::abs(sub);
-			root_to_destination = destination - p_setting->root_pos;
-		}
-
-		// End is snapped to the target.
-		p_setting->end_pos = destination;
-
-		// Result is bent, determine the mid position to respect the pole target.
-		// Mid-position should be a point of intersection of two circles.
-		double l_chain = root_to_destination.length();
-		Vector3 u = root_to_destination.normalized();
-		Vector3 pole_vec = get_projected_normal(p_setting->root_pos, p_setting->end_pos, p_pole_destination);
-
-		// Circle1: center is the root, radius is the length of the root bone.
-		double r_root = p_setting->root_joint_solver_info->length;
-		// Circle2: center is the target, radius is the length of the middle bone.
-		double r_mid = p_setting->mid_joint_solver_info->length;
-
-		double a = (l_chain * l_chain + r_root * r_root - r_mid * r_mid) / (2.0 * l_chain);
-		double h2 = r_root * r_root - a * a;
-		if (h2 < 0) {
-			h2 = 0;
-		}
-		double h = Math::sqrt(h2);
-
-		Vector3 det_plus = (p_setting->root_pos + u * a) + pole_vec * h;
-		Vector3 det_minus = (p_setting->root_pos + u * a) - pole_vec * h;
-
-		// Pick the intersection that is closest to the pole target.
-		p_setting->mid_pos = p_pole_destination.distance_squared_to(det_plus) < p_pole_destination.distance_squared_to(det_minus) ? det_plus : det_minus;
-	}
-
-	// Update virtual bone rest/poses.
-	p_setting->cache_current_vectors(p_skeleton);
-	p_setting->cache_current_joint_rotations(p_skeleton, p_pole_destination);
-
-	// Apply the virtual bone rest/poses to the actual bones.
-	p_skeleton->set_bone_pose_rotation(p_setting->root_bone.bone, p_setting->root_joint_solver_info->current_lpose);
-	// Mid joint pose is relative to the root joint pose for the case root-mid or mid-end have more than 1 joints.
-	p_skeleton->set_bone_pose_rotation(p_setting->middle_bone.bone, get_local_pose_rotation(p_skeleton, p_setting->middle_bone.bone, p_setting->mid_joint_solver_info->current_gpose));
+	solve_pose_joints(p_skeleton, p_setting, p_destination, p_pole_destination);
 }
 
 #ifdef TOOLS_ENABLED
