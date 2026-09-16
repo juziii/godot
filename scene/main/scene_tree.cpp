@@ -686,6 +686,7 @@ void SceneTree::iteration_end() {
 }
 
 bool SceneTree::process(double p_time) {
+	GodotProfileZoneGroupedFirst(_stproc_zone, "SceneTree::process_fti");
 	// First pass of scene tree fixed timestep interpolation.
 	if (get_scene_tree_fti().is_enabled()) {
 		// Special, we need to ensure RenderingServer is up to date
@@ -697,6 +698,7 @@ bool SceneTree::process(double p_time) {
 		get_scene_tree_fti().frame_update(get_root(), true);
 	}
 
+	GodotProfileZoneGrouped(_stproc_zone, "SceneTree::main_loop_process");
 	if (MainLoop::process(p_time)) {
 		_quit = true;
 	}
@@ -712,13 +714,17 @@ bool SceneTree::process(double p_time) {
 
 	emit_signal(SNAME("process_frame"));
 
+	GodotProfileZoneGrouped(_stproc_zone, "SceneTree::message_queue_flush");
 	MessageQueue::get_singleton()->flush(); //small little hack
 
 	flush_transform_notifications();
 
+	GodotProfileZoneGrouped(_stproc_zone, "SceneTree::_process_nodes");
 	_process(false);
 
+	GodotProfileZoneGrouped(_stproc_zone, "SceneTree::flush_ugc");
 	_flush_ugc();
+	GodotProfileZoneGrouped(_stproc_zone, "SceneTree::message_queue_flush");
 	MessageQueue::get_singleton()->flush(); //small little hack
 	flush_transform_notifications(); //transforms after world update, to avoid unnecessary enter/exit notifications
 
@@ -726,12 +732,15 @@ bool SceneTree::process(double p_time) {
 		_flush_scene_change();
 	}
 
+	GodotProfileZoneGrouped(_stproc_zone, "SceneTree::process_timers");
 	process_timers(p_time, false); //go through timers
+	GodotProfileZoneGrouped(_stproc_zone, "SceneTree::process_tweens");
 	process_tweens(p_time, false);
 
 	flush_transform_notifications(); // Additional transforms after timers update.
 
 	// This should happen last because any processing that deletes something beforehand might expect the object to be removed in the same frame.
+	GodotProfileZoneGrouped(_stproc_zone, "SceneTree::flush_delete_queue");
 	_flush_delete_queue();
 
 	_flush_accessibility_changes();
