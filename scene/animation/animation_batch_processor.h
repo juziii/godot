@@ -19,6 +19,8 @@ class AnimationBatchProcessor : public RefCounted {
         LocalVector<Ref<SkeletonAnimationPose>> poses;
         AnimationMixer::AnimationCallbackModeProcess old_mode;
         double delta = 0;
+        bool sample_pose = true, display_pose = true, exact_pose = true;
+        double display_time = 0, interval = 0;
         bool queued = false;
         bool prepared = false;
         bool published = false;
@@ -52,6 +54,7 @@ public:
     int64_t register_tree(AnimationTree *p_tree, const TypedArray<SkeletonAnimationPose> &p_poses, const PackedStringArray &p_safe_methods);
     void unregister_tree(int64_t p_handle);
     bool queue_update(int64_t p_handle, double p_delta);
+    bool queue_update_with_options(int64_t p_handle, double p_delta, bool p_sample, bool p_display, bool p_exact, double p_time, double p_interval);
     int64_t submit(int p_batch_size = 8, int p_max_workers = 8);
     void complete_batch(int64_t p_handle);
     void complete_and_publish();

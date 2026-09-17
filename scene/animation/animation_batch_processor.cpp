@@ -14,6 +14,7 @@ void AnimationBatchProcessor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("register_tree", "tree", "poses", "safe_methods"), &AnimationBatchProcessor::register_tree);
     ClassDB::bind_method(D_METHOD("unregister_tree", "handle"), &AnimationBatchProcessor::unregister_tree);
     ClassDB::bind_method(D_METHOD("queue_update", "handle", "delta"), &AnimationBatchProcessor::queue_update);
+    ClassDB::bind_method(D_METHOD("queue_update_with_options", "handle", "delta", "sample_pose", "display_pose", "exact_pose", "display_time", "interval"), &AnimationBatchProcessor::queue_update_with_options);
     ClassDB::bind_method(D_METHOD("submit", "batch_size", "max_workers"), &AnimationBatchProcessor::submit, DEFVAL(8), DEFVAL(8));
     ClassDB::bind_method(D_METHOD("complete_batch", "handle"), &AnimationBatchProcessor::complete_batch);
     ClassDB::bind_method(D_METHOD("complete_and_publish"), &AnimationBatchProcessor::complete_and_publish);
@@ -46,7 +47,11 @@ int64_t AnimationBatchProcessor::register_tree(AnimationTree *p_tree, const Type
         p_tree->batch_poses.push_back(binding);
     }
     for (const String &method : p_safe_methods) { p_tree->batch_safe_methods.insert(StringName(method)); }
-    p_tree->set_callback_mode_process(AnimationMixer::ANIMATION_CALLBACK_MODE_PROCESS_MANUAL);
+    // The public mode setter reactivates the tree and restarts its playback.
+    const bool was_processing = p_tree->processing;
+    p_tree->_set_process(false);
+    p_tree->callback_mode_process = AnimationMixer::ANIMATION_CALLBACK_MODE_PROCESS_MANUAL;
+    p_tree->_set_process(was_processing);
     p_tree->batch_owner = this;
     p_tree->batch_bindings_checked = false;
     entries.push_back(entry);
@@ -69,21 +74,35 @@ void AnimationBatchProcessor::_remove_entry(Entry *entry) {
         entry->tree->batch_owner = nullptr;
         entry->tree->batch_poses.clear();
         entry->tree->batch_safe_methods.clear();
-        entry->tree->set_callback_mode_process(entry->old_mode);
+        const bool was_processing = entry->tree->processing;
+        entry->tree->_set_process(false);
+        entry->tree->callback_mode_process = entry->old_mode;
+        entry->tree->_set_process(was_processing);
     }
     for (const Ref<SkeletonAnimationPose> &pose : entry->poses) { pose->release(); }
+    work.erase(entry);
     handles.erase(entry->handle);
     entries.erase(entry);
     memdelete(entry);
 }
 
 bool AnimationBatchProcessor::queue_update(int64_t p_handle, double p_delta) {
+    return queue_update_with_options(p_handle, p_delta, true, true, true, 0, 0);
+}
+
+bool AnimationBatchProcessor::queue_update_with_options(int64_t p_handle, double p_delta, bool p_sample, bool p_display, bool p_exact, double p_time, double p_interval) {
     ERR_FAIL_COND_V(!Thread::is_main_thread() || pending || publishing, false);
     Entry **found = handles.getptr(p_handle);
     ERR_FAIL_NULL_V(found, false);
     Entry *entry = *found;
     ERR_FAIL_COND_V(entry->queued, false); // Distinct zero-step requests must not silently merge.
+    ERR_FAIL_COND_V(!Math::is_finite(p_time) || !Math::is_finite(p_interval) || p_interval < 0, false);
     entry->delta = p_delta;
+    entry->sample_pose = p_sample;
+    entry->display_pose = p_display;
+    entry->exact_pose = p_exact;
+    entry->display_time = p_time;
+    entry->interval = p_interval;
     entry->queued = true;
     return true;
 }
@@ -101,15 +120,27 @@ int64_t AnimationBatchProcessor::submit(int p_batch_size, int p_max_workers) {
         entry->fallback = String();
         if (ObjectDB::get_instance(entry->tree_id) != entry->tree) { continue; }
         entry->prepared = true;
+        entry->tree->batch_sample_pose = entry->sample_pose;
+        entry->tree->batch_display_pose = entry->display_pose;
         for (const Ref<SkeletonAnimationPose> &pose : entry->poses) {
-            if (!pose->capture_current()) {
+            if (!pose->prepare_frame(entry->sample_pose, entry->display_pose, entry->exact_pose, entry->display_time, entry->interval)) {
                 entry->prepared = false;
                 entry->fallback = pose->get_fallback_reason();
                 break;
             }
         }
         if (entry->prepared) {
-            entry->prepared = entry->tree->_prepare_batch(entry->delta);
+            for (const Ref<SkeletonAnimationPose> &pose : entry->poses) {
+                entry->tree->batch_sample_pose |= pose->needs_sample();
+                entry->tree->batch_display_pose |= pose->needs_display();
+            }
+            // Body and dependent hair must sample the same timestamp.
+            if (entry->tree->batch_sample_pose && !entry->sample_pose) {
+                for (const Ref<SkeletonAnimationPose> &pose : entry->poses) {
+                    if (!pose->needs_sample() && !pose->prepare_frame(true, entry->tree->batch_display_pose, true, entry->display_time, entry->interval)) { entry->prepared = false; }
+                }
+            }
+            entry->prepared = entry->prepared && entry->tree->_prepare_batch(entry->delta);
             if (!entry->prepared) { entry->fallback = entry->tree->batch_fallback_reason; }
         }
         if (!entry->prepared) { fallback_count++; }
@@ -159,8 +190,8 @@ void AnimationBatchProcessor::_publish_entry(Entry *p_entry) {
     p_entry->published = true;
     if (ObjectDB::get_instance(p_entry->tree_id) != p_entry->tree) { return; }
     if (p_entry->prepared) {
-        if (!p_entry->tree->batch_succeeded) { failed_count++; }
         p_entry->tree->_publish_batch();
+        if (ObjectDB::get_instance(p_entry->tree_id) == p_entry->tree && !p_entry->tree->batch_succeeded) { failed_count++; }
     } else {
         GodotProfileZone("Animation.Fallback");
         for (const Ref<SkeletonAnimationPose> &pose : p_entry->poses) { pose->release(); }
@@ -215,6 +246,21 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
     result["fallbacks"] = fallback_count;
     result["early_waits"] = early_wait_count;
     result["failed"] = failed_count;
+    int samples = 0, displays = 0, exact = 0;
+    uint64_t copies = 0;
+    if (!pending) {
+        for (const Entry *entry : work) {
+            if (entry->removed || ObjectDB::get_instance(entry->tree_id) != entry->tree) { continue; }
+            samples += entry->tree->batch_sample_pose;
+            displays += entry->tree->batch_display_pose;
+            exact += entry->exact_pose;
+            for (const Ref<SkeletonAnimationPose> &pose : entry->poses) { copies += pose->get_skin_buffer_copies(); }
+        }
+    }
+    result["samples"] = samples;
+    result["displays"] = displays;
+    result["exact"] = exact;
+    result["skin_buffer_copies"] = copies;
     return result;
 }
 
@@ -266,6 +312,15 @@ bool AnimationMixer::_prepare_batch(double p_delta) {
     if (!_prepare_batch_graph()) { return false; }
     if (batch_bindings_checked) { batch_fallback_reason = batch_binding_reason; return batch_binding_reason.is_empty(); }
     batch_bindings_checked = true;
+    batch_event_tracks.clear();
+    for (const KeyValue<StringName, AnimationData> &kv : animation_set) {
+        const Ref<Animation> &animation = kv.value.animation;
+        LocalVector<int> &indices = batch_event_tracks[animation];
+        for (int i = 0; i < animation->get_track_count(); i++) {
+            const Animation::TrackType type = animation->track_get_type(i);
+            if (type == Animation::TYPE_METHOD || type == Animation::TYPE_AUDIO) { indices.push_back(i); }
+        }
+    }
     for (const KeyValue<Animation::TrackCacheID, TrackCache *> &kv : track_cache) {
         TrackCache *track = kv.value;
         if (track->type == Animation::TYPE_POSITION_3D) {
@@ -305,33 +360,71 @@ void AnimationMixer::_evaluate_batch() {
         { GodotProfileZone("Animation.Weights"); _blend_calc_total_weight(); }
         { GodotProfileZone("Animation.SampleBlend"); _blend_process(batch_delta, false); }
         _blend_apply();
-        { GodotProfileZone("Animation.Skeleton"); for (BatchPoseBinding &binding : batch_poses) { binding.pose->evaluate(); } }
+        { GodotProfileZone("Animation.Skeleton");
+            for (BatchPoseBinding &binding : batch_poses) {
+                if (batch_sample_pose) { binding.pose->evaluate(); }
+                else { binding.pose->interpolate_frame(); }
+            }
+        }
         batch_succeeded = true;
     }
     batch_evaluating = false;
 }
 
 void AnimationMixer::_publish_batch() {
+    const ObjectID mixer_id = get_instance_id();
     if (batch_succeeded) {
         { GodotProfileZone("Animation.Events");
             batch_event_pass = true;
-            _blend_process(batch_delta, false);
+            if (batch_audio_events.is_empty()) {
+                for (uint32_t i = 0; i < batch_method_events.size(); i++) {
+                    const BatchMethodEvent event = batch_method_events[i];
+                    _call_object(event.target, event.method, event.arguments, event.deferred);
+                    if (ObjectDB::get_instance(mixer_id) != this) { return; }
+                    if (!cache_valid) { batch_succeeded = false; break; }
+                }
+            } else {
+                _blend_process(batch_delta, false);
+            }
+            if (ObjectDB::get_instance(mixer_id) != this) { return; }
             batch_event_pass = false;
+            if (!batch_succeeded || !cache_valid) {
+                batch_succeeded = false;
+                clear_animation_instances();
+                batch_method_events.clear();
+                batch_audio_events.clear();
+                batch_resource_signals.clear();
+                batch_signals.clear();
+                return;
+            }
         }
-        for (BatchPoseBinding &binding : batch_poses) { binding.pose->publish(); }
-        batch_publishing = true;
-        _blend_apply();
-        batch_publishing = false;
-        _blend_post_process();
-        emit_signal(SNAME("mixer_applied"));
-        for (const BatchResourceSignal &event : batch_resource_signals) { event.target->emit_signal(event.signal, event.value); }
-        for (const Pair<StringName, StringName> &event : batch_signals) { call_deferred(SNAME("emit_signal"), event.first, event.second); }
+        { GodotProfileZone("Animation.PublishPoses");
+            for (uint32_t i = 0; batch_display_pose && i < batch_poses.size(); i++) {
+                Ref<SkeletonAnimationPose> pose = batch_poses[i].pose;
+                const bool published = pose->publish();
+                if (ObjectDB::get_instance(mixer_id) != this) { return; }
+                if (!published) { batch_succeeded = false; break; }
+            }
+        }
+        { GodotProfileZone("Animation.PublishApply");
+            batch_publishing = true;
+            _blend_apply();
+            batch_publishing = false;
+        }
+        { GodotProfileZone("Animation.PublishPostProcess"); _blend_post_process(); }
+        { GodotProfileZone("Animation.PublishSignals");
+            emit_signal(SNAME("mixer_applied"));
+            for (const BatchResourceSignal &event : batch_resource_signals) { event.target->emit_signal(event.signal, event.value); }
+            for (const Pair<StringName, StringName> &event : batch_signals) { call_deferred(SNAME("emit_signal"), event.first, event.second); }
+        }
     }
-    clear_animation_instances();
-    batch_signals.clear();
-    batch_method_events.clear();
-    batch_audio_events.clear();
-    batch_resource_signals.clear();
+    { GodotProfileZone("Animation.PublishCleanup");
+        clear_animation_instances();
+        batch_signals.clear();
+        batch_method_events.clear();
+        batch_audio_events.clear();
+        batch_resource_signals.clear();
+    }
 }
 
 void AnimationMixer::queue_resource_signal(const Ref<Resource> &p_target, const StringName &p_signal, const StringName &p_value) {

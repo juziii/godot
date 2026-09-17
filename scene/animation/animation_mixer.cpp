@@ -1256,6 +1256,7 @@ void AnimationMixer::_blend_calc_total_weight() {
 
 void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 #ifndef _3D_DISABLED
+	const ObjectID batch_mixer_id = get_instance_id();
 	int batch_instance_index = -1;
 	uint32_t batch_method_cursor = 0;
 	uint32_t batch_audio_cursor = 0;
@@ -1290,15 +1291,25 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 		Animation::Track *const *tracks_ptr = tracks.ptr();
 		double a_length = a->get_length();
 		int count = tracks.size();
-		for (int i = 0; i < count; i++) {
+#ifndef _3D_DISABLED
+		const LocalVector<int> *event_indices = batch_event_pass ? batch_event_tracks.getptr(a) : nullptr;
+		if (batch_event_pass) { count = event_indices ? event_indices->size() : 0; }
+#endif
+		for (int track_cursor = 0; track_cursor < count; track_cursor++) {
+			int i = track_cursor;
+#ifndef _3D_DISABLED
+			if (event_indices) { i = (*event_indices)[track_cursor]; }
+#endif
 			const Animation::Track *animation_track = tracks_ptr[i];
 #ifndef _3D_DISABLED
             batch_event_track = i;
             if (batch_event_pass && animation_track->type == Animation::TYPE_METHOD) {
                 while (batch_method_cursor < batch_method_events.size()) {
-                    const BatchMethodEvent &event = batch_method_events[batch_method_cursor];
+                    const BatchMethodEvent event = batch_method_events[batch_method_cursor];
                     if (event.instance != batch_instance_index || event.track != i) { break; }
                     _call_object(event.target, event.method, event.arguments, event.deferred);
+                    if (ObjectDB::get_instance(batch_mixer_id) != this) { return; }
+                    if (!cache_valid) { batch_succeeded = false; return; }
                     batch_method_cursor++;
                 }
                 continue;
@@ -1315,6 +1326,9 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 			if (track == nullptr) {
 				continue; // No path, but avoid error spamming.
 			}
+#ifndef _3D_DISABLED
+			if (batch_evaluating && !batch_sample_pose && track->type == Animation::TYPE_POSITION_3D && !track->root_motion) { continue; }
+#endif
 			int blend_idx = track->blend_idx;
 			ERR_CONTINUE(blend_idx < 0 || blend_idx >= track_count);
 			real_t blend;
@@ -2006,7 +2020,7 @@ void AnimationMixer::_blend_apply() {
 				root_motion_scale_accumulator = t->scale;
 			} else {
 				SkeletonAnimationPose *pose = _get_batch_pose(t->skeleton_id);
-				if (pose) { pose->set_bone_components(t->bone_idx, t->loc, t->rot, t->scale, (t->loc_used ? 1 : 0) | (t->rot_used ? 2 : 0) | (t->scale_used ? 4 : 0)); }
+				if (pose && batch_sample_pose) { pose->set_bone_components(t->bone_idx, t->loc, t->rot, t->scale, (t->loc_used ? 1 : 0) | (t->rot_used ? 2 : 0) | (t->scale_used ? 4 : 0)); }
 			}
 		}
 		return;

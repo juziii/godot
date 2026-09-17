@@ -1086,6 +1086,7 @@ bool AnimationTree::_set(const StringName &p_name, const Variant &p_value) {
 			return false; // Prevent to set property by user.
 		}
 
+		if (String(p_name).ends_with("/observer")) { batch_graph_checked = false; }
 		Variant &prop = pair->first;
 		// Only copy variant if needed.
 		if (Animation::needs_type_cast(prop, p_value)) {

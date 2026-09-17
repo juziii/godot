@@ -100,6 +100,7 @@ private:
 
 	void _update_deferred(UpdateFlag p_update_flag = UPDATE_FLAG_POSE);
 	uint8_t update_flags = UPDATE_FLAG_NONE;
+	bool modifiers_enabled = true;
 	bool updating = false; // Is updating now?
 	double update_delta = 0.0;
 
@@ -194,6 +195,7 @@ private:
 
 	uint64_t version = 1;
 	uint64_t animation_pose_binding_version = 1;
+	uint64_t animation_pose_input_version = 1;
 
 	void _update_process_order() const;
 
@@ -316,6 +318,8 @@ public:
 	void _force_update_bone_children_transforms(int bone_idx) const;
 	void force_update_deferred();
 
+	void set_modifiers_enabled(bool p_enabled);
+	bool are_modifiers_enabled() const { return modifiers_enabled; }
 	void set_modifier_callback_mode_process(ModifierCallbackModeProcess p_mode);
 	ModifierCallbackModeProcess get_modifier_callback_mode_process() const;
 

@@ -380,6 +380,7 @@ protected:
     LocalVector<BatchMethodEvent> batch_method_events;
     struct BatchAudioEvent { int instance = 0, track = 0, key = -1; };
     LocalVector<BatchAudioEvent> batch_audio_events;
+    HashMap<Ref<Animation>, LocalVector<int>> batch_event_tracks;
     int batch_event_instance = 0, batch_event_track = 0;
     struct BatchResourceSignal { Ref<Resource> target; StringName signal, value; };
     LocalVector<BatchResourceSignal> batch_resource_signals;
@@ -388,6 +389,7 @@ protected:
 	bool batch_bindings_checked = false;
 	String batch_binding_reason;
 	bool batch_evaluating = false;
+	bool batch_sample_pose = true, batch_display_pose = true;
 	bool batch_event_pass = false;
 	bool batch_publishing = false;
 	bool batch_succeeded = false;

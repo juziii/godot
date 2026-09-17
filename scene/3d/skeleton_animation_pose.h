@@ -111,9 +111,13 @@ class SkeletonAnimationPose : public RefCounted {
 		Ref<Skin> skin;
 		RID rendering_skeleton;
 		LocalVector<int> indices;
-		LocalVector<Transform3D> bind_poses, transforms;
+		LocalVector<Transform3D> bind_poses;
+		Vector<float> buffers[2];
+		int buffer_index = 0;
 	};
 	LocalVector<SkinOutput> skins;
+	uint64_t skin_buffer_copies = 0;
+	void update_skin_buffers();
 	ObjectID skeleton_id;
 	uint64_t skeleton_version = 0;
 	bool owns_callback_mode = false;
@@ -123,6 +127,17 @@ class SkeletonAnimationPose : public RefCounted {
 	Ref<SkeletonAnimationPose> copy_source;
 	int copy_source_bone = -1, copy_target_bone = -1;
 	uint64_t binding_version = 0;
+	uint64_t input_version = 0;
+	struct PoseSample {
+		Vector3 position, scale;
+		Quaternion rotation;
+	};
+	LocalVector<PoseSample> samples[2];
+	double sample_times[2] = { 0, 0 };
+	int sample_index = 0, sample_count = 0;
+	double frame_time = 0, interpolation_delay = 0;
+	bool sample_requested = true, display_requested = true;
+	void store_sample();
 	Transform3D world, world_interpolated;
 	String fallback_reason;
 	LocalVector<BonePose> bones;
@@ -146,13 +161,22 @@ protected:
 public:
 	bool capture(Skeleton3D *p_skeleton);
 	bool capture_current();
+	bool prepare_frame(bool p_sample, bool p_display, bool p_exact, double p_time, double p_interval);
+	bool needs_sample() const { return sample_requested; }
+	bool needs_display() const { return display_requested; }
+	bool supports_interpolation() const;
+	void interpolate_frame();
 	void release();
+	uint64_t get_skin_buffer_copies() const { return skin_buffer_copies; }
 	int get_bone_count() const { return bones.size(); }
 	Transform3D get_base_local_pose(int p_bone) const;
 	Transform3D get_base_global_pose(int p_bone) const;
 	~SkeletonAnimationPose();
 	void configure_aim(uint64_t p_modifier_id, const Dictionary &p_input);
 	void configure_ik(const Dictionary &p_input);
+	void set_aim_input(real_t p_hip_weight, const Transform3D &p_muzzle, bool p_has_grip, const Transform3D &p_grip, const Vector3 &p_target, const Vector3 &p_up);
+	void set_ik_hand_input(bool p_has_target, const Transform3D &p_target, const Vector3 &p_weights);
+	void set_ik_ground_input(bool p_left_hit, const Vector3 &p_left_position, const Vector3 &p_left_normal, bool p_right_hit, const Vector3 &p_right_position, const Vector3 &p_right_normal);
 	void configure_copy_source(const Ref<SkeletonAnimationPose> &p_source, int p_source_bone, int p_target_bone);
 	void set_bone_components(int p_bone, const Vector3 &p_position, const Quaternion &p_rotation, const Vector3 &p_scale, int p_mask);
 	void evaluate();

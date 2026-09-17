@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "mesh_storage.h"
+#include "core/profiling/profiling.h"
 
 #ifdef GLES3_ENABLED
 
@@ -2433,6 +2434,19 @@ int MeshStorage::skeleton_get_bone_count(RID p_skeleton) const {
 	ERR_FAIL_NULL_V(skeleton, 0);
 
 	return skeleton->size;
+}
+
+void MeshStorage::skeleton_set_buffer(RID p_skeleton, const Vector<float> &p_buffer) {
+	GodotProfileZone("Animation.SkinBufferApply");
+	Skeleton *skeleton = skeleton_owner.get_or_null(p_skeleton);
+	ERR_FAIL_NULL(skeleton);
+	ERR_FAIL_COND(skeleton->use_2d);
+	ERR_FAIL_COND(p_buffer.size() != skeleton->size * 12);
+	if (p_buffer.is_empty()) {
+		return;
+	}
+	memcpy(skeleton->data.ptr(), p_buffer.ptr(), p_buffer.size() * sizeof(float));
+	_skeleton_make_dirty(skeleton);
 }
 
 void MeshStorage::skeleton_bone_set_transform(RID p_skeleton, int p_bone, const Transform3D &p_transform) {

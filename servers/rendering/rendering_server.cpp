@@ -2517,6 +2517,7 @@ void RenderingServer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("skeleton_create"), &RenderingServer::skeleton_create);
 	ClassDB::bind_method(D_METHOD("skeleton_allocate_data", "skeleton", "bones", "is_2d_skeleton"), &RenderingServer::skeleton_allocate_data, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("skeleton_get_bone_count", "skeleton"), &RenderingServer::skeleton_get_bone_count);
+	ClassDB::bind_method(D_METHOD("skeleton_set_buffer", "skeleton", "buffer"), &RenderingServer::skeleton_set_buffer);
 	ClassDB::bind_method(D_METHOD("skeleton_bone_set_transform", "skeleton", "bone", "transform"), &RenderingServer::skeleton_bone_set_transform);
 	ClassDB::bind_method(D_METHOD("skeleton_bone_get_transform", "skeleton", "bone"), &RenderingServer::skeleton_bone_get_transform);
 	ClassDB::bind_method(D_METHOD("skeleton_bone_set_transform_2d", "skeleton", "bone", "transform"), &RenderingServer::skeleton_bone_set_transform_2d);

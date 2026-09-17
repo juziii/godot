@@ -88,6 +88,7 @@ public:
 	NodePath get_external_skeleton() const;
 
 	virtual void on_skeleton_update();
+	void apply_animation_pose(const Transform3D &p_pose);
 
 #ifdef TOOLS_ENABLED
 	virtual void notify_rebind_required();

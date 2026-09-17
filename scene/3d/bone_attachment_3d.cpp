@@ -312,6 +312,20 @@ void BoneAttachment3D::_notification(int p_what) {
 	}
 }
 
+void BoneAttachment3D::apply_animation_pose(const Transform3D &p_pose) {
+	if (updating || override_pose) { return; }
+	updating = true;
+	if (use_external_skeleton) {
+		Skeleton3D *skeleton = get_skeleton();
+		if (skeleton && skeleton->is_inside_tree()) {
+			set_global_transform(skeleton->get_global_transform() * p_pose);
+		}
+	} else {
+		set_transform(p_pose);
+	}
+	updating = false;
+}
+
 void BoneAttachment3D::on_skeleton_update() {
 	if (updating) {
 		return;

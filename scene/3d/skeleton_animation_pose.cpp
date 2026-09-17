@@ -29,8 +29,11 @@
 /**************************************************************************/
 
 #include "skeleton_animation_pose.h"
+#include "scene/3d/bone_attachment_3d.h"
+#include "scene/scene_string_names.h"
 
 #include "core/object/class_db.h"
+#include "core/object/callable_mp.h"
 #include "core/os/thread.h"
 #include "core/profiling/profiling.h"
 #include "scene/3d/physics/physical_bone_simulator_3d.h"
@@ -66,6 +69,8 @@ bool SkeletonAnimationPose::capture(Skeleton3D *p_skeleton) {
 	fallback_reason = String();
 	evaluated = false;
 	bool rebuild = binding_version != p_skeleton->animation_pose_binding_version || skeleton_id != p_skeleton->get_instance_id() || skeleton_version != p_skeleton->get_version() || p_skeleton->rest_dirty || p_skeleton->process_order_dirty;
+	if (rebuild || input_version != p_skeleton->animation_pose_input_version) { sample_count = 0; }
+	input_version = p_skeleton->animation_pose_input_version;
 	p_skeleton->force_update_all_dirty_bones();
 	p_skeleton->_update_process_order();
 	skeleton_id = p_skeleton->get_instance_id();
@@ -73,6 +78,7 @@ bool SkeletonAnimationPose::capture(Skeleton3D *p_skeleton) {
 	binding_version = p_skeleton->animation_pose_binding_version;
 	world = p_skeleton->get_global_transform();
 	world_interpolated = p_skeleton->get_global_transform_interpolated();
+	const Transform3D world_inverse = world_interpolated.affine_inverse();
 	motion_scale = p_skeleton->get_motion_scale();
 	show_rest = p_skeleton->is_show_rest_only();
 	int count = p_skeleton->get_bone_count();
@@ -121,6 +127,7 @@ bool SkeletonAnimationPose::capture(Skeleton3D *p_skeleton) {
 	modifiers.clear();
 	int ti = 0, ci = 0;
 	for (ObjectID id : p_skeleton->modifiers) {
+		if (!p_skeleton->modifiers_enabled) { break; }
 		auto *mod = Object::cast_to<SkeletonModifier3D>(ObjectDB::get_instance(id));
 		if (!mod || !mod->is_active()) {
 			continue;
@@ -193,8 +200,8 @@ bool SkeletonAnimationPose::capture(Skeleton3D *p_skeleton) {
 					in.root = *native->root_joint_solver_info;
 					in.middle = *native->mid_joint_solver_info;
 				}
-				in.target = world_interpolated.affine_inverse().xform(target->get_global_transform_interpolated().origin);
-				in.pole = world_interpolated.affine_inverse().xform(pole->get_global_transform_interpolated().origin);
+				in.target = world_inverse.xform(target->get_global_transform_interpolated().origin);
+				in.pole = world_inverse.xform(pole->get_global_transform_interpolated().origin);
 				in.target_id = target->get_instance_id();
 				in.pole_id = pole->get_instance_id();
 			}
@@ -235,7 +242,7 @@ bool SkeletonAnimationPose::capture(Skeleton3D *p_skeleton) {
 				s.additive = copy->is_additive(i);
 				if (target) {
 					in.target_id = target->get_instance_id();
-					in.target = world_interpolated.affine_inverse() * target->get_global_transform_interpolated();
+					in.target = world_inverse * target->get_global_transform_interpolated();
 				} else {
 					in.target_id = ObjectID();
 				}
@@ -259,7 +266,8 @@ bool SkeletonAnimationPose::capture(Skeleton3D *p_skeleton) {
 		out.rendering_skeleton = source->skeleton;
 		out.indices.resize(bind_count);
 		out.bind_poses.resize(bind_count);
-		out.transforms.resize(bind_count);
+		out.buffers[0].resize(bind_count * 12);
+		out.buffers[1].resize(bind_count * 12);
 		if (int(source->bind_count) != bind_count) {
 			RenderingServer::get_singleton()->skeleton_allocate_data(source->skeleton, bind_count);
 			source->bind_count = bind_count;
@@ -288,9 +296,81 @@ bool SkeletonAnimationPose::capture_current() {
 	return capture(Object::cast_to<Skeleton3D>(ObjectDB::get_instance(skeleton_id)));
 }
 
+bool SkeletonAnimationPose::supports_interpolation() const {
+	auto *skeleton = Object::cast_to<Skeleton3D>(ObjectDB::get_instance(skeleton_id));
+	if (!skeleton || skeleton->has_connections(SceneStringName(pose_updated))) { return false; }
+	List<Object::Connection> connections;
+	skeleton->get_signal_connection_list(SceneStringName(skeleton_updated), &connections);
+	for (const Object::Connection &connection : connections) {
+		auto *attachment = Object::cast_to<BoneAttachment3D>(connection.callable.get_object());
+		if (!attachment || attachment->get_script_instance() || attachment->get_override_pose() || connection.flags != 0 ||
+			connection.callable != callable_mp(attachment, &BoneAttachment3D::on_skeleton_update)) { return false; }
+	}
+	return true;
+}
+
+bool SkeletonAnimationPose::prepare_frame(bool p_sample, bool p_display, bool p_exact, double p_time, double p_interval) {
+	ERR_FAIL_COND_V(!Thread::is_main_thread(), false);
+	auto *skeleton = Object::cast_to<Skeleton3D>(ObjectDB::get_instance(skeleton_id));
+	if (!skeleton || !skeleton->is_inside_tree()) { return fail("Skeleton is outside the scene tree."); }
+	const bool compatible = p_interval > 0 && supports_interpolation();
+	sample_requested = p_sample || p_exact || sample_count == 0 || !compatible ||
+		skeleton_version != skeleton->get_version() || binding_version != skeleton->animation_pose_binding_version ||
+		input_version != skeleton->animation_pose_input_version;
+	display_requested = p_display || p_exact || !compatible;
+	frame_time = p_time;
+	interpolation_delay = compatible && !p_exact ? p_interval : 0;
+	if (p_exact || !compatible || frame_time < sample_times[sample_index]) { sample_count = 0; }
+	evaluated = false;
+	generated_targets.clear();
+	aim_evaluated = false;
+	return !sample_requested || capture(skeleton);
+}
+
+void SkeletonAnimationPose::store_sample() {
+	sample_index ^= 1;
+	samples[sample_index].resize(bones.size());
+	for (uint32_t i = 0; i < bones.size(); i++) {
+		samples[sample_index][i] = { bones[i].position, bones[i].scale, bones[i].rotation };
+	}
+	sample_times[sample_index] = frame_time;
+	sample_count = MIN(sample_count + 1, 2);
+}
+
+void SkeletonAnimationPose::interpolate_frame() {
+	if (!display_requested || sample_count == 0) { return; }
+	GodotProfileZone("Animation.Interpolate");
+	const int previous = sample_index ^ 1;
+	const double span = sample_times[sample_index] - sample_times[previous];
+	real_t weight = 1;
+	if (sample_count == 2 && interpolation_delay > 0 && span > 0 && span <= interpolation_delay + 0.000001) {
+		weight = CLAMP((frame_time - interpolation_delay - sample_times[previous]) / span, 0.0, 1.0);
+	}
+	for (int index : order) {
+		auto &bone = bones[index];
+		const PoseSample &current = samples[sample_index][index];
+		bone.position = current.position;
+		bone.rotation = current.rotation;
+		bone.scale = current.scale;
+		if (weight < 1) {
+			const PoseSample &before = samples[previous][index];
+			bone.position = before.position.lerp(current.position, weight);
+			bone.scale = before.scale.lerp(current.scale, weight);
+			bone.rotation = before.rotation.slerp(current.rotation, weight);
+		}
+		bone.local = Transform3D(Basis(bone.rotation).scaled_local(bone.scale), bone.position);
+		const Transform3D local = bone.enabled && !show_rest ? bone.local : bone.rest;
+		bone.global = bone.parent < 0 ? local : bones[bone.parent].global * local;
+		dirty[bone.offset] = false;
+	}
+	update_skin_buffers();
+	evaluated = true;
+}
+
 void SkeletonAnimationPose::release() {
-	ERR_FAIL_COND(!Thread::is_main_thread());
+	sample_count = 0;
 	if (owns_callback_mode) {
+		ERR_FAIL_COND(!Thread::is_main_thread());
 		if (auto *skeleton = Object::cast_to<Skeleton3D>(ObjectDB::get_instance(skeleton_id))) {
 			skeleton->set_modifier_callback_mode_process(saved_callback_mode);
 		}
@@ -630,17 +710,34 @@ void SkeletonAnimationPose::evaluate() {
 		update_globals();
 	}
 	}
+	store_sample();
+	evaluated = true;
+	interpolate_frame();
+}
+
+void SkeletonAnimationPose::update_skin_buffers() {
+	GodotProfileZone("Animation.SkinBufferPack");
 	for (auto &skin : skins) {
+		skin.buffer_index ^= 1;
+		Vector<float> &buffer = skin.buffers[skin.buffer_index];
+		const float *previous = buffer.ptr();
+		float *data = buffer.ptrw();
+		if (previous && previous != data) { skin_buffer_copies++; }
 		for (uint32_t i = 0; i < skin.indices.size(); i++) {
 			const auto &b = bones[skin.indices[i]];
 			Transform3D bind = skin.bind_poses[i];
 			if (!b.skin_scale.is_equal_approx(Vector3(1, 1, 1))) {
 				bind = bind.scaled(b.skin_scale);
 			}
-			skin.transforms[i] = b.global * bind;
+			const Transform3D transform = b.global * bind;
+			for (int row = 0; row < 3; row++) {
+				for (int column = 0; column < 3; column++) {
+					data[i * 12 + row * 4 + column] = transform.basis.rows[row][column];
+				}
+				data[i * 12 + row * 4 + 3] = transform.origin[row];
+			}
 		}
 	}
-	evaluated = true;
 }
 
 bool SkeletonAnimationPose::publish() {
@@ -648,27 +745,31 @@ bool SkeletonAnimationPose::publish() {
 	if (!evaluated) {
 		return false;
 	}
-	for (const auto &target : generated_targets) {
-		if (auto *node = Object::cast_to<Node3D>(ObjectDB::get_instance(target.id))) {
-			if (target.position_only) { node->set_position(target.transform.origin); }
-			else { node->set_transform(target.transform); }
+	{ GodotProfileZone("Animation.PublishTargets");
+		for (const auto &target : generated_targets) {
+			if (auto *node = Object::cast_to<Node3D>(ObjectDB::get_instance(target.id))) {
+				if (target.position_only) { node->set_position(target.transform.origin); }
+				else { node->set_transform(target.transform); }
+			}
 		}
-	}
-	if (aim_evaluated && aim.has_grip) {
-		if (auto *target = Object::cast_to<Node3D>(ObjectDB::get_instance(aim.grip_target_id))) {
-			target->set_transform(aim.grip);
-		}
-		if (aim.left_arm >= 0 && aim.left_elbow >= 0) {
-			if (auto *pole = Object::cast_to<Node3D>(ObjectDB::get_instance(aim.elbow_pole_id))) {
-				pole->set_position(aim.elbow_pole);
+		if (aim_evaluated && aim.has_grip) {
+			if (auto *target = Object::cast_to<Node3D>(ObjectDB::get_instance(aim.grip_target_id))) {
+				target->set_transform(aim.grip);
+			}
+			if (aim.left_arm >= 0 && aim.left_elbow >= 0) {
+				if (auto *pole = Object::cast_to<Node3D>(ObjectDB::get_instance(aim.elbow_pole_id))) {
+					pole->set_position(aim.elbow_pole);
+				}
 			}
 		}
 	}
-	auto *skeleton = Object::cast_to<Skeleton3D>(ObjectDB::get_instance(skeleton_id));
-	if (!skeleton || !skeleton->_publish_animation_pose(this)) {
-		return fail("Skeleton binding changed before animation publication.");
+	{ GodotProfileZone("Animation.PublishSkeleton");
+		auto *skeleton = Object::cast_to<Skeleton3D>(ObjectDB::get_instance(skeleton_id));
+		if (!skeleton || !skeleton->_publish_animation_pose(this)) {
+			return fail("Skeleton binding changed before animation publication.");
+		}
 	}
-	for (const Modifier &m : modifiers) {
+	{ GodotProfileZone("Animation.PublishModifiers"); for (const Modifier &m : modifiers) {
 		if (m.kind == Modifier::TWO_BONE) {
 			for (int i = m.begin; i < m.begin + m.count; i++) {
 				const auto &in = two_bone[i];
@@ -689,11 +790,41 @@ bool SkeletonAnimationPose::publish() {
 			mod->emit_signal(SNAME("modification_processed"));
 		}
 	}
+	}
 	evaluated = false;
 	return true;
 }
 
+void SkeletonAnimationPose::set_aim_input(real_t p_hip_weight, const Transform3D &p_muzzle, bool p_has_grip, const Transform3D &p_grip, const Vector3 &p_target, const Vector3 &p_up) {
+	ERR_FAIL_COND(!Thread::is_main_thread());
+	aim.hip_weight = p_hip_weight;
+	aim.hand_to_muzzle = p_muzzle;
+	aim.has_grip = p_has_grip;
+	aim.hand_to_grip = p_grip;
+	aim.target = p_target;
+	aim.up = p_up;
+}
+
+void SkeletonAnimationPose::set_ik_hand_input(bool p_has_target, const Transform3D &p_target, const Vector3 &p_weights) {
+	ERR_FAIL_COND(!Thread::is_main_thread());
+	ik.has_hand_target = p_has_target;
+	ik.hand_target_world = p_target;
+	ik.hand_weight = p_weights.x;
+	ik.left_weight = p_weights.y;
+	ik.right_weight = p_weights.z;
+}
+
+void SkeletonAnimationPose::set_ik_ground_input(bool p_left_hit, const Vector3 &p_left_position, const Vector3 &p_left_normal, bool p_right_hit, const Vector3 &p_right_position, const Vector3 &p_right_normal) {
+	ERR_FAIL_COND(!Thread::is_main_thread());
+	ik.left_ground = { p_left_hit, p_left_position, p_left_normal };
+	ik.right_ground = { p_right_hit, p_right_position, p_right_normal };
+}
+
 void SkeletonAnimationPose::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_aim_input", "hip_weight", "muzzle", "has_grip", "grip", "target", "up"), &SkeletonAnimationPose::set_aim_input);
+	ClassDB::bind_method(D_METHOD("set_ik_hand_input", "has_target", "target", "weights"), &SkeletonAnimationPose::set_ik_hand_input);
+	ClassDB::bind_method(D_METHOD("set_ik_ground_input", "left_hit", "left_position", "left_normal", "right_hit", "right_position", "right_normal"), &SkeletonAnimationPose::set_ik_ground_input);
+	ClassDB::bind_method(D_METHOD("supports_interpolation"), &SkeletonAnimationPose::supports_interpolation);
 	ClassDB::bind_method(D_METHOD("capture_current"), &SkeletonAnimationPose::capture_current);
 	ClassDB::bind_method(D_METHOD("release"), &SkeletonAnimationPose::release);
 	ClassDB::bind_method(D_METHOD("get_bone_count"), &SkeletonAnimationPose::get_bone_count);
