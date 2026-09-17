@@ -474,6 +474,10 @@ public:
 	FUNC3(skeleton_allocate_data, RID, int, bool)
 	FUNC1RC(int, skeleton_get_bone_count, RID)
 	FUNC2(skeleton_set_buffer, RID, const Vector<float> &)
+	// Counters are atomics; read them in place instead of queueing a sync command.
+	virtual Dictionary skeleton_get_buffer_statistics(bool p_reset = true) override {
+		return RSG::mesh_storage->skeleton_get_buffer_statistics(p_reset);
+	}
 	FUNC3(skeleton_bone_set_transform, RID, int, const Transform3D &)
 	FUNC2RC(Transform3D, skeleton_bone_get_transform, RID, int)
 	FUNC3(skeleton_bone_set_transform_2d, RID, int, const Transform2D &)

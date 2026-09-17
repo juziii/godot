@@ -2036,6 +2036,7 @@ void AnimationMixer::_blend_apply() {
 		if (!deterministic && is_zero_amount) {
 			continue;
 		}
+		publish_applied_tracks++;
 		switch (track->type) {
 			case Animation::TYPE_POSITION_3D: {
 #ifndef _3D_DISABLED

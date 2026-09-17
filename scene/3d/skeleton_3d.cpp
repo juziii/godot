@@ -1564,8 +1564,13 @@ bool Skeleton3D::_publish_animation_pose(SkeletonAnimationPose *p_pose) {
    break;
   }
  }
+ p_pose->publish_stats.skeleton_updated_observers = connections.is_empty() ? 0 : 1;
+ for (const Object::Connection &connection : connections) {
+  if (Object::cast_to<BoneAttachment3D>(connection.callable.get_object())) { p_pose->publish_stats.attachments++; }
+ }
  if (direct_attachments) {
   GodotProfileZone("Animation.PublishFast");
+  p_pose->publish_stats.fast_path = true;
   updating = true;
   for (uint32_t i = 0; i < bones.size(); i++) {
    Bone &bone = bones[i];
@@ -1599,6 +1604,8 @@ bool Skeleton3D::_publish_animation_pose(SkeletonAnimationPose *p_pose) {
    GodotProfileZone("Animation.PublishSkinUpload");
    for (const auto &skin : p_pose->skins) {
     RenderingServer::get_singleton()->skeleton_set_buffer(skin.rendering_skeleton, skin.buffers[skin.buffer_index]);
+    p_pose->publish_stats.skins++;
+    p_pose->publish_stats.skin_bytes += uint64_t(skin.buffers[skin.buffer_index].size()) * sizeof(float);
    }
   }
   updating = false;
@@ -1609,6 +1616,7 @@ bool Skeleton3D::_publish_animation_pose(SkeletonAnimationPose *p_pose) {
  const ObjectID owner_id = get_instance_id();
  if (has_connections(SceneStringName(pose_updated))) {
   GodotProfileZone("Animation.PublishPoseUpdated");
+  p_pose->publish_stats.pose_updated_observers = 1;
   for (uint32_t i = 0; i < bones.size(); i++) {
    Bone &b = bones[i];
    const auto &p = p_pose->bones[i];
@@ -1651,6 +1659,8 @@ bool Skeleton3D::_publish_animation_pose(SkeletonAnimationPose *p_pose) {
  { GodotProfileZone("Animation.PublishSkinUpload");
  for (const auto &skin : p_pose->skins) {
   RenderingServer::get_singleton()->skeleton_set_buffer(skin.rendering_skeleton, skin.buffers[skin.buffer_index]);
+  p_pose->publish_stats.skins++;
+  p_pose->publish_stats.skin_bytes += uint64_t(skin.buffers[skin.buffer_index].size()) * sizeof(float);
  }
  }
  // Match normal modifier publication: attachments/skins see final poses, animation sees base poses.

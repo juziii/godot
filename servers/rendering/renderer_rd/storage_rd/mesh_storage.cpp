@@ -1190,10 +1190,12 @@ void MeshStorage::update_mesh_instances() {
 	if (dirty_mesh_instance_arrays.first() == nullptr) {
 		return; //nothing to do
 	}
+	GodotProfileZone("Animation.SkinComputeSubmit");
 
 	//process skeletons and blend shapes
 	uint64_t frame = RSG::rasterizer->get_frame_number();
 	bool uses_motion_vectors = (RSG::viewport->get_num_viewports_with_motion_vectors() > 0) || (RendererCompositorStorage::get_singleton()->get_num_compositor_effects_with_motion_vectors() > 0);
+	RD::get_singleton()->capture_timestamp("Skinning Compute Begin");
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 
 	while (dirty_mesh_instance_arrays.first()) {
@@ -1282,6 +1284,12 @@ void MeshStorage::update_mesh_instances() {
 
 			//dispatch without barrier, so all is done at the same time
 			RD::get_singleton()->compute_list_dispatch_threads(compute_list, push_constant.vertex_count, 1, 1);
+			if (push_constant.has_skeleton) {
+				skin_buffer_stats.skin_dispatches.increment();
+				skin_buffer_stats.skin_vertices.add(push_constant.vertex_count);
+			} else {
+				skin_buffer_stats.reshape_dispatches.increment();
+			}
 		}
 
 		mi->dirty = false;
@@ -1292,6 +1300,7 @@ void MeshStorage::update_mesh_instances() {
 	}
 
 	RD::get_singleton()->compute_list_end();
+	RD::get_singleton()->capture_timestamp("Skinning Compute End");
 }
 
 RD::VertexFormatID MeshStorage::_mesh_surface_generate_vertex_format(uint64_t p_surface_format, uint64_t p_input_mask, bool p_instanced_surface, bool p_input_motion_vectors, bool p_point_size_emulated, uint32_t &r_position_stride) {
@@ -2428,8 +2437,34 @@ void MeshStorage::skeleton_set_buffer(RID p_skeleton, const Vector<float> &p_buf
 	if (p_buffer.is_empty()) {
 		return;
 	}
+	skin_buffer_stats.apply_calls.increment();
+	skin_buffer_stats.apply_bytes.add(uint64_t(p_buffer.size()) * sizeof(float));
 	memcpy(skeleton->data.ptr(), p_buffer.ptr(), p_buffer.size() * sizeof(float));
 	_skeleton_make_dirty(skeleton);
+}
+
+uint64_t MeshStorage::SkinBufferStats::read(SafeNumeric<uint64_t> &p_counter, bool p_reset) {
+	uint64_t value = p_counter.get();
+	if (p_reset) {
+		// Render-thread increments between get() and set(0) are dropped; sampling
+		// windows are seconds long, so a boundary straddle is noise, not a loss.
+		p_counter.set(0);
+	}
+	return value;
+}
+
+Dictionary MeshStorage::skeleton_get_buffer_statistics(bool p_reset) {
+	Dictionary result;
+	result["apply_calls"] = skin_buffer_stats.read(skin_buffer_stats.apply_calls, p_reset);
+	result["apply_bytes"] = skin_buffer_stats.read(skin_buffer_stats.apply_bytes, p_reset);
+	result["upload_passes"] = skin_buffer_stats.read(skin_buffer_stats.upload_passes, p_reset);
+	result["dirty_skeletons"] = skin_buffer_stats.read(skin_buffer_stats.dirty_skeletons, p_reset);
+	result["upload_calls"] = skin_buffer_stats.read(skin_buffer_stats.upload_calls, p_reset);
+	result["upload_bytes"] = skin_buffer_stats.read(skin_buffer_stats.upload_bytes, p_reset);
+	result["skin_dispatches"] = skin_buffer_stats.read(skin_buffer_stats.skin_dispatches, p_reset);
+	result["skin_vertices"] = skin_buffer_stats.read(skin_buffer_stats.skin_vertices, p_reset);
+	result["reshape_dispatches"] = skin_buffer_stats.read(skin_buffer_stats.reshape_dispatches, p_reset);
+	return result;
 }
 
 void MeshStorage::skeleton_bone_set_transform(RID p_skeleton, int p_bone, const Transform3D &p_transform) {
@@ -2534,11 +2569,15 @@ void MeshStorage::skeleton_set_base_transform_2d(RID p_skeleton, const Transform
 }
 
 void MeshStorage::_update_dirty_skeletons() {
+	skin_buffer_stats.upload_passes.increment();
 	while (skeleton_dirty_list) {
 		Skeleton *skeleton = skeleton_dirty_list;
+		skin_buffer_stats.dirty_skeletons.increment();
 
 		if (skeleton->size) {
 			GodotProfileZone("Animation.SkinBufferUpload");
+			skin_buffer_stats.upload_calls.increment();
+			skin_buffer_stats.upload_bytes.add(uint64_t(skeleton->data.size()) * sizeof(float));
 			RD::get_singleton()->buffer_update(skeleton->buffer, 0, skeleton->data.size() * sizeof(float), skeleton->data.ptr());
 		}
 

@@ -421,6 +421,7 @@ void RenderingServerDefault::_thread_loop() {
 
 	while (!exit) {
 		WorkerThreadPool::get_singleton()->yield();
+		GodotProfileZone("RS.CommandQueueFlush");
 		command_queue.flush_all();
 	}
 

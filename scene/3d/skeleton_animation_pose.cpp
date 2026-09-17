@@ -808,16 +808,19 @@ bool SkeletonAnimationPose::publish() {
 	{ GodotProfileZone("Animation.PublishTargets");
 		for (const auto &target : generated_targets) {
 			if (auto *node = Object::cast_to<Node3D>(ObjectDB::get_instance(target.id))) {
+				publish_stats.target_writes++;
 				if (target.position_only) { node->set_position(target.transform.origin); }
 				else { node->set_transform(target.transform); }
 			}
 		}
 		if (aim_evaluated && aim.has_grip) {
 			if (auto *target = Object::cast_to<Node3D>(ObjectDB::get_instance(aim.grip_target_id))) {
+				publish_stats.target_writes++;
 				target->set_transform(aim.grip);
 			}
 			if (aim.left_arm >= 0 && aim.left_elbow >= 0) {
 				if (auto *pole = Object::cast_to<Node3D>(ObjectDB::get_instance(aim.elbow_pole_id))) {
+					publish_stats.target_writes++;
 					pole->set_position(aim.elbow_pole);
 				}
 			}
@@ -847,6 +850,7 @@ bool SkeletonAnimationPose::publish() {
 			}
 		}
 		if (auto *mod = ObjectDB::get_instance(m.id)) {
+			publish_stats.modifier_signals++;
 			mod->emit_signal(SNAME("modification_processed"));
 		}
 	}

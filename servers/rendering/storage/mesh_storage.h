@@ -33,6 +33,7 @@
 #include "core/math/color.h"
 #include "core/math/transform_2d.h"
 #include "core/templates/local_vector.h"
+#include "core/variant/dictionary.h"
 #include "servers/rendering/rendering_server_enums.h"
 #include "servers/rendering/rendering_server_types.h"
 #include "servers/rendering/storage/utilities.h"
@@ -219,6 +220,9 @@ public:
 	virtual void skeleton_allocate_data(RID p_skeleton, int p_bones, bool p_2d_skeleton = false) = 0;
 	virtual int skeleton_get_bone_count(RID p_skeleton) const = 0;
 	virtual void skeleton_set_buffer(RID p_skeleton, const Vector<float> &p_buffer) = 0;
+	// Skin buffer pipeline counters since the last reset. Only the RD backend tracks
+	// them; other backends report an empty dictionary instead of zeros.
+	virtual Dictionary skeleton_get_buffer_statistics(bool p_reset = true) { return Dictionary(); }
 	virtual void skeleton_bone_set_transform(RID p_skeleton, int p_bone, const Transform3D &p_transform) = 0;
 	virtual Transform3D skeleton_bone_get_transform(RID p_skeleton, int p_bone) const = 0;
 	virtual void skeleton_bone_set_transform_2d(RID p_skeleton, int p_bone, const Transform2D &p_transform) = 0;

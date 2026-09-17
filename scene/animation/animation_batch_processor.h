@@ -52,6 +52,27 @@ class AnimationBatchProcessor : public RefCounted {
     int recomputed_count = 0;
     bool preparing = false;
     int mutation_depth = 0;
+    // Per-frame publish observability; reset in submit(). Main thread only.
+    struct MergeRunTracker {
+        uint32_t quiet_entries = 0; // Entries whose whole publish had no observable operation.
+        uint32_t mergeable_skins = 0; // Skin uploads inside runs of at least two quiet entries.
+        uint32_t mergeable_runs = 0;
+        uint32_t max_run = 0;
+        uint32_t current_run = 0, run_head_skins = 0;
+        void push(bool p_quiet, uint32_t p_skins);
+    };
+    uint32_t publish_entry_count = 0, publish_fallback_publishes = 0;
+    uint32_t publish_skin_uploads = 0;
+    uint64_t publish_skin_upload_bytes = 0;
+    uint32_t publish_method_events = 0, publish_audio_events = 0;
+    uint32_t publish_resource_signals = 0, publish_deferred_signals = 0;
+    uint32_t publish_mixer_applied_observers = 0, publish_applied_tracks = 0;
+    uint32_t publish_pose_updated_observers = 0, publish_skeleton_updated_observers = 0;
+    uint32_t publish_attachments = 0, publish_fast_path_entries = 0;
+    uint32_t publish_target_writes = 0, publish_modifier_signals = 0;
+    MergeRunTracker publish_strict_merge, publish_fast_merge;
+    void _reset_publish_stats();
+    void _record_publish_stats(Entry *p_entry);
     int64_t _register(AnimationMixer *p_mixer, const TypedArray<SkeletonAnimationPose> &p_poses, const PackedStringArray &p_safe_methods, int64_t p_parent, int p_kind);
     void _prepare_entry(Entry *p_entry);
     void _evaluate_entry(Entry *p_entry);

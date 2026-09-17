@@ -166,6 +166,7 @@ int64_t AnimationBatchProcessor::submit(int p_batch_size, int p_max_workers) {
     work.clear();
     units.clear();
     fallback_count = early_wait_count = failed_count = recomputed_count = 0;
+    _reset_publish_stats();
     preparing = true;
     for (Entry *entry : entries) {
         if (entry->removed || ObjectDB::get_instance(entry->tree_id) != entry->tree) {
@@ -282,6 +283,86 @@ void AnimationBatchProcessor::_publish_entry(Entry *entry) {
         for (const Ref<SkeletonAnimationPose> &pose : entry->poses) { pose->release(); }
         entry->tree->advance(entry->delta);
     }
+    _record_publish_stats(entry);
+}
+
+void AnimationBatchProcessor::MergeRunTracker::push(bool p_quiet, uint32_t p_skins) {
+    if (!p_quiet) {
+        current_run = 0;
+        run_head_skins = 0;
+        return;
+    }
+    quiet_entries++;
+    current_run++;
+    if (current_run == 1) {
+        run_head_skins = p_skins;
+    } else if (current_run == 2) {
+        mergeable_runs++;
+        mergeable_skins += run_head_skins + p_skins;
+    } else {
+        mergeable_skins += p_skins;
+    }
+    max_run = MAX(max_run, current_run);
+}
+
+void AnimationBatchProcessor::_reset_publish_stats() {
+    publish_entry_count = publish_fallback_publishes = 0;
+    publish_skin_uploads = publish_skin_upload_bytes = 0;
+    publish_method_events = publish_audio_events = 0;
+    publish_resource_signals = publish_deferred_signals = 0;
+    publish_mixer_applied_observers = publish_applied_tracks = 0;
+    publish_pose_updated_observers = publish_skeleton_updated_observers = 0;
+    publish_attachments = publish_fast_path_entries = 0;
+    publish_target_writes = publish_modifier_signals = 0;
+    publish_strict_merge = MergeRunTracker();
+    publish_fast_merge = MergeRunTracker();
+}
+
+void AnimationBatchProcessor::_record_publish_stats(Entry *entry) {
+    publish_entry_count++;
+    if (!entry->prepared) {
+        // The legacy advance path runs its own events and signals; treat it as observable.
+        publish_fallback_publishes++;
+        publish_strict_merge.push(false, 0);
+        publish_fast_merge.push(false, 0);
+        return;
+    }
+    const bool mixer_valid = ObjectDB::get_instance(entry->tree_id) == entry->tree;
+    bool mixer_quiet = true;
+    if (mixer_valid) {
+        AnimationMixer *tree = entry->tree;
+        publish_method_events += tree->publish_method_events;
+        publish_audio_events += tree->publish_audio_events;
+        publish_resource_signals += tree->publish_resource_signals;
+        publish_deferred_signals += tree->publish_deferred_signals;
+        publish_applied_tracks += tree->publish_applied_tracks;
+        if (tree->publish_mixer_applied_observers) { publish_mixer_applied_observers++; }
+        mixer_quiet = tree->publish_method_events == 0 && tree->publish_audio_events == 0 &&
+                tree->publish_resource_signals == 0 && tree->publish_deferred_signals == 0 &&
+                tree->publish_applied_tracks == 0 && !tree->publish_mixer_applied_observers;
+    }
+    uint32_t entry_skins = 0;
+    bool strict_poses = true, fast_poses = true;
+    for (const Ref<SkeletonAnimationPose> &pose : entry->poses) {
+        const SkeletonAnimationPose::PublishStats &stats = pose->get_publish_stats();
+        entry_skins += stats.skins;
+        publish_skin_uploads += stats.skins;
+        publish_skin_upload_bytes += stats.skin_bytes;
+        publish_attachments += stats.attachments;
+        publish_target_writes += stats.target_writes;
+        publish_modifier_signals += stats.modifier_signals;
+        if (stats.pose_updated_observers) { publish_pose_updated_observers++; }
+        if (stats.skeleton_updated_observers) { publish_skeleton_updated_observers++; }
+        if (stats.fast_path) { publish_fast_path_entries++; }
+        strict_poses = strict_poses && stats.pose_updated_observers == 0 && stats.skeleton_updated_observers == 0 &&
+                stats.target_writes == 0 && stats.modifier_signals == 0;
+        // The fast path only exists when every observer is a plain native attachment.
+        fast_poses = fast_poses && stats.pose_updated_observers == 0 && stats.fast_path &&
+                stats.target_writes == 0 && stats.modifier_signals == 0;
+    }
+    if (!mixer_valid) { strict_poses = fast_poses = false; }
+    publish_strict_merge.push(mixer_quiet && strict_poses, entry_skins);
+    publish_fast_merge.push(mixer_quiet && fast_poses, entry_skins);
 }
 
 void AnimationBatchProcessor::publish(int64_t p_handle) {
@@ -386,6 +467,34 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
     result["displays"] = displays;
     result["exact"] = exact;
     result["skin_buffer_copies"] = copies;
+    // Observability of the current frame's publish round (reset by submit()).
+    result["publish_entries"] = publish_entry_count;
+    result["publish_fallback_publishes"] = publish_fallback_publishes;
+    result["publish_skin_uploads"] = publish_skin_uploads;
+    result["publish_skin_upload_bytes"] = publish_skin_upload_bytes;
+    result["publish_method_events"] = publish_method_events;
+    result["publish_audio_events"] = publish_audio_events;
+    result["publish_resource_signals"] = publish_resource_signals;
+    result["publish_deferred_signals"] = publish_deferred_signals;
+    result["publish_mixer_applied_observers"] = publish_mixer_applied_observers;
+    result["publish_applied_tracks"] = publish_applied_tracks;
+    result["publish_pose_updated_observers"] = publish_pose_updated_observers;
+    result["publish_skeleton_updated_observers"] = publish_skeleton_updated_observers;
+    result["publish_attachments"] = publish_attachments;
+    result["publish_fast_path_entries"] = publish_fast_path_entries;
+    result["publish_target_writes"] = publish_target_writes;
+    result["publish_modifier_signals"] = publish_modifier_signals;
+    // Strict: any observable operation (events, signals, observers, applied tracks,
+    // attachments) breaks mergeability. Fast: additionally allows the native-only
+    // attachment fast path, which a batched submit would have to prove safe.
+    result["publish_strict_quiet"] = publish_strict_merge.quiet_entries;
+    result["publish_strict_merge_skins"] = publish_strict_merge.mergeable_skins;
+    result["publish_strict_merge_runs"] = publish_strict_merge.mergeable_runs;
+    result["publish_strict_max_run"] = publish_strict_merge.max_run;
+    result["publish_fast_quiet"] = publish_fast_merge.quiet_entries;
+    result["publish_fast_merge_skins"] = publish_fast_merge.mergeable_skins;
+    result["publish_fast_merge_runs"] = publish_fast_merge.mergeable_runs;
+    result["publish_fast_max_run"] = publish_fast_merge.max_run;
     return result;
 }
 
@@ -509,6 +618,14 @@ void AnimationMixer::_evaluate_batch() {
 
 void AnimationMixer::_publish_batch() {
     const ObjectID mixer_id = get_instance_id();
+    // Observability snapshot for Animation.Publish profiling; reset for this round.
+    publish_method_events = batch_method_events.size();
+    publish_audio_events = batch_audio_events.size();
+    publish_resource_signals = batch_resource_signals.size();
+    publish_deferred_signals = batch_signals.size();
+    publish_mixer_applied_observers = has_connections(SNAME("mixer_applied"));
+    publish_applied_tracks = 0;
+    for (const BatchPoseBinding &binding : batch_poses) { binding.pose->reset_publish_stats(); }
     if (batch_succeeded) {
         _commit_batch_state();
         { GodotProfileZone("Animation.Events");

@@ -398,6 +398,14 @@ protected:
 	double batch_delta = 0;
 	AnimationBatchProcessor *batch_owner = nullptr;
 	String batch_fallback_reason;
+	// Observability of the last _publish_batch(); read by AnimationBatchProcessor
+	// after publishing to profile Animation.Publish. Main thread only.
+	uint32_t publish_method_events = 0;
+	uint32_t publish_audio_events = 0;
+	uint32_t publish_resource_signals = 0;
+	uint32_t publish_deferred_signals = 0;
+	uint32_t publish_applied_tracks = 0; // Non-transform track caches written by _blend_apply during publish.
+	bool publish_mixer_applied_observers = false;
 	virtual bool _prepare_batch_graph();
 	virtual void _commit_batch_state() {}
 	virtual void _evaluate_batch_start() {}

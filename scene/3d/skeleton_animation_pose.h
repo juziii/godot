@@ -40,6 +40,21 @@
 class SkeletonAnimationPose : public RefCounted {
 	GDCLASS(SkeletonAnimationPose, RefCounted);
 	friend class Skeleton3D;
+
+public:
+	// Observability of the last publish round, used to profile Animation.Publish.
+	struct PublishStats {
+		uint32_t skins = 0; // skeleton_set_buffer calls issued.
+		uint64_t skin_bytes = 0; // Bytes handed to the rendering server.
+		uint32_t attachments = 0; // BoneAttachment3D nodes driven by this skeleton.
+		uint32_t pose_updated_observers = 0; // 1 when pose_updated has connections.
+		uint32_t skeleton_updated_observers = 0; // 1 when skeleton_updated has connections.
+		uint32_t target_writes = 0; // Node3D transforms written for aim/grip/targets.
+		uint32_t modifier_signals = 0; // modification_processed emissions.
+		bool fast_path = false; // Published through the native-attachment fast path.
+	};
+
+private:
 	struct BonePose {
 		int parent = -1, offset = 0, span = 0;
 		bool enabled = true, modified = false;
@@ -118,6 +133,9 @@ class SkeletonAnimationPose : public RefCounted {
 	LocalVector<SkinOutput> skins;
 	uint64_t skin_buffer_copies = 0;
 	void update_skin_buffers();
+	// Filled by Skeleton3D (friend) while publishing; reset by AnimationMixer before
+	// each publish round. Main thread only.
+	PublishStats publish_stats;
 	ObjectID skeleton_id;
 	uint64_t skeleton_version = 0;
 	bool owns_callback_mode = false;
@@ -189,6 +207,8 @@ public:
 	void interpolate_frame();
 	void release();
 	uint64_t get_skin_buffer_copies() const { return skin_buffer_copies; }
+	const PublishStats &get_publish_stats() const { return publish_stats; }
+	void reset_publish_stats() { publish_stats = PublishStats(); }
 	int get_bone_count() const { return bones.size(); }
 	Transform3D get_base_local_pose(int p_bone) const;
 	Transform3D get_base_global_pose(int p_bone) const;

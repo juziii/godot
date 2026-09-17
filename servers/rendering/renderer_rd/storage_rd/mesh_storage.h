@@ -32,7 +32,9 @@
 
 #include "core/templates/local_vector.h"
 #include "core/templates/rid_owner.h"
+#include "core/templates/safe_refcount.h"
 #include "core/templates/self_list.h"
+#include "core/variant/dictionary.h"
 #include "servers/rendering/renderer_compositor.h"
 #include "servers/rendering/renderer_rd/shaders/skeleton.glsl.gen.h"
 #include "servers/rendering/rendering_server_globals.h"
@@ -347,6 +349,21 @@ private:
 	_FORCE_INLINE_ void _skeleton_make_dirty(Skeleton *skeleton);
 
 	Skeleton *skeleton_dirty_list = nullptr;
+
+	// Skin buffer pipeline counters. Written on the render server thread, read via
+	// skeleton_get_buffer_statistics(); SafeNumeric keeps cross-thread reads torn-free.
+	struct SkinBufferStats {
+		SafeNumeric<uint64_t> apply_calls; // MeshStorage::skeleton_set_buffer executions.
+		SafeNumeric<uint64_t> apply_bytes; // Bytes memcpy'd into skeleton CPU storage.
+		SafeNumeric<uint64_t> upload_passes; // _update_dirty_skeletons() invocations.
+		SafeNumeric<uint64_t> dirty_skeletons; // Skeletons pulled from the dirty list.
+		SafeNumeric<uint64_t> upload_calls; // RD buffer_update calls for skeletons.
+		SafeNumeric<uint64_t> upload_bytes; // Bytes submitted through buffer_update.
+		SafeNumeric<uint64_t> skin_dispatches; // Skinning compute dispatches with a bound skeleton.
+		SafeNumeric<uint64_t> skin_vertices; // Vertices processed by those dispatches.
+		SafeNumeric<uint64_t> reshape_dispatches; // Blend-shape-only dispatches without a skeleton.
+		uint64_t read(SafeNumeric<uint64_t> &p_counter, bool p_reset);
+	} skin_buffer_stats;
 
 	enum AttributeLocation {
 		ATTRIBUTE_LOCATION_PREV_VERTEX = 12,
@@ -788,6 +805,7 @@ public:
 	virtual void skeleton_set_base_transform_2d(RID p_skeleton, const Transform2D &p_base_transform) override;
 	virtual int skeleton_get_bone_count(RID p_skeleton) const override;
 	virtual void skeleton_set_buffer(RID p_skeleton, const Vector<float> &p_buffer) override;
+	virtual Dictionary skeleton_get_buffer_statistics(bool p_reset = true) override;
 	virtual void skeleton_bone_set_transform(RID p_skeleton, int p_bone, const Transform3D &p_transform) override;
 	virtual Transform3D skeleton_bone_get_transform(RID p_skeleton, int p_bone) const override;
 	virtual void skeleton_bone_set_transform_2d(RID p_skeleton, int p_bone, const Transform2D &p_transform) override;
