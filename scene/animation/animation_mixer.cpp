@@ -1257,7 +1257,7 @@ void AnimationMixer::_blend_calc_total_weight() {
 void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 #ifndef _3D_DISABLED
 	const ObjectID batch_mixer_id = get_instance_id();
-	int batch_instance_index = -1;
+	int batch_instance_index = batch_event_pass ? -1 : batch_instance_offset - 1;
 	uint32_t batch_method_cursor = 0;
 	uint32_t batch_audio_cursor = 0;
 #endif

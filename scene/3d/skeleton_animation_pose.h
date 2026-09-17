@@ -139,6 +139,22 @@ class SkeletonAnimationPose : public RefCounted {
 	bool sample_requested = true, display_requested = true;
 	void store_sample();
 	Transform3D world, world_interpolated;
+	Ref<SkeletonAnimationPose> attachment_source;
+	int attachment_bone = -1;
+	Transform3D attachment_offset;
+	Transform3D attachment_scale_transform;
+	bool attachment_disable_scale = false;
+	struct Socket {
+		int bone = -1;
+		Vector3 offset;
+		Transform3D parent_from_skeleton, result;
+		Basis marker_basis;
+		bool enabled = false;
+		bool dirty = true, initialized = false;
+		Basis last_metric;
+		Transform3D last_bone;
+	};
+	Socket sockets[2];
 	String fallback_reason;
 	LocalVector<BonePose> bones;
 	LocalVector<int> order;
@@ -159,6 +175,11 @@ class SkeletonAnimationPose : public RefCounted {
 protected:
 	static void _bind_methods();
 public:
+	void configure_attachment(const Ref<SkeletonAnimationPose> &p_source, int p_bone, const Transform3D &p_scale_transform, const Transform3D &p_offset, bool p_disable_scale);
+	void set_socket_input(int p_index, int p_bone, const Vector3 &p_offset, const Transform3D &p_parent, const Basis &p_marker_basis, bool p_enabled);
+	Transform3D get_socket_transform(int p_index) const;
+	void evaluate_sockets();
+	bool matches_current_inputs() const;
 	bool capture(Skeleton3D *p_skeleton);
 	bool capture_current();
 	bool prepare_frame(bool p_sample, bool p_display, bool p_exact, double p_time, double p_interval);

@@ -370,6 +370,8 @@ protected:
 		Ref<SkeletonAnimationPose> pose;
 	};
 	LocalVector<BatchPoseBinding> batch_poses;
+	LocalVector<AnimationInstance> batch_initial_instances;
+	int batch_instance_offset = 0;
 	struct BatchMethodEvent {
         int instance = 0, track = 0;
         ObjectID target;
@@ -397,6 +399,8 @@ protected:
 	AnimationBatchProcessor *batch_owner = nullptr;
 	String batch_fallback_reason;
 	virtual bool _prepare_batch_graph();
+	virtual void _commit_batch_state() {}
+	virtual void _evaluate_batch_start() {}
 	bool _prepare_batch(double p_delta);
 	void _evaluate_batch();
 	void _publish_batch();

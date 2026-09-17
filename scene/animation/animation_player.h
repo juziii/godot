@@ -98,6 +98,8 @@ private:
 		bool started = false;
 		LocalVector<Blend> blend;
 	} playback;
+	Playback batch_playback;
+	Playback &_evaluation_playback() { return is_batch_evaluating() ? batch_playback : playback; }
 
 	struct BlendKey {
 		StringName from;
@@ -141,6 +143,11 @@ private:
 	bool playing = false;
 
 protected:
+#ifndef _3D_DISABLED
+	bool _prepare_batch_graph() override;
+	void _commit_batch_state() override;
+	void _evaluate_batch_start() override;
+#endif
 	bool _set(const StringName &p_name, const Variant &p_value);
 	bool _get(const StringName &p_name, Variant &r_ret) const;
 	virtual void _validate_property(PropertyInfo &p_property) const override;

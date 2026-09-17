@@ -58,6 +58,66 @@ bool SkeletonAnimationPose::fail(const String &p_reason) {
 	return false;
 }
 
+bool SkeletonAnimationPose::matches_current_inputs() const {
+	auto *skeleton = Object::cast_to<Skeleton3D>(ObjectDB::get_instance(skeleton_id));
+	return skeleton && skeleton_version == skeleton->get_version() &&
+		binding_version == skeleton->animation_pose_binding_version && input_version == skeleton->animation_pose_input_version;
+}
+
+void SkeletonAnimationPose::configure_attachment(const Ref<SkeletonAnimationPose> &p_source, int p_bone, const Transform3D &p_scale_transform, const Transform3D &p_offset, bool p_disable_scale) {
+	ERR_FAIL_COND(!Thread::is_main_thread());
+	attachment_source = p_source;
+	attachment_bone = p_bone;
+	attachment_offset = p_offset;
+	attachment_scale_transform = p_scale_transform;
+	attachment_disable_scale = p_disable_scale;
+}
+
+void SkeletonAnimationPose::set_socket_input(int p_index, int p_bone, const Vector3 &p_offset, const Transform3D &p_parent, const Basis &p_marker_basis, bool p_enabled) {
+	ERR_FAIL_COND(!Thread::is_main_thread());
+	ERR_FAIL_INDEX(p_index, 2);
+	Socket &socket = sockets[p_index];
+	socket.dirty |= socket.bone != p_bone || socket.offset != p_offset ||
+		!socket.parent_from_skeleton.is_equal_approx(p_parent) || socket.marker_basis != p_marker_basis || socket.enabled != p_enabled;
+	socket.bone = p_bone;
+	socket.offset = p_offset;
+	socket.parent_from_skeleton = p_parent;
+	socket.marker_basis = p_marker_basis;
+	socket.enabled = p_enabled;
+}
+
+Transform3D SkeletonAnimationPose::get_socket_transform(int p_index) const {
+	ERR_FAIL_INDEX_V(p_index, 2, Transform3D());
+	return sockets[p_index].result;
+}
+
+void SkeletonAnimationPose::evaluate_sockets() {
+	GodotProfileZone("Animation.Socket");
+	Transform3D socket_world = world;
+	if (attachment_source.is_valid() && attachment_bone >= 0 && attachment_bone < attachment_source->get_bone_count()) {
+		socket_world = attachment_source->world * attachment_source->get_global_pose(attachment_bone) * attachment_scale_transform;
+		if (attachment_disable_scale) { socket_world.basis.orthonormalize(); }
+		socket_world = socket_world * attachment_offset;
+	}
+	for (Socket &socket : sockets) {
+		if (!socket.enabled) { continue; }
+		const Transform3D bone_pose = socket.bone >= 0 && socket.bone < get_bone_count() ? get_global_pose(socket.bone) : Transform3D();
+		const Basis metric = socket_world.basis.transposed() * socket_world.basis;
+		if (socket.initialized && !socket.dirty && socket.last_metric.is_equal_approx(metric) && socket.last_bone.is_equal_approx(bone_pose)) { continue; }
+		socket.initialized = true;
+		socket.dirty = false;
+		socket.last_metric = metric;
+		socket.last_bone = bone_pose;
+		if (socket.bone < 0) {
+			socket.result = Transform3D(socket.marker_basis, socket.offset);
+		} else if (socket.bone < get_bone_count()) {
+			Transform3D bone_world = socket_world * get_global_pose(socket.bone);
+			Transform3D parent_world = socket_world * socket.parent_from_skeleton;
+			socket.result = parent_world.affine_inverse() * Transform3D(bone_world.basis.orthonormalized(), bone_world.xform(socket.offset));
+		}
+	}
+}
+
 bool SkeletonAnimationPose::capture(Skeleton3D *p_skeleton) {
 	ERR_FAIL_COND_V(!Thread::is_main_thread(), false);
 	if (!p_skeleton || !p_skeleton->is_inside_tree()) {
@@ -821,6 +881,9 @@ void SkeletonAnimationPose::set_ik_ground_input(bool p_left_hit, const Vector3 &
 }
 
 void SkeletonAnimationPose::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("configure_attachment", "source", "bone", "scale_transform", "offset", "disable_scale"), &SkeletonAnimationPose::configure_attachment);
+	ClassDB::bind_method(D_METHOD("set_socket_input", "index", "bone", "offset", "parent", "marker_basis", "enabled"), &SkeletonAnimationPose::set_socket_input);
+	ClassDB::bind_method(D_METHOD("get_socket_transform", "index"), &SkeletonAnimationPose::get_socket_transform);
 	ClassDB::bind_method(D_METHOD("set_aim_input", "hip_weight", "muzzle", "has_grip", "grip", "target", "up"), &SkeletonAnimationPose::set_aim_input);
 	ClassDB::bind_method(D_METHOD("set_ik_hand_input", "has_target", "target", "weights"), &SkeletonAnimationPose::set_ik_hand_input);
 	ClassDB::bind_method(D_METHOD("set_ik_ground_input", "left_hit", "left_position", "left_normal", "right_hit", "right_position", "right_normal"), &SkeletonAnimationPose::set_ik_ground_input);
