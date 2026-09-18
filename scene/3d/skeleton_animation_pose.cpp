@@ -75,7 +75,8 @@ void SkeletonAnimationPose::configure_attachment(const Ref<SkeletonAnimationPose
 
 void SkeletonAnimationPose::set_socket_input(int p_index, int p_bone, const Vector3 &p_offset, const Transform3D &p_parent, const Basis &p_marker_basis, bool p_enabled) {
 	ERR_FAIL_COND(!Thread::is_main_thread());
-	ERR_FAIL_INDEX(p_index, 2);
+	ERR_FAIL_COND(p_index < 0);
+	if (uint32_t(p_index) >= sockets.size()) { sockets.resize(p_index + 1); }
 	Socket &socket = sockets[p_index];
 	socket.dirty |= socket.bone != p_bone || socket.offset != p_offset ||
 		!socket.parent_from_skeleton.is_equal_approx(p_parent) || socket.marker_basis != p_marker_basis || socket.enabled != p_enabled;
@@ -87,7 +88,7 @@ void SkeletonAnimationPose::set_socket_input(int p_index, int p_bone, const Vect
 }
 
 Transform3D SkeletonAnimationPose::get_socket_transform(int p_index) const {
-	ERR_FAIL_INDEX_V(p_index, 2, Transform3D());
+	ERR_FAIL_INDEX_V(p_index, int(sockets.size()), Transform3D());
 	return sockets[p_index].result;
 }
 
@@ -145,10 +146,8 @@ bool SkeletonAnimationPose::capture(Skeleton3D *p_skeleton) {
 	if (copy_source.is_valid() && (copy_source_bone < 0 || copy_source_bone >= copy_source->get_bone_count() || copy_target_bone < 0 || copy_target_bone >= count)) {
 		return fail("Cross-skeleton pose binding has an invalid bone index.");
 	}
-	if (ik.configured) {
-		for (int bone : { ik.hips, ik.left_upper_arm, ik.left_lower_arm, ik.left_foot, ik.right_foot, ik.left_toes, ik.right_toes, ik.left_upper_leg, ik.left_lower_leg, ik.right_upper_leg, ik.right_lower_leg }) {
-			if (bone < 0 || bone >= count) { return fail("IK input contains an invalid bone index."); }
-		}
+	if (!pawn_pose.validate_ik_bones(count)) {
+		return fail("IK input contains an invalid bone index.");
 	}
 	if (int(bones.size()) != count) {
 		bones.resize(count);
@@ -202,14 +201,10 @@ bool SkeletonAnimationPose::capture(Skeleton3D *p_skeleton) {
 		Modifier m;
 		m.id = id;
 		m.influence = mod->get_influence();
-		if (id == aim.modifier_id) {
-			if (aim.aim < 0 || aim.hand < 0) {
-				continue;
-			}
-			for (int bone : { aim.aim, aim.hand, aim.hips, aim.chest, aim.upper_chest, aim.left_leg, aim.right_leg }) {
-				if (bone < 0 || bone >= count) {
-					return fail("Aim input contains an invalid bone index.");
-				}
+		if (pawn_pose.is_aim_modifier(id)) {
+			if (!pawn_pose.has_aim_bones()) { continue; }
+			if (!pawn_pose.validate_aim_bones(count)) {
+				return fail("Aim input contains an invalid bone index.");
 			}
 			m.kind = Modifier::AIM;
 		} else if (mod->get_script_instance()) {
@@ -383,7 +378,7 @@ bool SkeletonAnimationPose::prepare_frame(bool p_sample, bool p_display, bool p_
 	if (p_exact || !compatible || frame_time < sample_times[sample_index]) { sample_count = 0; }
 	evaluated = false;
 	generated_targets.clear();
-	aim_evaluated = false;
+	pawn_pose.reset_frame();
 	return !sample_requested || capture(skeleton);
 }
 
@@ -450,28 +445,6 @@ Transform3D SkeletonAnimationPose::get_base_local_pose(int p_bone) const {
 Transform3D SkeletonAnimationPose::get_base_global_pose(int p_bone) const {
 	ERR_FAIL_INDEX_V(p_bone, int(bones.size()), Transform3D());
 	return bones[p_bone].base_global;
-}
-
-void SkeletonAnimationPose::configure_aim(uint64_t p_modifier_id, const Dictionary &p_input) {
-	ERR_FAIL_COND(!Thread::is_main_thread());
-	aim.modifier_id = ObjectID(p_modifier_id);
-	aim.aim = p_input.get("aim_bone", -1);
-	aim.hand = p_input.get("hand_bone", -1);
-	aim.hips = p_input.get("hips_bone", -1);
-	aim.chest = p_input.get("chest_bone", -1);
-	aim.upper_chest = p_input.get("upper_chest_bone", -1);
-	aim.left_leg = p_input.get("left_leg_bone", -1);
-	aim.right_leg = p_input.get("right_leg_bone", -1);
-	aim.left_arm = p_input.get("left_arm_bone", -1);
-	aim.left_elbow = p_input.get("left_elbow_bone", -1);
-	aim.hip_weight = p_input.get("hip_yaw_weight", 0.0);
-	aim.hand_to_muzzle = p_input.get("hand_to_muzzle", Transform3D());
-	aim.has_grip = p_input.has("hand_to_grip");
-	aim.hand_to_grip = p_input.get("hand_to_grip", Transform3D());
-	aim.target = p_input.get("target_world", Vector3());
-	aim.up = p_input.get("up_world", Vector3(0, 1, 0));
-	aim.grip_target_id = ObjectID(uint64_t(p_input.get("grip_target_id", uint64_t(0))));
-	aim.elbow_pole_id = ObjectID(uint64_t(p_input.get("elbow_pole_id", uint64_t(0))));
 }
 
 void SkeletonAnimationPose::mark_dirty(int p_bone) {
@@ -627,90 +600,6 @@ void SkeletonAnimationPose::solve_copy(CopyInput &r_input) {
 	CopyTransformModifier3D::copy_pose(this, &s, s.apply_bone, destination, s.amount);
 }
 
-void SkeletonAnimationPose::rotate_global(int p_bone, const Quaternion &p_rotation) {
-	Transform3D pose = get_global_pose(p_bone);
-	pose.basis = Basis(p_rotation) * pose.basis;
-	set_bone_global_pose(p_bone, pose);
-}
-
-void SkeletonAnimationPose::solve_aim() {
-	aim_evaluated = true;
-	Vector3 target = world.affine_inverse().xform(aim.target);
-	Vector3 up = world.basis.inverse().xform(aim.up).normalized();
-	Transform3D left_leg = get_global_pose(aim.left_leg);
-	Transform3D right_leg = get_global_pose(aim.right_leg);
-	for (int iteration = 0; iteration < 4; iteration++) {
-		Transform3D muzzle = get_global_pose(aim.hand) * aim.hand_to_muzzle;
-		Vector3 desired = target - muzzle.origin;
-		if (desired.length_squared() < 0.000001f) {
-			break;
-		}
-		Vector3 barrel = muzzle.basis.get_column(2).normalized();
-		desired.normalize();
-		real_t yaw_angle = Math::atan2(up.dot(barrel.cross(desired)), barrel.dot(desired) - barrel.dot(up) * desired.dot(up));
-		Quaternion yaw(up, yaw_angle);
-		Vector3 pitch_axis = desired.cross(up).normalized();
-		Quaternion pitch(pitch_axis, yaw.xform(barrel).signed_angle_to(desired, pitch_axis));
-		pitch = (pitch * yaw).normalized() * yaw.inverse();
-		real_t weight = (1 - aim.hip_weight) / 3;
-		rotate_global(aim.hips, Quaternion(up, yaw_angle * aim.hip_weight));
-		rotate_global(aim.aim, Quaternion(up, yaw_angle * weight));
-		rotate_global(aim.chest, Quaternion(up, yaw_angle * weight));
-		rotate_global(aim.upper_chest, Quaternion(up, yaw_angle * weight));
-		rotate_global(aim.aim, pitch);
-	}
-	set_bone_global_pose(aim.left_leg, left_leg);
-	set_bone_global_pose(aim.right_leg, right_leg);
-	Transform3D hand = get_global_pose(aim.hand);
-	aim.muzzle = world * hand * aim.hand_to_muzzle;
-	aim.error_degrees = Math::rad_to_deg(aim.muzzle.basis.get_column(2).normalized().angle_to((aim.target - aim.muzzle.origin).normalized()));
-	if (!aim.has_grip) {
-		return;
-	}
-	aim.grip = hand * aim.hand_to_grip;
-	bool has_pole = aim.left_arm >= 0 && aim.left_elbow >= 0;
-	if (has_pole) {
-		Vector3 root = get_global_pose(aim.left_arm).origin;
-		Vector3 middle = get_global_pose(aim.left_elbow).origin;
-		Vector3 axis = aim.grip.origin - root;
-		if (axis.length_squared() < 0.000001f) {
-			aim.elbow_pole = middle + Vector3(0, 0, 1);
-		} else {
-			Vector3 projected = root + axis * ((middle - root).dot(axis) / axis.length_squared());
-			Vector3 bend = middle - projected;
-			if (bend.length_squared() < 0.000001f) {
-				bend = Vector3(0, 0, 1);
-			}
-			real_t distance = MAX((middle - root).length() + (aim.grip.origin - middle).length(), real_t(0.1));
-			aim.elbow_pole = middle + bend.normalized() * distance;
-		}
-	}
-	// Later modifiers consume the freshly corrected grip, matching PawnAimModifier.UpdateGripTarget.
-	for (auto &in : two_bone) {
-		if (in.target_id == aim.grip_target_id) {
-			in.target = aim.grip.origin;
-		}
-		if (has_pole && in.pole_id == aim.elbow_pole_id) {
-			in.pole = aim.elbow_pole;
-		}
-	}
-	for (auto &in : copies) {
-		if (in.target_id == aim.grip_target_id) {
-			in.target = aim.grip;
-		}
-	}
-}
-
-void SkeletonAnimationPose::generate_grip_target() {
-    if (!aim.has_grip || aim.hand < 0 || aim.hand >= int(bones.size())) { return; }
-    const Transform3D grip = get_global_pose(aim.hand) * aim.hand_to_grip;
-    set_target(aim.grip_target_id, grip);
-    if (aim.left_arm >= 0 && aim.left_elbow >= 0) {
-        const Vector3 pole = calculate_pole(get_global_pose(aim.left_arm).origin, get_global_pose(aim.left_elbow).origin, grip.origin, Vector3(0, 0, 1));
-        set_target(aim.elbow_pole_id, Transform3D(Basis(), pole), true);
-    }
-}
-
 void SkeletonAnimationPose::evaluate() {
 	if (!fallback_reason.is_empty()) {
 		return;
@@ -723,12 +612,11 @@ void SkeletonAnimationPose::evaluate() {
 		set_bone_global_pose(copy_target_bone, world.affine_inverse() * source_pose * rest_offset);
 	}
 	update_globals();
-	aim_evaluated = false;
+	pawn_pose.reset_frame();
 	generated_targets.clear();
 	{
 	GodotProfileZone("Animation.AimIK");
-	generate_ik_targets();
-	generate_grip_target();
+	pawn_pose.generate_targets();
 	for (auto &b : bones) {
 		b.base = b.local;
 		b.base_position = b.position;
@@ -755,7 +643,7 @@ void SkeletonAnimationPose::evaluate() {
 				}
 				break;
 			case Modifier::AIM:
-				solve_aim();
+				pawn_pose.solve_aim();
 				break;
 		}
 		if (m.influence < 1) {
@@ -813,18 +701,7 @@ bool SkeletonAnimationPose::publish() {
 				else { node->set_transform(target.transform); }
 			}
 		}
-		if (aim_evaluated && aim.has_grip) {
-			if (auto *target = Object::cast_to<Node3D>(ObjectDB::get_instance(aim.grip_target_id))) {
-				publish_stats.target_writes++;
-				target->set_transform(aim.grip);
-			}
-			if (aim.left_arm >= 0 && aim.left_elbow >= 0) {
-				if (auto *pole = Object::cast_to<Node3D>(ObjectDB::get_instance(aim.elbow_pole_id))) {
-					publish_stats.target_writes++;
-					pole->set_position(aim.elbow_pole);
-				}
-			}
-		}
+		publish_stats.target_writes += pawn_pose.publish_targets();
 	}
 	{ GodotProfileZone("Animation.PublishSkeleton");
 		auto *skeleton = Object::cast_to<Skeleton3D>(ObjectDB::get_instance(skeleton_id));
@@ -859,31 +736,6 @@ bool SkeletonAnimationPose::publish() {
 	return true;
 }
 
-void SkeletonAnimationPose::set_aim_input(real_t p_hip_weight, const Transform3D &p_muzzle, bool p_has_grip, const Transform3D &p_grip, const Vector3 &p_target, const Vector3 &p_up) {
-	ERR_FAIL_COND(!Thread::is_main_thread());
-	aim.hip_weight = p_hip_weight;
-	aim.hand_to_muzzle = p_muzzle;
-	aim.has_grip = p_has_grip;
-	aim.hand_to_grip = p_grip;
-	aim.target = p_target;
-	aim.up = p_up;
-}
-
-void SkeletonAnimationPose::set_ik_hand_input(bool p_has_target, const Transform3D &p_target, const Vector3 &p_weights) {
-	ERR_FAIL_COND(!Thread::is_main_thread());
-	ik.has_hand_target = p_has_target;
-	ik.hand_target_world = p_target;
-	ik.hand_weight = p_weights.x;
-	ik.left_weight = p_weights.y;
-	ik.right_weight = p_weights.z;
-}
-
-void SkeletonAnimationPose::set_ik_ground_input(bool p_left_hit, const Vector3 &p_left_position, const Vector3 &p_left_normal, bool p_right_hit, const Vector3 &p_right_position, const Vector3 &p_right_normal) {
-	ERR_FAIL_COND(!Thread::is_main_thread());
-	ik.left_ground = { p_left_hit, p_left_position, p_left_normal };
-	ik.right_ground = { p_right_hit, p_right_position, p_right_normal };
-}
-
 void SkeletonAnimationPose::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("configure_attachment", "source", "bone", "scale_transform", "offset", "disable_scale"), &SkeletonAnimationPose::configure_attachment);
 	ClassDB::bind_method(D_METHOD("set_socket_input", "index", "bone", "offset", "parent", "marker_basis", "enabled"), &SkeletonAnimationPose::set_socket_input);
@@ -913,64 +765,6 @@ void SkeletonAnimationPose::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_aim_error_degrees"), &SkeletonAnimationPose::get_aim_error_degrees);
 }
 
-void SkeletonAnimationPose::configure_ik(const Dictionary &p_input) {
-	ERR_FAIL_COND(!Thread::is_main_thread());
-	ik.configured = !p_input.is_empty();
-	if (!ik.configured) { return; }
-	generated_targets.reserve(7);
-	ik.has_hand_target = p_input.get("has_hand_target", false);
-	ik.hand_target_world = p_input.get("hand_target_world", Transform3D());
-	ik.hand_weight = p_input.get("left_hand_weight", 0.0);
-	ik.left_weight = p_input.get("left_foot_weight", 0.0);
-	ik.right_weight = p_input.get("right_foot_weight", 0.0);
-	ik.hips = p_input.get("hips_bone", -1);
-	ik.left_upper_arm = p_input.get("left_upper_arm_bone", -1);
-	ik.left_lower_arm = p_input.get("left_lower_arm_bone", -1);
-	ik.left_foot = p_input.get("left_foot_bone", -1);
-	ik.right_foot = p_input.get("right_foot_bone", -1);
-	ik.left_toes = p_input.get("left_toes_bone", -1);
-	ik.right_toes = p_input.get("right_toes_bone", -1);
-	ik.left_upper_leg = p_input.get("left_upper_leg_bone", -1);
-	ik.left_lower_leg = p_input.get("left_lower_leg_bone", -1);
-	ik.right_upper_leg = p_input.get("right_upper_leg_bone", -1);
-	ik.right_lower_leg = p_input.get("right_lower_leg_bone", -1);
-	ik.arm_rest_pole = p_input.get("left_arm_rest_pole", Vector3());
-	ik.left_rest_pole = p_input.get("left_leg_rest_pole", Vector3());
-	ik.right_rest_pole = p_input.get("right_leg_rest_pole", Vector3());
-	ik.left_length = p_input.get("left_leg_length", 0.0);
-	ik.right_length = p_input.get("right_leg_length", 0.0);
-	ik.reach_epsilon = p_input.get("leg_reach_epsilon", 0.0);
-	ik.maximum_slope = p_input.get("maximum_ground_slope_degrees", 0.0);
-	ik.sole_offset = p_input.get("sole_offset_cm", 0.0);
-	ik.pelvis_drop = p_input.get("maximum_pelvis_drop_cm", 0.0);
-	ik.pelvis_raise = p_input.get("maximum_pelvis_raise_cm", 0.0);
-	ik.left_ground.hit = p_input.get("left_ground_has_hit", false);
-	ik.right_ground.hit = p_input.get("right_ground_has_hit", false);
-	ik.left_ground.position = p_input.get("left_ground_position", Vector3());
-	ik.left_ground.normal = p_input.get("left_ground_normal", Vector3());
-	ik.right_ground.position = p_input.get("right_ground_position", Vector3());
-	ik.right_ground.normal = p_input.get("right_ground_normal", Vector3());
-	ik.hand_target = ObjectID(uint64_t(p_input.get("hand_target_id", uint64_t(0))));
-	ik.elbow_pole = ObjectID(uint64_t(p_input.get("elbow_pole_id", uint64_t(0))));
-	ik.pelvis_target = ObjectID(uint64_t(p_input.get("pelvis_target_id", uint64_t(0))));
-	ik.left_target = ObjectID(uint64_t(p_input.get("left_foot_target_id", uint64_t(0))));
-	ik.left_pole = ObjectID(uint64_t(p_input.get("left_knee_pole_id", uint64_t(0))));
-	ik.right_target = ObjectID(uint64_t(p_input.get("right_foot_target_id", uint64_t(0))));
-	ik.right_pole = ObjectID(uint64_t(p_input.get("right_knee_pole_id", uint64_t(0))));
-}
-
-Vector3 SkeletonAnimationPose::calculate_pole(const Vector3 &p_root, const Vector3 &p_middle, const Vector3 &p_target, const Vector3 &p_rest) {
-	Vector3 axis = p_target - p_root;
-	if (axis.length_squared() < 0.000001f) {
-		return p_middle + p_rest;
-	}
-	Vector3 projected = p_root + axis * ((p_middle - p_root).dot(axis) / axis.length_squared());
-	Vector3 bend = p_middle - projected;
-	if (bend.length_squared() < 0.000001f) { bend = p_rest; }
-	real_t distance = MAX((p_middle - p_root).length() + (p_target - p_middle).length(), real_t(0.1));
-	return p_middle + bend.normalized() * distance;
-}
-
 void SkeletonAnimationPose::set_target(ObjectID p_id, const Transform3D &p_target, bool p_position_only) {
 	if (!p_id.is_valid()) { return; }
 	GeneratedTarget generated;
@@ -990,70 +784,30 @@ void SkeletonAnimationPose::set_target(ObjectID p_id, const Transform3D &p_targe
 	}
 }
 
-bool SkeletonAnimationPose::create_foot_target(const Transform3D &p_pose, const GroundInput &p_ground, int p_toes, Transform3D &r_target) {
-	if (!p_ground.hit || p_ground.normal.length_squared() < 0.000001f) { return false; }
-	Vector3 normal = p_ground.normal.normalized();
-	real_t slope = Math::rad_to_deg(Math::acos(CLAMP(normal.dot(Vector3(0, 1, 0)), real_t(-1), real_t(1))));
-	if (slope > ik.maximum_slope) { return false; }
-	Transform3D foot_world = world * p_pose;
-	Quaternion alignment(Vector3(0, 1, 0), normal);
-	foot_world.basis = (Basis(alignment) * foot_world.basis.orthonormalized()).orthonormalized();
-	real_t ground_height = p_ground.position.y - (normal.x * (foot_world.origin.x - p_ground.position.x) + normal.z * (foot_world.origin.z - p_ground.position.z)) / normal.y;
-	real_t reference_height = (world * bones[p_toes].global_rest).origin.y;
-	foot_world.origin += Vector3(0, 1, 0) * (ground_height - reference_height + ik.sole_offset);
-	r_target = world.affine_inverse() * foot_world;
-	return true;
-}
-
-void SkeletonAnimationPose::generate_ik_targets() {
-	if (!ik.configured) { return; }
-	constexpr real_t blend_epsilon = 0.0001f;
-	if (ik.hand_weight > blend_epsilon && ik.has_hand_target) {
-		Transform3D target = world.affine_inverse() * ik.hand_target_world;
-		set_target(ik.hand_target, target);
-		Vector3 pole = calculate_pole(get_global_pose(ik.left_upper_arm).origin, get_global_pose(ik.left_lower_arm).origin, target.origin, ik.arm_rest_pole);
-		set_target(ik.elbow_pole, Transform3D(Basis(), pole), true);
-	}
-	if (MAX(ik.left_weight, ik.right_weight) <= blend_epsilon) { return; }
-	Transform3D left_pose = get_global_pose(ik.left_foot);
-	Transform3D right_pose = get_global_pose(ik.right_foot);
-	Transform3D left, right;
-	bool has_left = ik.left_weight > blend_epsilon && create_foot_target(left_pose, ik.left_ground, ik.left_toes, left);
-	bool has_right = ik.right_weight > blend_epsilon && create_foot_target(right_pose, ik.right_ground, ik.right_toes, right);
-	real_t left_offset = has_left ? (world.xform(left.origin) - world.xform(left_pose.origin)).y : 0;
-	real_t right_offset = has_right ? (world.xform(right.origin) - world.xform(right_pose.origin)).y : 0;
-	real_t pelvis_offset = has_left && has_right ? MIN(left_offset, right_offset) : has_left ? left_offset : right_offset;
-	pelvis_offset = CLAMP(pelvis_offset, -ik.pelvis_drop, ik.pelvis_raise);
-	Transform3D hips = get_global_pose(ik.hips);
-	Vector3 hips_origin = hips.origin;
-	hips.origin = world.affine_inverse().xform(world.xform(hips.origin) + Vector3(0, 1, 0) * pelvis_offset);
-	set_target(ik.pelvis_target, hips);
-	Vector3 translation = hips.origin - hips_origin;
-	auto clamp_reach = [](const Vector3 &root, const Vector3 &target, real_t length, real_t epsilon) {
-		Vector3 offset = target - root;
-		real_t reach = MAX(length - epsilon, real_t(0));
-		return offset.length_squared() <= reach * reach || offset.length_squared() < 0.000001f ? target : root + offset.normalized() * reach;
-	};
-	if (has_left) {
-		Vector3 root = get_global_pose(ik.left_upper_leg).origin + translation;
-		Vector3 middle = get_global_pose(ik.left_lower_leg).origin + translation;
-		left.origin = clamp_reach(root, left.origin, ik.left_length, ik.reach_epsilon);
-		set_target(ik.left_target, left);
-		set_target(ik.left_pole, Transform3D(Basis(), calculate_pole(root, middle, left_pose.origin + translation, ik.left_rest_pole)), true);
-	}
-	if (has_right) {
-		Vector3 root = get_global_pose(ik.right_upper_leg).origin + translation;
-		Vector3 middle = get_global_pose(ik.right_lower_leg).origin + translation;
-		right.origin = clamp_reach(root, right.origin, ik.right_length, ik.reach_epsilon);
-		set_target(ik.right_target, right);
-		set_target(ik.right_pole, Transform3D(Basis(), calculate_pole(root, middle, right_pose.origin + translation, ik.right_rest_pole)), true);
-	}
-}
-
 void SkeletonAnimationPose::configure_copy_source(const Ref<SkeletonAnimationPose> &p_source, int p_source_bone, int p_target_bone) {
 	ERR_FAIL_COND(!Thread::is_main_thread());
 	ERR_FAIL_COND(p_source.ptr() == this);
 	copy_source = p_source;
 	copy_source_bone = p_source_bone;
 	copy_target_bone = p_target_bone;
+}
+
+void SkeletonAnimationPose::configure_aim(uint64_t p_modifier_id, const Dictionary &p_input) {
+	pawn_pose.configure_aim(p_modifier_id, p_input);
+}
+
+void SkeletonAnimationPose::configure_ik(const Dictionary &p_input) {
+	pawn_pose.configure_ik(p_input);
+}
+
+void SkeletonAnimationPose::set_aim_input(real_t p_hip_weight, const Transform3D &p_muzzle, bool p_has_grip, const Transform3D &p_grip, const Vector3 &p_target, const Vector3 &p_up) {
+	pawn_pose.set_aim_input(p_hip_weight, p_muzzle, p_has_grip, p_grip, p_target, p_up);
+}
+
+void SkeletonAnimationPose::set_ik_hand_input(bool p_has_target, const Transform3D &p_target, const Vector3 &p_weights) {
+	pawn_pose.set_ik_hand_input(p_has_target, p_target, p_weights);
+}
+
+void SkeletonAnimationPose::set_ik_ground_input(bool p_left_hit, const Vector3 &p_left_position, const Vector3 &p_left_normal, bool p_right_hit, const Vector3 &p_right_position, const Vector3 &p_right_normal) {
+	pawn_pose.set_ik_ground_input(p_left_hit, p_left_position, p_left_normal, p_right_hit, p_right_position, p_right_normal);
 }

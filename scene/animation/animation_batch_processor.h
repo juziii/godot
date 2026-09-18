@@ -10,7 +10,11 @@
 #include "scene/3d/skeleton_animation_pose.h"
 #include <atomic>
 
-// A frame owns its inputs until complete_and_publish(). No worker accesses the scene tree.
+// Each registered live AnimationMixer/AnimationTree runtime is exclusive to its worker
+// until complete() joins it. complete() only waits; publish(handle) publishes one entry;
+// complete_and_publish() publishes the remaining entries for the frame. Publication and
+// scene-tree/event writes stay on the main thread. Global compatibility hooks finish or
+// fall back when shared Resources or target nodes create indirect dependencies.
 class AnimationBatchProcessor : public RefCounted {
     GDCLASS(AnimationBatchProcessor, RefCounted);
     friend class AnimationBatchMutationScope;
@@ -89,7 +93,9 @@ public:
     int64_t register_tree(AnimationTree *p_tree, const TypedArray<SkeletonAnimationPose> &p_poses, const PackedStringArray &p_safe_methods);
     int64_t register_player(AnimationPlayer *p_player, const TypedArray<SkeletonAnimationPose> &p_poses, const PackedStringArray &p_safe_methods, int64_t p_parent = 0);
     void unregister_animation(int64_t p_handle);
+    // Main-thread join only; the frame remains pending and unpublished.
     void complete();
+    // Main-thread publication for one registered entry; repeated calls are no-ops.
     void publish(int64_t p_handle);
     void discard(int64_t p_handle);
     void unregister_tree(int64_t p_handle);
@@ -97,13 +103,18 @@ public:
     bool queue_update_with_options(int64_t p_handle, double p_delta, bool p_sample, bool p_display, bool p_exact, double p_time, double p_interval);
     int64_t submit(int p_batch_size = 8, int p_max_workers = 8);
     void complete_batch(int64_t p_handle);
+    // Main-thread join and publication of every remaining entry in registration order.
     void complete_and_publish();
     void finish_all() { complete_and_publish(); }
+    // A live mixer mutation finishes its dependency: AnimationTree publishes first;
+    // AnimationPlayer is marked dirty for main-thread recomputation.
     void finish_for_dependency(AnimationMixer *p_mixer = nullptr);
     bool is_pending() const { return pending; }
     bool was_evaluated(int64_t p_handle) const;
     Dictionary get_statistics() const;
     String get_fallback_reason(int64_t p_handle) const;
+    // Global scene/resource/target mutation guard; shared dependencies require this
+    // protection instead of narrowing completion to one apparently affected entry.
     static void finish_pending_frames();
     ~AnimationBatchProcessor();
 };

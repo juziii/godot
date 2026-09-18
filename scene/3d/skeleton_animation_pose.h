@@ -34,12 +34,14 @@
 #include "core/templates/local_vector.h"
 #include "core/variant/dictionary.h"
 #include "scene/3d/copy_transform_modifier_3d.h"
+#include "scene/3d/pawn_animation_pose.h"
 #include "scene/3d/two_bone_ik_3d.h"
 
 // One owner prepares/publishes on the scene thread; exactly one worker evaluates.
 class SkeletonAnimationPose : public RefCounted {
 	GDCLASS(SkeletonAnimationPose, RefCounted);
 	friend class Skeleton3D;
+	friend class PawnAnimationPose;
 
 public:
 	// Observability of the last publish round, used to profile Animation.Publish.
@@ -85,43 +87,14 @@ private:
 		int setting_index = -1;
 		NodePath target_path;
 	};
-	struct AimInput {
-		ObjectID modifier_id, grip_target_id, elbow_pole_id;
-		int aim = -1, hand = -1, hips = -1, chest = -1, upper_chest = -1;
-		int left_leg = -1, right_leg = -1, left_arm = -1, left_elbow = -1;
-		real_t hip_weight = 0;
-		Transform3D hand_to_muzzle, hand_to_grip, muzzle, grip;
-		Vector3 target, up = Vector3(0,1,0), elbow_pole;
-		bool has_grip = false;
-		real_t error_degrees = 0;
-	} aim;
-	struct GroundInput {
-		bool hit = false;
-		Vector3 position, normal;
-	};
-	struct IKInput {
-		bool configured = false, has_hand_target = false;
-		Transform3D hand_target_world;
-		real_t hand_weight = 0, left_weight = 0, right_weight = 0;
-		int hips = -1, left_upper_arm = -1, left_lower_arm = -1;
-		int left_foot = -1, right_foot = -1, left_toes = -1, right_toes = -1;
-		int left_upper_leg = -1, left_lower_leg = -1, right_upper_leg = -1, right_lower_leg = -1;
-		Vector3 arm_rest_pole, left_rest_pole, right_rest_pole;
-		real_t left_length = 0, right_length = 0, reach_epsilon = 0;
-		real_t maximum_slope = 0, sole_offset = 0, pelvis_drop = 0, pelvis_raise = 0;
-		GroundInput left_ground, right_ground;
-		ObjectID hand_target, elbow_pole, pelvis_target, left_target, left_pole, right_target, right_pole;
-	} ik;
+	PawnAnimationPose pawn_pose{ *this };
 	struct GeneratedTarget {
 		ObjectID id;
 		Transform3D transform;
 		bool position_only = false;
 	};
 	LocalVector<GeneratedTarget> generated_targets;
-	void generate_ik_targets();
-	bool create_foot_target(const Transform3D &p_pose, const GroundInput &p_ground, int p_toes, Transform3D &r_target);
 	void set_target(ObjectID p_id, const Transform3D &p_target, bool p_position_only = false);
-	static Vector3 calculate_pole(const Vector3 &p_root, const Vector3 &p_middle, const Vector3 &p_target, const Vector3 &p_rest);
 	struct SkinOutput {
 		Ref<Skin> skin;
 		RID rendering_skeleton;
@@ -141,7 +114,7 @@ private:
 	bool owns_callback_mode = false;
 	Skeleton3D::ModifierCallbackModeProcess saved_callback_mode = Skeleton3D::MODIFIER_CALLBACK_MODE_PROCESS_IDLE;
 	real_t motion_scale = 1;
-	bool show_rest = false, evaluated = false, aim_evaluated = false;
+	bool show_rest = false, evaluated = false;
 	Ref<SkeletonAnimationPose> copy_source;
 	int copy_source_bone = -1, copy_target_bone = -1;
 	uint64_t binding_version = 0;
@@ -172,7 +145,7 @@ private:
 		Basis last_metric;
 		Transform3D last_bone;
 	};
-	Socket sockets[2];
+	LocalVector<Socket> sockets;
 	String fallback_reason;
 	LocalVector<BonePose> bones;
 	LocalVector<int> order;
@@ -186,9 +159,6 @@ private:
 	Transform3D chain_rest(int p_bone, int p_root, bool p_mutable);
 	void solve_two_bone(TwoBoneInput &r_input);
 	void solve_copy(CopyInput &r_input);
-	void solve_aim();
-	void generate_grip_target();
-	void rotate_global(int p_bone, const Quaternion &p_rotation);
 	bool fail(const String &p_reason);
 protected:
 	static void _bind_methods();
@@ -228,8 +198,8 @@ public:
 	ObjectID get_skeleton_id() const { return skeleton_id; }
 	uint64_t get_skeleton_instance_id() const { return uint64_t(skeleton_id); }
 	String get_fallback_reason() const { return fallback_reason; }
-	Transform3D get_aim_muzzle() const { return aim.muzzle; }
-	real_t get_aim_error_degrees() const { return aim.error_degrees; }
+	Transform3D get_aim_muzzle() const { return pawn_pose.get_aim_muzzle(); }
+	real_t get_aim_error_degrees() const { return pawn_pose.get_aim_error_degrees(); }
 	// Adapter consumed by the same templated solvers as Skeleton3D.
 	int get_bone_parent(int p_bone) const { return bones[p_bone].parent; }
 	Transform3D get_bone_pose(int p_bone) const { return get_local_pose(p_bone); }

@@ -412,6 +412,8 @@ protected:
 	bool _prepare_batch(double p_delta);
 	void _evaluate_batch();
 	void _publish_batch();
+	// Called after workers join when results are abandoned without publication.
+	void _discard_batch();
 	SkeletonAnimationPose *_get_batch_pose(ObjectID p_id) const;
 #endif
 
