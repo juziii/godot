@@ -394,7 +394,8 @@ void main() {
 	float cell_depth_size = abs(view_pos.z - get_depth_at_pos(fog_cell_size.z, pos.z + 1));
 	//compute directional lights
 
-	if (total_density > 0.00005) {
+	// Density is inverse world distance; a fixed cutoff suppresses light in large-unit scenes.
+	if (total_density > 0.0) {
 		for (uint i = 0; i < params.directional_light_count; i++) {
 			if (directional_lights.data[i].volumetric_fog_energy > 0.001) {
 				vec3 shadow_attenuation = vec3(1.0);
@@ -844,9 +845,12 @@ void main() {
 		//get distance from previous pos
 		float d = abs(prev_z - z);
 		//compute transmittance using beer's law
-		float transmittance = exp(-d * fog.a);
-
-		fog_accum.rgb += ((fog.rgb - fog.rgb * transmittance) / max(fog.a, 0.00001)) * fog_accum.a;
+		float optical_depth = d * fog.a;
+		float transmittance = exp(-optical_depth);
+		// Integrate by optical depth to preserve thin scattering independently of world units.
+		// The Taylor limit also avoids cancellation and division by zero in empty cells.
+		float integral = optical_depth < 0.001 ? d * (1.0 - optical_depth * 0.5) : (1.0 - transmittance) / fog.a;
+		fog_accum.rgb += fog.rgb * integral * fog_accum.a;
 		fog_accum.a *= transmittance;
 
 		prev_z = z;
