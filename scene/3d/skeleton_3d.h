@@ -247,6 +247,7 @@ public:
 
 	// Skeleton creation API
 	uint64_t get_version() const;
+	uint64_t get_animation_pose_binding_version() const;
 	int add_bone(const String &p_name);
 	int find_bone(const String &p_name) const;
 	String get_bone_name(int p_bone) const;

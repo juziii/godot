@@ -31,6 +31,7 @@
 #include "skeleton_3d.h"
 #include "scene/animation/animation_batch_processor.h"
 #include "bone_attachment_3d.h"
+#include "bone_rotation_offset_modifier_3d.h"
 #include "skeleton_animation_pose.h"
 #include "skeleton_3d.compat.inc"
 
@@ -599,6 +600,10 @@ float Skeleton3D::get_motion_scale() const {
 
 uint64_t Skeleton3D::get_version() const {
 	return version;
+}
+
+uint64_t Skeleton3D::get_animation_pose_binding_version() const {
+	return animation_pose_binding_version;
 }
 
 int Skeleton3D::add_bone(const String &p_name) {
@@ -1231,7 +1236,9 @@ void Skeleton3D::_process_modifiers() {
 		}
 #endif // TOOLS_ENABLED
 		real_t influence = mod->get_influence();
-		if (influence < 1.0) {
+		// Rotation offsets apply influence while resolving each local/global target.
+		// Match detached evaluation and avoid blending their result a second time.
+		if (influence < 1.0 && !Object::cast_to<BoneRotationOffsetModifier3D>(mod)) {
 			modifier_updating = true;
 			mod->process_modification(update_delta);
 			modifier_updating = false;

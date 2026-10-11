@@ -45,10 +45,14 @@ void PawnAnimationPose::configure_aim(uint64_t p_modifier_id, const Dictionary &
 	aim.right_leg = p_input.get("right_leg_bone", -1);
 	aim.left_arm = p_input.get("left_arm_bone", -1);
 	aim.left_elbow = p_input.get("left_elbow_bone", -1);
+	aim.left_hand = p_input.get("left_hand_bone", -1);
+	aim.arm_rest_pole = p_input.get("left_arm_rest_pole", Vector3(0, 0, 1));
 	aim.hip_weight = p_input.get("hip_yaw_weight", 0.0);
 	aim.hand_to_muzzle = p_input.get("hand_to_muzzle", Transform3D());
 	aim.has_grip = p_input.has("hand_to_grip");
 	aim.hand_to_grip = p_input.get("hand_to_grip", Transform3D());
+	aim.has_elbow_pole = p_input.has("hand_to_elbow_pole");
+	aim.hand_to_elbow_pole = p_input.get("hand_to_elbow_pole", Vector3());
 	aim.target = p_input.get("target_world", Vector3());
 	aim.up = p_input.get("up_world", Vector3(0, 1, 0));
 	aim.grip_target_id = ObjectID(uint64_t(p_input.get("grip_target_id", uint64_t(0))));
@@ -96,10 +100,13 @@ void PawnAnimationPose::solve_aim() {
 		return;
 	}
 	aim.grip = hand * aim.hand_to_grip;
-	bool has_pole = aim.left_arm >= 0 && aim.left_elbow >= 0;
-	if (has_pole) {
-		aim.elbow_pole = calculate_pole(pose.get_global_pose(aim.left_arm).origin,
-				pose.get_global_pose(aim.left_elbow).origin, aim.grip.origin, Vector3(0, 0, 1));
+	bool has_pole = aim.has_elbow_pole || (aim.left_arm >= 0 && aim.left_elbow >= 0);
+	if (aim.has_elbow_pole) {
+		aim.elbow_pole = hand.xform(aim.hand_to_elbow_pole);
+	} else if (has_pole) {
+		const Vector3 root = pose.get_global_pose(aim.left_arm).origin;
+		const Vector3 middle = pose.get_global_pose(aim.left_elbow).origin;
+		aim.elbow_pole = aim.left_hand >= 0 ? calculate_arm_pole(root, middle, pose.get_global_pose(aim.left_hand).origin, aim.grip.origin, aim.arm_rest_pole) : calculate_pole(root, middle, aim.grip.origin, aim.arm_rest_pole);
 	}
 	// Later modifiers consume the freshly corrected grip, matching PawnAimModifier.UpdateGripTarget.
 	for (auto &in : pose.two_bone) {
@@ -118,11 +125,18 @@ void PawnAnimationPose::solve_aim() {
 }
 
 void PawnAnimationPose::generate_grip_target() {
-	if (!aim.has_grip || aim.hand < 0 || aim.hand >= int(pose.bones.size())) { return; }
+	if (!aim.has_grip || aim.hand < 0 || aim.hand >= int(pose.bones.size())) {
+		return;
+	}
 	const Transform3D grip = pose.get_global_pose(aim.hand) * aim.hand_to_grip;
 	pose.set_target(aim.grip_target_id, grip);
-	if (aim.left_arm >= 0 && aim.left_elbow >= 0) {
-		const Vector3 pole = calculate_pole(pose.get_global_pose(aim.left_arm).origin, pose.get_global_pose(aim.left_elbow).origin, grip.origin, Vector3(0, 0, 1));
+	if (aim.has_elbow_pole) {
+		const Vector3 pole = pose.get_global_pose(aim.hand).xform(aim.hand_to_elbow_pole);
+		pose.set_target(aim.elbow_pole_id, Transform3D(Basis(), pole), true);
+	} else if (aim.left_arm >= 0 && aim.left_elbow >= 0) {
+		const Vector3 root = pose.get_global_pose(aim.left_arm).origin;
+		const Vector3 middle = pose.get_global_pose(aim.left_elbow).origin;
+		const Vector3 pole = aim.left_hand >= 0 ? calculate_arm_pole(root, middle, pose.get_global_pose(aim.left_hand).origin, grip.origin, aim.arm_rest_pole) : calculate_pole(root, middle, grip.origin, aim.arm_rest_pole);
 		pose.set_target(aim.elbow_pole_id, Transform3D(Basis(), pole), true);
 	}
 }
@@ -148,14 +162,22 @@ void PawnAnimationPose::set_ik_hand_input(bool p_has_target, const Transform3D &
 
 void PawnAnimationPose::set_ik_ground_input(bool p_left_hit, const Vector3 &p_left_position, const Vector3 &p_left_normal, bool p_right_hit, const Vector3 &p_right_position, const Vector3 &p_right_normal) {
 	ERR_FAIL_COND(!Thread::is_main_thread());
-	ik.left_ground = { p_left_hit, p_left_position, p_left_normal };
-	ik.right_ground = { p_right_hit, p_right_position, p_right_normal };
+	ik.left_ground = { p_left_hit, p_left_position, p_left_normal, p_left_normal };
+	ik.right_ground = { p_right_hit, p_right_position, p_right_normal, p_right_normal };
+}
+
+void PawnAnimationPose::set_ik_ground_motion_input(bool p_left_hit, const Vector3 &p_left_position, const Vector3 &p_left_normal, const Vector3 &p_left_smoothed_normal, bool p_right_hit, const Vector3 &p_right_position, const Vector3 &p_right_normal, const Vector3 &p_right_smoothed_normal) {
+	ERR_FAIL_COND(!Thread::is_main_thread());
+	ik.left_ground = { p_left_hit, p_left_position, p_left_normal, p_left_smoothed_normal };
+	ik.right_ground = { p_right_hit, p_right_position, p_right_normal, p_right_smoothed_normal };
 }
 
 void PawnAnimationPose::configure_ik(const Dictionary &p_input) {
 	ERR_FAIL_COND(!Thread::is_main_thread());
 	ik.configured = !p_input.is_empty();
-	if (!ik.configured) { return; }
+	if (!ik.configured) {
+		return;
+	}
 	pose.generated_targets.reserve(7);
 	ik.has_hand_target = p_input.get("has_hand_target", false);
 	ik.hand_target_world = p_input.get("hand_target_world", Transform3D());
@@ -165,6 +187,7 @@ void PawnAnimationPose::configure_ik(const Dictionary &p_input) {
 	ik.hips = p_input.get("hips_bone", -1);
 	ik.left_upper_arm = p_input.get("left_upper_arm_bone", -1);
 	ik.left_lower_arm = p_input.get("left_lower_arm_bone", -1);
+	ik.left_hand = p_input.get("left_hand_bone", -1);
 	ik.left_foot = p_input.get("left_foot_bone", -1);
 	ik.right_foot = p_input.get("right_foot_bone", -1);
 	ik.left_toes = p_input.get("left_toes_bone", -1);
@@ -181,14 +204,18 @@ void PawnAnimationPose::configure_ik(const Dictionary &p_input) {
 	ik.reach_epsilon = p_input.get("leg_reach_epsilon", 0.0);
 	ik.maximum_slope = p_input.get("maximum_ground_slope_degrees", 0.0);
 	ik.sole_offset = p_input.get("sole_offset_cm", 0.0);
+	ik.ground_motion_contact = p_input.get("ground_motion_contact", false);
+	ik.foot_source_stance_calibration = p_input.get("foot_source_stance_calibration_cm", 0.0);
 	ik.pelvis_drop = p_input.get("maximum_pelvis_drop_cm", 0.0);
 	ik.pelvis_raise = p_input.get("maximum_pelvis_raise_cm", 0.0);
 	ik.left_ground.hit = p_input.get("left_ground_has_hit", false);
 	ik.right_ground.hit = p_input.get("right_ground_has_hit", false);
 	ik.left_ground.position = p_input.get("left_ground_position", Vector3());
 	ik.left_ground.normal = p_input.get("left_ground_normal", Vector3());
+	ik.left_ground.smoothed_normal = p_input.get("left_ground_smoothed_normal", ik.left_ground.normal);
 	ik.right_ground.position = p_input.get("right_ground_position", Vector3());
 	ik.right_ground.normal = p_input.get("right_ground_normal", Vector3());
+	ik.right_ground.smoothed_normal = p_input.get("right_ground_smoothed_normal", ik.right_ground.normal);
 	ik.hand_target = ObjectID(uint64_t(p_input.get("hand_target_id", uint64_t(0))));
 	ik.elbow_pole = ObjectID(uint64_t(p_input.get("elbow_pole_id", uint64_t(0))));
 	ik.pelvis_target = ObjectID(uint64_t(p_input.get("pelvis_target_id", uint64_t(0))));
@@ -205,17 +232,65 @@ Vector3 PawnAnimationPose::calculate_pole(const Vector3 &p_root, const Vector3 &
 	}
 	Vector3 projected = p_root + axis * ((p_middle - p_root).dot(axis) / axis.length_squared());
 	Vector3 bend = p_middle - projected;
-	if (bend.length_squared() < 0.000001f) { bend = p_rest; }
+	if (bend.length_squared() < 0.000001f) {
+		bend = p_rest;
+	}
 	real_t distance = MAX((p_middle - p_root).length() + (p_target - p_middle).length(), real_t(0.1));
 	return p_middle + bend.normalized() * distance;
 }
 
+Vector3 PawnAnimationPose::calculate_arm_pole(const Vector3 &p_root, const Vector3 &p_middle, const Vector3 &p_hand, const Vector3 &p_target, const Vector3 &p_rest) {
+	const Vector3 source_axis = p_hand - p_root;
+	const Vector3 target_axis = p_target - p_root;
+	if (source_axis.length_squared() < 0.000001f || target_axis.length_squared() < 0.000001f) {
+		return calculate_pole(p_root, p_middle, p_target, p_rest);
+	}
+	// Preserve the authored bend plane before moving the hand. Projecting the
+	// elbow onto the new target axis can flip sides when the arm is nearly straight.
+	Vector3 bend = p_middle - p_root - source_axis * ((p_middle - p_root).dot(source_axis) / source_axis.length_squared());
+	if (bend.length_squared() < 0.000001f) {
+		bend = p_rest;
+	}
+	bend = Quaternion(source_axis.normalized(), target_axis.normalized()).xform(bend);
+	const real_t distance = MAX((p_middle - p_root).length() + (p_hand - p_middle).length(), real_t(0.1));
+	return p_root + target_axis * 0.5f + bend.normalized() * distance;
+}
+
 bool PawnAnimationPose::create_foot_target(const Transform3D &p_pose, const GroundInput &p_ground, int p_toes, Transform3D &r_target) {
-	if (!p_ground.hit || p_ground.normal.length_squared() < 0.000001f) { return false; }
-	Vector3 normal = p_ground.normal.normalized();
-	real_t slope = Math::rad_to_deg(Math::acos(CLAMP(normal.dot(Vector3(0, 1, 0)), real_t(-1), real_t(1))));
-	if (slope > ik.maximum_slope) { return false; }
+	if (!p_ground.hit || p_ground.normal.length_squared() < 0.000001f) {
+		return false;
+	}
+	Vector3 plane_normal = p_ground.normal.normalized();
+	const real_t minimum_up_dot = Math::cos(Math::deg_to_rad(ik.maximum_slope));
+	if (plane_normal.dot(Vector3(0, 1, 0)) + CMP_EPSILON < minimum_up_dot) {
+		return false;
+	}
 	Transform3D foot_world = pose.world * p_pose;
+	if (ik.ground_motion_contact) {
+		if (p_ground.smoothed_normal.length_squared() < 0.000001f) {
+			return false;
+		}
+		const Vector3 normal = p_ground.smoothed_normal.normalized();
+		const Basis source_foot_basis = foot_world.basis.orthonormalized();
+		const Basis target_foot_basis = (Basis(Quaternion(Vector3(0, 1, 0), normal)) * source_foot_basis).orthonormalized();
+		const Basis align_delta = target_foot_basis * source_foot_basis.inverse();
+		const Transform3D toe_pose = pose.get_global_pose(p_toes);
+		const Vector3 source_toe_offset_world = pose.world.basis.xform(toe_pose.origin - p_pose.origin);
+		const Vector3 rotated_toe_offset = align_delta.xform(source_toe_offset_world);
+		const Vector3 rotated_toe_position = foot_world.origin + rotated_toe_offset;
+		const real_t ground_height = p_ground.position.y -
+				(plane_normal.x * (rotated_toe_position.x - p_ground.position.x) + plane_normal.z * (rotated_toe_position.z - p_ground.position.z)) / plane_normal.y;
+		const Vector3 source_toe_world = pose.world.xform(toe_pose.origin);
+		const Vector3 rest_toe_world = pose.world.xform(pose.bones[p_toes].global_rest.origin);
+		const real_t source_swing_height = source_toe_world.y - rest_toe_world.y;
+		const real_t calibrated_swing_height = MAX(real_t(0), source_swing_height - ik.foot_source_stance_calibration);
+		const real_t target_toe_height = ground_height + ik.sole_offset + calibrated_swing_height;
+		foot_world.basis = target_foot_basis;
+		foot_world.origin.y = target_toe_height - rotated_toe_offset.y;
+		r_target = pose.world.affine_inverse() * foot_world;
+		return true;
+	}
+	Vector3 normal = plane_normal;
 	Quaternion alignment(Vector3(0, 1, 0), normal);
 	foot_world.basis = (Basis(alignment) * foot_world.basis.orthonormalized()).orthonormalized();
 	real_t ground_height = p_ground.position.y - (normal.x * (foot_world.origin.x - p_ground.position.x) + normal.z * (foot_world.origin.z - p_ground.position.z)) / normal.y;
@@ -226,15 +301,21 @@ bool PawnAnimationPose::create_foot_target(const Transform3D &p_pose, const Grou
 }
 
 void PawnAnimationPose::generate_ik_targets() {
-	if (!ik.configured) { return; }
+	if (!ik.configured) {
+		return;
+	}
 	constexpr real_t blend_epsilon = 0.0001f;
 	if (ik.hand_weight > blend_epsilon && ik.has_hand_target) {
 		Transform3D target = pose.world.affine_inverse() * ik.hand_target_world;
 		pose.set_target(ik.hand_target, target);
-		Vector3 pole = calculate_pole(pose.get_global_pose(ik.left_upper_arm).origin, pose.get_global_pose(ik.left_lower_arm).origin, target.origin, ik.arm_rest_pole);
+		const Vector3 root = pose.get_global_pose(ik.left_upper_arm).origin;
+		const Vector3 middle = pose.get_global_pose(ik.left_lower_arm).origin;
+		const Vector3 pole = aim.has_elbow_pole && aim.hand >= 0 ? pose.get_global_pose(aim.hand).xform(aim.hand_to_elbow_pole) : (ik.left_hand >= 0 ? calculate_arm_pole(root, middle, pose.get_global_pose(ik.left_hand).origin, target.origin, ik.arm_rest_pole) : calculate_pole(root, middle, target.origin, ik.arm_rest_pole));
 		pose.set_target(ik.elbow_pole, Transform3D(Basis(), pole), true);
 	}
-	if (MAX(ik.left_weight, ik.right_weight) <= blend_epsilon) { return; }
+	if (MAX(ik.left_weight, ik.right_weight) <= blend_epsilon) {
+		return;
+	}
 	Transform3D left_pose = pose.get_global_pose(ik.left_foot);
 	Transform3D right_pose = pose.get_global_pose(ik.right_foot);
 	Transform3D left, right;
@@ -242,7 +323,8 @@ void PawnAnimationPose::generate_ik_targets() {
 	bool has_right = ik.right_weight > blend_epsilon && create_foot_target(right_pose, ik.right_ground, ik.right_toes, right);
 	real_t left_offset = has_left ? (pose.world.xform(left.origin) - pose.world.xform(left_pose.origin)).y : 0;
 	real_t right_offset = has_right ? (pose.world.xform(right.origin) - pose.world.xform(right_pose.origin)).y : 0;
-	real_t pelvis_offset = has_left && has_right ? MIN(left_offset, right_offset) : has_left ? left_offset : right_offset;
+	real_t pelvis_offset = has_left && has_right ? MIN(left_offset, right_offset) : has_left ? left_offset
+																							 : right_offset;
 	pelvis_offset = CLAMP(pelvis_offset, -ik.pelvis_drop, ik.pelvis_raise);
 	Transform3D hips = pose.get_global_pose(ik.hips);
 	Vector3 hips_origin = hips.origin;
@@ -271,16 +353,25 @@ void PawnAnimationPose::generate_ik_targets() {
 }
 
 bool PawnAnimationPose::validate_ik_bones(int p_count) const {
-	if (!ik.configured) { return true; }
+	if (!ik.configured) {
+		return true;
+	}
+	if (ik.left_hand >= p_count) {
+		return false;
+	}
 	for (int bone : { ik.hips, ik.left_upper_arm, ik.left_lower_arm, ik.left_foot, ik.right_foot, ik.left_toes, ik.right_toes, ik.left_upper_leg, ik.left_lower_leg, ik.right_upper_leg, ik.right_lower_leg }) {
-		if (bone < 0 || bone >= p_count) { return false; }
+		if (bone < 0 || bone >= p_count) {
+			return false;
+		}
 	}
 	return true;
 }
 
 bool PawnAnimationPose::validate_aim_bones(int p_count) const {
 	for (int bone : { aim.aim, aim.hand, aim.hips, aim.chest, aim.upper_chest, aim.left_leg, aim.right_leg }) {
-		if (bone < 0 || bone >= p_count) { return false; }
+		if (bone < 0 || bone >= p_count) {
+			return false;
+		}
 	}
 	return true;
 }
@@ -297,7 +388,7 @@ uint32_t PawnAnimationPose::publish_targets() {
 			writes++;
 			target->set_transform(aim.grip);
 		}
-		if (aim.left_arm >= 0 && aim.left_elbow >= 0) {
+		if (aim.has_elbow_pole || (aim.left_arm >= 0 && aim.left_elbow >= 0)) {
 			if (auto *pole = Object::cast_to<Node3D>(ObjectDB::get_instance(aim.elbow_pole_id))) {
 				writes++;
 				pole->set_position(aim.elbow_pole);

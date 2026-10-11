@@ -426,6 +426,11 @@ const Ref<Animation> &AnimationMixer::get_animation_or_null(const StringName &p_
 	return ad->animation;
 }
 
+bool AnimationMixer::is_animation_transform_only(const Ref<Animation> &p_animation) const {
+	const bool *transform_only = animation_transform_only_cache.getptr(p_animation);
+	return transform_only && *transform_only;
+}
+
 bool AnimationMixer::has_animation(const StringName &p_name) const {
 	return animation_set.has(p_name);
 }
@@ -608,6 +613,7 @@ void AnimationMixer::_clear_caches(bool p_clear_track_cache) {
 	}
 	track_cache.clear();
 	animation_track_num_to_track_cache.clear();
+	animation_transform_only_cache.clear();
 	cache_valid = false;
 	emit_signal(SNAME("caches_cleared"));
 }
@@ -659,9 +665,14 @@ void AnimationMixer::_create_track_num_to_track_cache_for_animation(const Ref<An
 	}
 	LocalVector<TrackCache *> &track_num_to_track_cache = animation_track_num_to_track_cache.insert_new(p_animation, LocalVector<TrackCache *>())->value;
 	const LocalVector<Animation::Track *> &tracks = p_animation->get_tracks();
+	bool transform_only = !tracks.is_empty();
 
 	track_num_to_track_cache.resize(tracks.size());
 	for (uint32_t i = 0; i < tracks.size(); i++) {
+		const Animation::TrackType track_type = tracks[i]->type;
+		if (track_type != Animation::TYPE_POSITION_3D && track_type != Animation::TYPE_ROTATION_3D && track_type != Animation::TYPE_SCALE_3D) {
+			transform_only = false;
+		}
 		TrackCache **track_ptr = track_cache.getptr(tracks[i]->get_unique_id());
 		if (track_ptr == nullptr) {
 			track_num_to_track_cache[i] = nullptr;
@@ -669,6 +680,7 @@ void AnimationMixer::_create_track_num_to_track_cache_for_animation(const Ref<An
 			track_num_to_track_cache[i] = *track_ptr;
 		}
 	}
+	animation_transform_only_cache.insert(p_animation, transform_only);
 }
 
 bool AnimationMixer::_update_caches() {

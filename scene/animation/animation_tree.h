@@ -286,6 +286,13 @@ struct AnimationNodeInstance {
 
 	mutable LocalVector<AnimationNodeInstance *> connection_instances; // AnimationNodeInstance* | nullptr
 	mutable LocalVector<real_t> track_weights;
+	// Exact numeric zero state of track_weights. Unlike `blended`, this does not use an epsilon.
+	mutable bool all_track_weights_zero = true;
+	// Reused by blend spaces to retain temporal weights without sharing state through their resources.
+	mutable LocalVector<float> blend_space_weights;
+	mutable LocalVector<float> blend_space_target_weights;
+	void interpolate_blend_space_weights(LocalVector<float> &r_weights, float p_speed, double p_delta, bool p_seek);
+	static double resolve_blend_space_cycle_duration(const LocalVector<float> &p_weights, const LocalVector<double> &p_lengths, double p_override, double &r_effective_duration);
 	mutable bool blended = false;
 	mutable LocalVector<int> filtered_track_indices_cache;
 	mutable uint32_t filters_version = 0;
@@ -488,6 +495,9 @@ private:
 	mutable bool validation_dirty = true;
 
 	void _update_properties() const;
+	bool _is_parameter_property_writable(const Pair<Variant, bool> &p_property) const;
+	bool _can_assign_parameter_property(const Pair<Variant, bool> &p_property, const Variant &p_value) const;
+	void _assign_parameter_property(Pair<Variant, bool> &p_property, const Variant &p_value);
 #ifndef _3D_DISABLED
 	bool batch_graph_checked = false;
 	String batch_graph_reason;
@@ -566,6 +576,7 @@ public:
 
 	void set_root_animation_node(const Ref<AnimationRootNode> &p_animation_node);
 	Ref<AnimationRootNode> get_root_animation_node() const;
+	bool set_parameter_group(const TypedArray<StringName> &p_parameter_names, const Variant &p_value);
 
 	void set_advance_expression_base_node(const NodePath &p_path);
 	NodePath get_advance_expression_base_node() const;

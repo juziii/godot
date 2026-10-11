@@ -8,6 +8,8 @@
 		[AnimationNodeBlendSpace2D] represents a virtual 2D space on which [AnimationRootNode]s are placed. Outputs the linear blend of the three adjacent animations using a [Vector2] weight. Adjacent in this context means the three [AnimationRootNode]s making up the triangle that contains the current value.
 		You can add vertices to the blend space with [method add_blend_point] and automatically triangulate it by setting [member auto_triangles] to [code]true[/code]. Otherwise, use [method add_triangle] and [method remove_triangle] to triangulate the blend space by hand.
 
+		Each blend space has per-[AnimationTree]-instance runtime parameters [code]cycle_duration_override[/code] and [code]effective_cycle_duration[/code]. The override defaults to [code]0[/code], which uses the space's natural cycle duration. A positive override rescales cyclic playback to the shared duration for that evaluation. The read-only effective duration reports the duration computed from the current sample weights; it is unaffected by the override.
+
 		Optionally, signals can be used by setting an [AnimationNodeObserverBlendSpace] through [AnimationTree].
 		[codeblocks]
 		[gdscript]
@@ -140,6 +142,15 @@
 				Updates the position of the point at index [param point] in the blend space.
 			</description>
 		</method>
+		<method name="get_sample_weight_interpolation_speed" qualifiers="const">
+			<return type="float" />
+			<description>Returns the maximum change in each sample weight per second.</description>
+		</method>
+		<method name="set_sample_weight_interpolation_speed">
+			<return type="void" />
+			<param index="0" name="speed" type="float" />
+			<description>Sets the maximum change in each sample weight per second. A value of [code]0[/code] disables smoothing.</description>
+		</method>
 	</methods>
 	<members>
 		<member name="auto_triangles" type="bool" setter="set_auto_triangles" getter="get_auto_triangles" default="true">
@@ -150,6 +161,9 @@
 		</member>
 		<member name="cyclic_length" type="float" setter="set_cyclic_length" getter="get_cyclic_length" default="0.0">
 			The cycle length in seconds used by [constant SYNC_MODE_CYCLIC_CONSTANT]. All animations are time-scaled so they complete one full cycle in this duration. Must be greater than [code]0[/code] for cyclic sync to take effect.
+		</member>
+		<member name="sample_weight_interpolation_speed" type="float" setter="set_sample_weight_interpolation_speed" getter="get_sample_weight_interpolation_speed" default="0.0">
+			The maximum change in each sample weight per second. A value of [code]0[/code] disables smoothing.
 		</member>
 		<member name="max_space" type="Vector2" setter="set_max_space" getter="get_max_space" default="Vector2(1, 1)">
 			The blend space's X and Y axes' upper limit for the points' position. See [method add_blend_point].

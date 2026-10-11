@@ -33,6 +33,7 @@
 #include "core/object/ref_counted.h"
 #include "core/templates/local_vector.h"
 #include "core/variant/dictionary.h"
+#include "scene/3d/bone_rotation_offset_modifier_3d.h"
 #include "scene/3d/copy_transform_modifier_3d.h"
 #include "scene/3d/pawn_animation_pose.h"
 #include "scene/3d/two_bone_ik_3d.h"
@@ -66,10 +67,16 @@ private:
 		Transform3D rest, global_rest, local, global, base, base_global, before_modifier;
 	};
 	struct Modifier {
-		enum Kind { TWO_BONE, COPY, AIM } kind;
+		enum Kind { TWO_BONE,
+			COPY,
+			ROTATION_OFFSET,
+			AIM } kind;
 		ObjectID id;
 		real_t influence = 1;
 		int begin = 0, count = 0;
+		Quaternion rotation_offset;
+		BoneRotationOffsetModifier3D::RotationSpace rotation_space = BoneRotationOffsetModifier3D::ROTATION_SPACE_LOCAL;
+		bool use_initial_global_pose = false;
 	};
 	struct TwoBoneInput {
 		TwoBoneIK3D::TwoBoneIK3DSetting settings;
@@ -86,6 +93,12 @@ private:
 		ObjectID target_id, owner_id;
 		int setting_index = -1;
 		NodePath target_path;
+	};
+	struct RotationOffsetInput {
+		int bone = -1;
+		int depth = 0;
+		Quaternion rotation;
+		float weight = 1.0f;
 	};
 	PawnAnimationPose pawn_pose{ *this };
 	struct GeneratedTarget {
@@ -153,6 +166,8 @@ private:
 	LocalVector<Modifier> modifiers;
 	LocalVector<TwoBoneInput> two_bone;
 	LocalVector<CopyInput> copies;
+	LocalVector<RotationOffsetInput> rotation_offsets;
+	LocalVector<Quaternion> rotation_offset_initial_global_rotations;
 	LocalVector<int> scratch_path;
 	void mark_dirty(int p_bone);
 	void update_globals();
@@ -188,6 +203,7 @@ public:
 	void set_aim_input(real_t p_hip_weight, const Transform3D &p_muzzle, bool p_has_grip, const Transform3D &p_grip, const Vector3 &p_target, const Vector3 &p_up);
 	void set_ik_hand_input(bool p_has_target, const Transform3D &p_target, const Vector3 &p_weights);
 	void set_ik_ground_input(bool p_left_hit, const Vector3 &p_left_position, const Vector3 &p_left_normal, bool p_right_hit, const Vector3 &p_right_position, const Vector3 &p_right_normal);
+	void set_ik_ground_motion_input(bool p_left_hit, const Vector3 &p_left_position, const Vector3 &p_left_normal, const Vector3 &p_left_smoothed_normal, bool p_right_hit, const Vector3 &p_right_position, const Vector3 &p_right_normal, const Vector3 &p_right_smoothed_normal);
 	void configure_copy_source(const Ref<SkeletonAnimationPose> &p_source, int p_source_bone, int p_target_bone);
 	void set_bone_components(int p_bone, const Vector3 &p_position, const Quaternion &p_rotation, const Vector3 &p_scale, int p_mask);
 	void evaluate();
