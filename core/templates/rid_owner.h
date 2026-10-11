@@ -378,7 +378,7 @@ public:
 		}
 		for (size_t i = 0; i < max_alloc; i++) {
 			uint64_t validator = chunks[i / elements_in_chunk][i % elements_in_chunk].validator;
-			if (validator != 0xFFFFFFFF) {
+			if (!(validator & 0x80000000)) {
 				owned.push_back(_make_from_id((validator << 32) | i));
 			}
 		}
@@ -388,15 +388,15 @@ public:
 		return owned;
 	}
 
-	//used for fast iteration in the elements or RIDs
-	void fill_owned_buffer(RID *p_rid_buffer) const {
+	// Writes initialized RIDs to the buffer and returns the number of entries written.
+	uint32_t fill_owned_buffer(RID *p_rid_buffer) const {
 		if constexpr (THREAD_SAFE) {
 			mutex.lock();
 		}
 		uint32_t idx = 0;
 		for (size_t i = 0; i < max_alloc; i++) {
 			uint64_t validator = chunks[i / elements_in_chunk][i % elements_in_chunk].validator;
-			if (validator != 0xFFFFFFFF) {
+			if (!(validator & 0x80000000)) {
 				p_rid_buffer[idx] = _make_from_id((validator << 32) | i);
 				idx++;
 			}
@@ -405,6 +405,7 @@ public:
 		if constexpr (THREAD_SAFE) {
 			mutex.unlock();
 		}
+		return idx;
 	}
 
 	void set_description(const char *p_description) {
@@ -501,8 +502,8 @@ public:
 		return alloc.get_owned_list();
 	}
 
-	void fill_owned_buffer(RID *p_rid_buffer) const {
-		alloc.fill_owned_buffer(p_rid_buffer);
+	_FORCE_INLINE_ uint32_t fill_owned_buffer(RID *p_rid_buffer) const {
+		return alloc.fill_owned_buffer(p_rid_buffer);
 	}
 
 	void set_description(const char *p_description) {
@@ -556,8 +557,8 @@ public:
 	_FORCE_INLINE_ LocalVector<RID> get_owned_list() const {
 		return alloc.get_owned_list();
 	}
-	void fill_owned_buffer(RID *p_rid_buffer) const {
-		alloc.fill_owned_buffer(p_rid_buffer);
+	_FORCE_INLINE_ uint32_t fill_owned_buffer(RID *p_rid_buffer) const {
+		return alloc.fill_owned_buffer(p_rid_buffer);
 	}
 
 	void set_description(const char *p_description) {
