@@ -1632,7 +1632,7 @@ RID RendererViewport::viewport_find_from_screen_attachment(DisplayServerEnums::W
 	RID *rids = nullptr;
 	uint32_t rid_count = viewport_owner.get_rid_count();
 	rids = (RID *)alloca(sizeof(RID) * rid_count);
-	viewport_owner.fill_owned_buffer(rids);
+	rid_count = viewport_owner.fill_owned_buffer(rids);
 	for (uint32_t i = 0; i < rid_count; i++) {
 		Viewport *viewport = viewport_owner.get_or_null(rids[i]);
 		if (viewport->viewport_to_screen == p_id) {
