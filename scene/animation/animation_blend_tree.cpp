@@ -298,7 +298,9 @@ AnimationNode::NodeTimeInfo AnimationNodeAnimation::_process(ProcessState &p_pro
 		}
 		pi.weight = 1.0;
 		pi.looped_flag = looped_flag;
-		blend_animation(p_process_state, p_instance, animation, pi);
+		if (!AnimationMixer::should_skip_unblended_animation(p_instance.is_blended(), p_process_state.tree->is_animation_transform_only(anim))) {
+			blend_animation(p_process_state, p_instance, animation, pi);
+		}
 
 		p_instance.set_parameter_backward(cur_backward, p_process_state.is_testing);
 	}

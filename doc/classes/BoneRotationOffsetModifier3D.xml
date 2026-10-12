@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="BoneRotationOffsetModifier3D" inherits="SkeletonModifier3D" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+	<brief_description>
+		Applies a weighted rotation offset to a sequence of bones.
+	</brief_description>
+	<description>
+		Applies a weighted rotation offset to each named bone. When [member rotation_offsets] is empty, [member rotation_offset] is used for every bone. Otherwise, each entry in [member rotation_offsets] corresponds to the bone at the same index in [member bone_names]. The rotation is blended from identity by the corresponding value in [member rotation_weights] and the modifier's [member SkeletonModifier3D.influence]. A missing weight defaults to [code]1.0[/code].
+		[member rotation_space] determines whether the legacy sequential offset is applied in each bone's local space or in skeleton space. When [member use_initial_global_pose] is enabled, each per-bone offset is applied to the global rotation captured at the start of this modifier, in parent-before-child order. This prevents a parent offset from being accumulated again into a child's target. Local translations and scales are preserved.
+		When packed blend samples are set, the effective per-bone rotation offset is slerped between the corresponding entries using [member rotation_offset_blend_weight]. Setting [member rotation_offsets], [member rotation_offset], or calling [method clear_rotation_offsets] exits packed blend-sample mode.
+	</description>
+	<tutorials />
+	<methods>
+		<method name="get_bone_names" qualifiers="const">
+			<return type="PackedStringArray" />
+			<description>Returns the bone names that receive the rotation offset.</description>
+		</method>
+		<method name="get_bone_rotation_offset" qualifiers="const">
+			<return type="Quaternion" />
+			<param index="0" name="index" type="int" />
+			<description>Returns the per-bone offset at [param index], or the shared [member rotation_offset] when no per-bone value is set.</description>
+		</method>
+		<method name="get_rotation_offset" qualifiers="const">
+			<return type="Quaternion" />
+			<description>Returns the rotation offset.</description>
+		</method>
+		<method name="get_rotation_offsets" qualifiers="const">
+			<return type="Array[Quaternion]" />
+			<description>Returns the optional per-bone rotation offsets.</description>
+		</method>
+		<method name="get_rotation_space" qualifiers="const">
+			<return type="int" enum="BoneRotationOffsetModifier3D.RotationSpace" />
+			<description>Returns the space in which the rotation offset is applied.</description>
+		</method>
+		<method name="get_rotation_weights" qualifiers="const">
+			<return type="PackedFloat32Array" />
+			<description>Returns the per-bone rotation weights.</description>
+		</method>
+		<method name="is_using_initial_global_pose" qualifiers="const">
+			<return type="bool" />
+			<description>Returns whether per-bone offsets use the global rotations captured at the start of this modifier.</description>
+		</method>
+		<method name="clear_rotation_offsets">
+			<return type="void" />
+			<description>Clears per-bone offsets so the shared offset is used.</description>
+		</method>
+		<method name="set_bone_names">
+			<return type="void" />
+			<param index="0" name="bone_names" type="PackedStringArray" />
+			<description>Sets the bone names that receive the rotation offset.</description>
+		</method>
+		<method name="set_bone_rotation_offset">
+			<return type="void" />
+			<param index="0" name="index" type="int" />
+			<param index="1" name="rotation" type="Quaternion" />
+			<description>Sets the per-bone offset at [param index].</description>
+		</method>
+		<method name="set_rotation_offset">
+			<return type="void" />
+			<param index="0" name="rotation_offset" type="Quaternion" />
+			<description>Sets the rotation offset.</description>
+		</method>
+		<method name="set_rotation_offsets">
+			<return type="void" />
+			<param index="0" name="rotation_offsets" type="Array[Quaternion]" />
+			<description>Sets the optional per-bone rotation offsets.</description>
+		</method>
+		<method name="set_rotation_offsets_packed">
+			<return type="void" />
+			<param index="0" name="rotation_offsets" type="PackedVector4Array" />
+			<description>Sets the optional per-bone rotation offsets from packed quaternion components in x, y, z, w order. Non-finite and zero-length entries become identity rotations.</description>
+		</method>
+		<method name="set_rotation_offset_blend_samples_packed">
+			<return type="bool" />
+			<param index="0" name="from" type="PackedVector4Array" />
+			<param index="1" name="to" type="PackedVector4Array" />
+			<description>Sets two packed per-bone quaternion samples for interpolation. Both arrays must have the same size; a mismatch returns [code]false[/code] and leaves the current values unchanged. Entries are normalized once when set, with non-finite and zero-length entries replaced by identity.</description>
+		</method>
+		<method name="set_rotation_offset_blend_weight">
+			<return type="void" />
+			<param index="0" name="weight" type="float" />
+			<description>Sets the interpolation weight between the packed samples. The value is clamped to [code]0.0[/code] to [code]1.0[/code].</description>
+		</method>
+		<method name="get_rotation_offset_blend_weight" qualifiers="const">
+			<return type="float" />
+			<description>Returns the interpolation weight between the packed samples.</description>
+		</method>
+		<method name="set_rotation_space">
+			<return type="void" />
+			<param index="0" name="rotation_space" type="int" enum="BoneRotationOffsetModifier3D.RotationSpace" />
+			<description>Sets the space in which the rotation offset is applied.</description>
+		</method>
+		<method name="set_rotation_weights">
+			<return type="void" />
+			<param index="0" name="rotation_weights" type="PackedFloat32Array" />
+			<description>Sets the per-bone rotation weights.</description>
+		</method>
+		<method name="set_use_initial_global_pose">
+			<return type="void" />
+			<param index="0" name="enabled" type="bool" />
+			<description>Sets whether per-bone offsets use the global rotations captured at the start of this modifier.</description>
+		</method>
+	</methods>
+	<members>
+		<member name="bone_names" type="PackedStringArray" setter="set_bone_names" getter="get_bone_names" default="PackedStringArray()">
+			Names of the bones that receive the rotation offset, processed in array order.
+		</member>
+		<member name="rotation_offset" type="Quaternion" setter="set_rotation_offset" getter="get_rotation_offset" default="Quaternion(0, 0, 0, 1)">
+			Shared rotation offset used when [member rotation_offsets] is empty or lacks the bone's index.
+		</member>
+		<member name="rotation_offsets" type="Array[Quaternion]" setter="set_rotation_offsets" getter="get_rotation_offsets" default="[]">
+			Optional offset for each bone in [member bone_names] order.
+		</member>
+		<member name="rotation_offset_blend_weight" type="float" setter="set_rotation_offset_blend_weight" getter="get_rotation_offset_blend_weight" default="0.0">
+			Interpolation weight between the two packed blend samples.
+		</member>
+		<member name="rotation_space" type="int" setter="set_rotation_space" getter="get_rotation_space" enum="BoneRotationOffsetModifier3D.RotationSpace" default="0">
+			Space in which the rotation offset is applied.
+		</member>
+		<member name="rotation_weights" type="PackedFloat32Array" setter="set_rotation_weights" getter="get_rotation_weights" default="PackedFloat32Array()">
+			Per-bone rotation weights. Entries outside [code]0.0[/code] to [code]1.0[/code] are clamped.
+		</member>
+		<member name="use_initial_global_pose" type="bool" setter="set_use_initial_global_pose" getter="is_using_initial_global_pose" default="false">
+			Applies per-bone offsets to global rotations captured before this modifier runs, in parent-before-child order.
+		</member>
+	</members>
+	<constants>
+		<constant name="ROTATION_SPACE_LOCAL" value="0" enum="RotationSpace">
+			Apply the offset in local bone space.
+		</constant>
+		<constant name="ROTATION_SPACE_SKELETON" value="1" enum="RotationSpace">
+			Apply the offset in skeleton space.
+		</constant>
+	</constants>
+</class>

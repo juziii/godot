@@ -12,6 +12,14 @@
 		<link title="Third Person Shooter (TPS) Demo">https://godotengine.org/asset-library/asset/2710</link>
 	</tutorials>
 	<methods>
+		<method name="set_parameter_group">
+			<return type="bool" />
+			<param index="0" name="parameter_names" type="Array[StringName]" />
+			<param index="1" name="value" type="Variant" />
+			<description>
+				Sets [param value] on every listed animation parameter property path. Each path uses the same format as an [AnimationTree] parameter property, such as [code]parameters/BlendSpace/blend_position[/code]. All paths and value types are checked before any value is changed. Integer-to-float and float-to-integer conversions follow [method Object.set]. Returns [code]false[/code] if a path does not exist, is read-only, or cannot accept [param value]. This method must be called from the main thread.
+			</description>
+		</method>
 		<method name="get_process_callback" qualifiers="const" deprecated="Use [member AnimationMixer.callback_mode_process] instead.">
 			<return type="int" enum="AnimationTree.AnimationProcessCallback" />
 			<description>
