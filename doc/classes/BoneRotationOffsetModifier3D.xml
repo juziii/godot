@@ -8,7 +8,8 @@
 		[member rotation_space] determines whether the legacy sequential offset is applied in each bone's local space or in skeleton space. When [member use_initial_global_pose] is enabled, each per-bone offset is applied to the global rotation captured at the start of this modifier, in parent-before-child order. This prevents a parent offset from being accumulated again into a child's target. Local translations and scales are preserved.
 		When packed blend samples are set, the effective per-bone rotation offset is slerped between the corresponding entries using [member rotation_offset_blend_weight]. Setting [member rotation_offsets], [member rotation_offset], or calling [method clear_rotation_offsets] exits packed blend-sample mode.
 	</description>
-	<tutorials />
+	<tutorials>
+	</tutorials>
 	<methods>
 		<method name="get_bone_names" qualifiers="const">
 			<return type="PackedStringArray" />
