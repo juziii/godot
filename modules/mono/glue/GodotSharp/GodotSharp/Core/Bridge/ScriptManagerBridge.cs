@@ -487,7 +487,19 @@ namespace Godot.Bridge
                 {
                     // Use existing
                     NativeFuncs.godotsharp_ref_new_from_ref_counted_ptr(out *outScript, scriptPtr);
-                    return;
+                    if (outScript->Reference != IntPtr.Zero)
+                        return;
+
+                    // The last reference may have been released before the destructor can remove the cached pointer.
+                    _scriptTypeBiMap.ReadWriteLock.EnterWriteLock();
+                    try
+                    {
+                        _scriptTypeBiMap.Remove(scriptPtr);
+                    }
+                    finally
+                    {
+                        _scriptTypeBiMap.ReadWriteLock.ExitWriteLock();
+                    }
                 }
 
                 // This path is slower, but it's only executed for the first instantiation of the type
@@ -513,8 +525,22 @@ namespace Godot.Bridge
                     {
                         // Use existing
                         NativeFuncs.godotsharp_ref_new_from_ref_counted_ptr(out *outScript, scriptPtr);
-                        scriptPath = null;
-                        return false;
+                        if (outScript->Reference != IntPtr.Zero)
+                        {
+                            scriptPath = null;
+                            return false;
+                        }
+
+                        // The destructor can be waiting for this lock after the reference count reached zero.
+                        _scriptTypeBiMap.ReadWriteLock.EnterWriteLock();
+                        try
+                        {
+                            _scriptTypeBiMap.Remove(scriptPtr);
+                        }
+                        finally
+                        {
+                            _scriptTypeBiMap.ReadWriteLock.ExitWriteLock();
+                        }
                     }
 
                     // This path is slower, but it's only executed for the first instantiation of the type
