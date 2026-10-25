@@ -2036,7 +2036,14 @@ void DisplayServerWindows::show_window(DisplayServerEnums::WindowID p_id) {
 	}
 	wd.initialized = true;
 
-	if (wd.maximized) {
+	DWORD foreground_process_id = 0;
+	GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process_id);
+	const bool background_editor_window = p_id != DisplayServerEnums::MAIN_WINDOW_ID && Engine::get_singleton()->is_editor_hint() && foreground_process_id != GetCurrentProcessId();
+	if (wd.parent_hwnd || background_editor_window) {
+		// The embedding host decides when to focus the game, including during delayed startup.
+		// An editor subwindow must also respect another application's foreground window.
+		ShowWindow(wd.hWnd, SW_SHOWNA);
+	} else if (wd.maximized) {
 		ShowWindow(wd.hWnd, SW_SHOWMAXIMIZED);
 		SetForegroundWindow(wd.hWnd); // Slightly higher priority.
 		SetFocus(wd.hWnd); // Set keyboard focus.
@@ -2054,7 +2061,7 @@ void DisplayServerWindows::show_window(DisplayServerEnums::WindowID p_id) {
 		SetFocus(wd.hWnd); // Set keyboard focus.
 	}
 	if (_is_always_on_top_recursive(p_id)) {
-		SetWindowPos(wd.hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | ((wd.no_focus || wd.is_popup) ? SWP_NOACTIVATE : 0));
+		SetWindowPos(wd.hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 	}
 }
 
@@ -2758,7 +2765,8 @@ void DisplayServerWindows::_update_window_style(DisplayServerEnums::WindowID p_w
 		}
 	}
 
-	SetWindowPos(wd.hWnd, _is_always_on_top_recursive(p_window) ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | ((wd.no_focus || wd.is_popup) ? SWP_NOACTIVATE : 0));
+	// Updating styles must not activate a background window.
+	SetWindowPos(wd.hWnd, _is_always_on_top_recursive(p_window) ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
 	if (p_repaint) {
 		RECT rect;
@@ -3723,7 +3731,9 @@ Error DisplayServerWindows::embed_process(DisplayServerEnums::WindowID p_window,
 		ep->is_visible = p_visible;
 	}
 
-	if (p_grab_focus) {
+	// Recheck the native foreground window: the host's queued focus request may be stale.
+	HWND foreground_window = GetForegroundWindow();
+	if (p_grab_focus && p_visible && (foreground_window == ep->parent_window_handle || foreground_window == ep->window_handle)) {
 		SetForegroundWindow(ep->window_handle);
 		SetFocus(ep->window_handle);
 	}
@@ -3755,40 +3765,43 @@ Error DisplayServerWindows::remove_embedded_process(ProcessID p_pid) {
 
 	EmbeddedProcessData *ep = embedded_processes.get(p_pid);
 
+	const bool restore_focus = GetForegroundWindow() == ep->window_handle;
 	request_close_embedded_process(p_pid);
 
-	// This is a workaround to ensure the parent window correctly regains focus after the
-	// embedded window is closed. When the embedded window is closed while it has focus,
-	// the parent window (the editor) does not become active. It appears focused but is not truly activated.
-	// Opening a new window and closing it forces Windows to set the focus and activation correctly.
-	DWORD style = WS_POPUP | WS_VISIBLE;
-	DWORD style_ex = WS_EX_TOPMOST;
+	if (restore_focus && GetForegroundWindow() == ep->window_handle) {
+		// This is a workaround to ensure the parent window correctly regains focus after the
+		// embedded window is closed. When the embedded window is closed while it has focus,
+		// the parent window (the editor) does not become active. It appears focused but is not truly activated.
+		// Opening a new window and closing it forces Windows to set the focus and activation correctly.
+		DWORD style = WS_POPUP | WS_VISIBLE;
+		DWORD style_ex = WS_EX_TOPMOST;
 
-	WNDCLASSW wcTemp = {};
-	wcTemp.lpfnWndProc = DefWindowProcW;
-	wcTemp.hInstance = GetModuleHandle(nullptr);
-	wcTemp.lpszClassName = L"Engine temp window";
-	RegisterClassW(&wcTemp);
+		WNDCLASSW wcTemp = {};
+		wcTemp.lpfnWndProc = DefWindowProcW;
+		wcTemp.hInstance = GetModuleHandle(nullptr);
+		wcTemp.lpszClassName = L"Engine temp window";
+		RegisterClassW(&wcTemp);
 
-	HWND hWnd = CreateWindowExW(
-			style_ex,
-			L"Engine temp window", L"",
-			style,
-			0,
-			0,
-			1,
-			1,
-			ep->parent_window_handle,
-			nullptr,
-			GetModuleHandle(nullptr),
-			nullptr);
+		HWND hWnd = CreateWindowExW(
+				style_ex,
+				L"Engine temp window", L"",
+				style,
+				0,
+				0,
+				1,
+				1,
+				ep->parent_window_handle,
+				nullptr,
+				GetModuleHandle(nullptr),
+				nullptr);
 
-	SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE);
+		SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE);
 
-	DestroyWindow(hWnd);
-	UnregisterClassW(L"Engine temp window", GetModuleHandle(nullptr));
+		DestroyWindow(hWnd);
+		UnregisterClassW(L"Engine temp window", GetModuleHandle(nullptr));
 
-	SetForegroundWindow(ep->parent_window_handle);
+		SetForegroundWindow(ep->parent_window_handle);
+	}
 
 	embedded_processes.erase(p_pid);
 	memdelete(ep);
