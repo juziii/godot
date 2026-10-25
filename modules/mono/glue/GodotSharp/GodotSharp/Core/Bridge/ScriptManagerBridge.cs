@@ -1287,9 +1287,10 @@ namespace Godot.Bridge
 
                 if (target == null)
                 {
-                    CustomGCHandle.Free(oldGCHandle);
-                    *outNewGCHandlePtr = IntPtr.Zero;
-                    return godot_bool.False; // Called after the managed side was collected, so nothing to do here
+                    // A short weak target is cleared before its finalizer runs. The
+                    // finalizer must retain ownership of this handle until disposal.
+                    *outNewGCHandlePtr = oldGCHandlePtr;
+                    return godot_bool.False;
                 }
 
                 // Release the current weak handle and replace it with a strong handle.

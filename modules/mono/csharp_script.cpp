@@ -1286,6 +1286,7 @@ GDExtensionBool CSharpLanguage::_instance_binding_reference_callback(void *p_tok
 					old_gchandle, &new_gchandle, create_weak);
 
 			if (!target_alive) {
+				gchandle.handle = new_gchandle; // The finalizer still owns a collected target's handle.
 				return false; // Called after the managed side was collected, so nothing to do here
 			}
 
@@ -1310,6 +1311,7 @@ GDExtensionBool CSharpLanguage::_instance_binding_reference_callback(void *p_tok
 					old_gchandle, &new_gchandle, create_weak);
 
 			if (!target_alive) {
+				gchandle.handle = new_gchandle;
 				return refcount == 0; // Called after the managed side was collected, so nothing to do here
 			}
 
@@ -1840,6 +1842,32 @@ void CSharpInstance::disconnect_event_signals() {
 	connected_event_signals.clear();
 }
 
+bool CSharpInstance::refcount_prepare_cached_reference() {
+	// Resource unregisters during predelete cleanup under the cache lock,
+	// before destroying its script instance. Cache readers keep that lock
+	// until this operation and the subsequent Ref acquisition finish.
+	MutexLock lock(CSharpLanguage::get_singleton()->script_gchandle_release_mutex);
+	if (gchandle.is_released()) {
+		return false;
+	}
+	if (!gchandle.is_weak()) {
+		return true;
+	}
+
+	GCHandleIntPtr new_gchandle = { nullptr };
+	bool target_alive = GDMonoCache::managed_callbacks.ScriptManagerBridge_SwapGCHandleForType(
+			gchandle.get_intptr(), &new_gchandle, false);
+	if (!target_alive) {
+		// Do not resurrect the native resource with a missing managed instance.
+		// The cache will evict it and reload its authored state into a new object.
+		return false;
+	}
+
+	gchandle.handle = { nullptr }; // Consumed by the successful swap.
+	gchandle = MonoGCHandleData(new_gchandle, gdmono::GCHandleType::STRONG_HANDLE);
+	return true;
+}
+
 void CSharpInstance::refcount_incremented() {
 #ifdef DEBUG_ENABLED
 	CRASH_COND(!base_ref_counted);
@@ -1864,6 +1892,7 @@ void CSharpInstance::refcount_incremented() {
 				old_gchandle, &new_gchandle, create_weak);
 
 		if (!target_alive) {
+			gchandle.handle = new_gchandle;
 			return; // Called after the managed side was collected, so nothing to do here
 		}
 
@@ -1896,6 +1925,7 @@ bool CSharpInstance::refcount_decremented() {
 				old_gchandle, &new_gchandle, create_weak);
 
 		if (!target_alive) {
+			gchandle.handle = new_gchandle;
 			return refcount == 0; // Called after the managed side was collected, so nothing to do here
 		}
 
