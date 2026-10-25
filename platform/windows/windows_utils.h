@@ -39,6 +39,7 @@ class WindowsUtils {
 	static HashMap<String, Vector<String>> temp_pdbs;
 
 public:
+	static bool is_current_thread_input_desktop();
 	static Error copy_and_rename_pdb(const String &p_dll_path);
 	static void remove_temp_pdbs(const String &p_dll_path);
 };

@@ -35,6 +35,7 @@
 #include "native_menu_windows.h"
 #include "os_windows.h"
 #include "tts_windows.h"
+#include "windows_utils.h"
 #include "wgl_detect_version.h"
 #include "winrt_utils.h"
 
@@ -254,6 +255,8 @@ Vector2i DisplayServerWindows::_get_screen_expand_offset(int p_screen) const {
 }
 
 void DisplayServerWindows::_set_mouse_mode_impl(DisplayServerEnums::MouseMode p_mode) {
+	const bool allow_system_cursor = WindowsUtils::is_current_thread_input_desktop();
+
 	if (p_mode == DisplayServerEnums::MOUSE_MODE_HIDDEN || p_mode == DisplayServerEnums::MOUSE_MODE_CAPTURED || p_mode == DisplayServerEnums::MOUSE_MODE_CONFINED_HIDDEN) {
 		// Hide cursor before moving.
 		if (hCursor == nullptr) {
@@ -280,12 +283,16 @@ void DisplayServerWindows::_set_mouse_mode_impl(DisplayServerEnums::MouseMode p_
 		clipRect.bottom -= off.y;
 		ClientToScreen(wd.hWnd, (POINT *)&clipRect.left);
 		ClientToScreen(wd.hWnd, (POINT *)&clipRect.right);
-		ClipCursor(&clipRect);
+		if (allow_system_cursor) {
+			ClipCursor(&clipRect);
+		}
 		if (p_mode == DisplayServerEnums::MOUSE_MODE_CAPTURED) {
 			center = window_get_size() / 2;
 			POINT pos = { (int)center.x, (int)center.y };
 			ClientToScreen(wd.hWnd, &pos);
-			SetCursorPos(pos.x, pos.y);
+			if (allow_system_cursor) {
+				SetCursorPos(pos.x, pos.y);
+			}
 			SetCapture(wd.hWnd);
 
 			_register_raw_input_devices(window_id);
@@ -329,7 +336,9 @@ void DisplayServerWindows::_set_mouse_mode_impl(DisplayServerEnums::MouseMode p_
 		if (!_has_moving_window()) {
 			ReleaseCapture();
 		}
-		ClipCursor(nullptr);
+		if (allow_system_cursor) {
+			ClipCursor(nullptr);
+		}
 
 		_register_raw_input_devices(DisplayServerEnums::INVALID_WINDOW_ID);
 	}
@@ -1108,7 +1117,9 @@ void DisplayServerWindows::warp_mouse(const Point2i &p_position) {
 		p.y = p_position.y;
 		ClientToScreen(windows[window_id].hWnd, &p);
 
-		SetCursorPos(p.x, p.y);
+		if (WindowsUtils::is_current_thread_input_desktop()) {
+			SetCursorPos(p.x, p.y);
+		}
 	}
 }
 
@@ -4238,6 +4249,10 @@ Key DisplayServerWindows::keyboard_get_label_from_physical(Key p_keycode) const 
 }
 
 void DisplayServerWindows::show_emoji_and_symbol_picker() const {
+	if (!WindowsUtils::is_current_thread_input_desktop()) {
+		return;
+	}
+
 	if (!WinRTUtils::try_show_onecore_emoji_picker()) {
 		// Send Win + Period shortcut.
 
@@ -4397,7 +4412,9 @@ void DisplayServerWindows::_process_raw_mouse_motion(const Vector2 &p_relative, 
 	// Centering just so it works as before.
 	POINT pos = { (int)c.x, (int)c.y };
 	ClientToScreen(windows[p_window_id].hWnd, &pos);
-	SetCursorPos(pos.x, pos.y);
+	if (WindowsUtils::is_current_thread_input_desktop()) {
+		SetCursorPos(pos.x, pos.y);
+	}
 
 	mm->set_position(c);
 	mm->set_global_position(c);
@@ -6084,7 +6101,9 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 						center = ncenter;
 						POINT pos = { (int)c.x, (int)c.y };
 						ClientToScreen(windows[window_id].hWnd, &pos);
-						SetCursorPos(pos.x, pos.y);
+						if (WindowsUtils::is_current_thread_input_desktop()) {
+							SetCursorPos(pos.x, pos.y);
+						}
 					}
 
 					mm->set_velocity(Input::get_singleton()->get_last_mouse_velocity());
@@ -6367,7 +6386,9 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 				center = ncenter;
 				POINT pos = { (int)c.x, (int)c.y };
 				ClientToScreen(hWnd, &pos);
-				SetCursorPos(pos.x, pos.y);
+				if (WindowsUtils::is_current_thread_input_desktop()) {
+					SetCursorPos(pos.x, pos.y);
+				}
 			}
 
 			mm->set_velocity(Input::get_singleton()->get_last_mouse_velocity());
@@ -6494,7 +6515,9 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 				center = ncenter;
 				POINT pos = { (int)c.x, (int)c.y };
 				ClientToScreen(windows[window_id].hWnd, &pos);
-				SetCursorPos(pos.x, pos.y);
+				if (WindowsUtils::is_current_thread_input_desktop()) {
+					SetCursorPos(pos.x, pos.y);
+				}
 			}
 
 			mm->set_velocity(Input::get_singleton()->get_last_mouse_velocity());
@@ -6823,7 +6846,9 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 					crect.bottom -= off.y;
 					ClientToScreen(window.hWnd, (POINT *)&crect.left);
 					ClientToScreen(window.hWnd, (POINT *)&crect.right);
-					ClipCursor(&crect);
+					if (WindowsUtils::is_current_thread_input_desktop()) {
+						ClipCursor(&crect);
+					}
 				}
 
 				if (!window.minimized && window.was_fullscreen_pre_min) {
