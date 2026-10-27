@@ -35,6 +35,7 @@
 #include "native_menu_windows.h"
 #include "os_windows.h"
 #include "tts_windows.h"
+#include "windows_utils.h"
 #include "wgl_detect_version.h"
 #include "winrt_utils.h"
 
@@ -254,6 +255,8 @@ Vector2i DisplayServerWindows::_get_screen_expand_offset(int p_screen) const {
 }
 
 void DisplayServerWindows::_set_mouse_mode_impl(DisplayServerEnums::MouseMode p_mode) {
+	const bool allow_system_cursor = WindowsUtils::is_current_thread_input_desktop();
+
 	if (p_mode == DisplayServerEnums::MOUSE_MODE_HIDDEN || p_mode == DisplayServerEnums::MOUSE_MODE_CAPTURED || p_mode == DisplayServerEnums::MOUSE_MODE_CONFINED_HIDDEN) {
 		// Hide cursor before moving.
 		if (hCursor == nullptr) {
@@ -280,12 +283,16 @@ void DisplayServerWindows::_set_mouse_mode_impl(DisplayServerEnums::MouseMode p_
 		clipRect.bottom -= off.y;
 		ClientToScreen(wd.hWnd, (POINT *)&clipRect.left);
 		ClientToScreen(wd.hWnd, (POINT *)&clipRect.right);
-		ClipCursor(&clipRect);
+		if (allow_system_cursor) {
+			ClipCursor(&clipRect);
+		}
 		if (p_mode == DisplayServerEnums::MOUSE_MODE_CAPTURED) {
 			center = window_get_size() / 2;
 			POINT pos = { (int)center.x, (int)center.y };
 			ClientToScreen(wd.hWnd, &pos);
-			SetCursorPos(pos.x, pos.y);
+			if (allow_system_cursor) {
+				SetCursorPos(pos.x, pos.y);
+			}
 			SetCapture(wd.hWnd);
 
 			_register_raw_input_devices(window_id);
@@ -329,7 +336,9 @@ void DisplayServerWindows::_set_mouse_mode_impl(DisplayServerEnums::MouseMode p_
 		if (!_has_moving_window()) {
 			ReleaseCapture();
 		}
-		ClipCursor(nullptr);
+		if (allow_system_cursor) {
+			ClipCursor(nullptr);
+		}
 
 		_register_raw_input_devices(DisplayServerEnums::INVALID_WINDOW_ID);
 	}
@@ -1108,7 +1117,9 @@ void DisplayServerWindows::warp_mouse(const Point2i &p_position) {
 		p.y = p_position.y;
 		ClientToScreen(windows[window_id].hWnd, &p);
 
-		SetCursorPos(p.x, p.y);
+		if (WindowsUtils::is_current_thread_input_desktop()) {
+			SetCursorPos(p.x, p.y);
+		}
 	}
 }
 
@@ -2036,7 +2047,14 @@ void DisplayServerWindows::show_window(DisplayServerEnums::WindowID p_id) {
 	}
 	wd.initialized = true;
 
-	if (wd.maximized) {
+	DWORD foreground_process_id = 0;
+	GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process_id);
+	const bool background_editor_window = p_id != DisplayServerEnums::MAIN_WINDOW_ID && Engine::get_singleton()->is_editor_hint() && foreground_process_id != GetCurrentProcessId();
+	if (wd.parent_hwnd || background_editor_window) {
+		// The embedding host decides when to focus the game, including during delayed startup.
+		// An editor subwindow must also respect another application's foreground window.
+		ShowWindow(wd.hWnd, SW_SHOWNA);
+	} else if (wd.maximized) {
 		ShowWindow(wd.hWnd, SW_SHOWMAXIMIZED);
 		SetForegroundWindow(wd.hWnd); // Slightly higher priority.
 		SetFocus(wd.hWnd); // Set keyboard focus.
@@ -2054,7 +2072,7 @@ void DisplayServerWindows::show_window(DisplayServerEnums::WindowID p_id) {
 		SetFocus(wd.hWnd); // Set keyboard focus.
 	}
 	if (_is_always_on_top_recursive(p_id)) {
-		SetWindowPos(wd.hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | ((wd.no_focus || wd.is_popup) ? SWP_NOACTIVATE : 0));
+		SetWindowPos(wd.hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 	}
 }
 
@@ -2758,7 +2776,8 @@ void DisplayServerWindows::_update_window_style(DisplayServerEnums::WindowID p_w
 		}
 	}
 
-	SetWindowPos(wd.hWnd, _is_always_on_top_recursive(p_window) ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | ((wd.no_focus || wd.is_popup) ? SWP_NOACTIVATE : 0));
+	// Updating styles must not activate a background window.
+	SetWindowPos(wd.hWnd, _is_always_on_top_recursive(p_window) ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
 	if (p_repaint) {
 		RECT rect;
@@ -3723,7 +3742,9 @@ Error DisplayServerWindows::embed_process(DisplayServerEnums::WindowID p_window,
 		ep->is_visible = p_visible;
 	}
 
-	if (p_grab_focus) {
+	// Recheck the native foreground window: the host's queued focus request may be stale.
+	HWND foreground_window = GetForegroundWindow();
+	if (p_grab_focus && p_visible && (foreground_window == ep->parent_window_handle || foreground_window == ep->window_handle)) {
 		SetForegroundWindow(ep->window_handle);
 		SetFocus(ep->window_handle);
 	}
@@ -3755,40 +3776,43 @@ Error DisplayServerWindows::remove_embedded_process(ProcessID p_pid) {
 
 	EmbeddedProcessData *ep = embedded_processes.get(p_pid);
 
+	const bool restore_focus = GetForegroundWindow() == ep->window_handle;
 	request_close_embedded_process(p_pid);
 
-	// This is a workaround to ensure the parent window correctly regains focus after the
-	// embedded window is closed. When the embedded window is closed while it has focus,
-	// the parent window (the editor) does not become active. It appears focused but is not truly activated.
-	// Opening a new window and closing it forces Windows to set the focus and activation correctly.
-	DWORD style = WS_POPUP | WS_VISIBLE;
-	DWORD style_ex = WS_EX_TOPMOST;
+	if (restore_focus && GetForegroundWindow() == ep->window_handle) {
+		// This is a workaround to ensure the parent window correctly regains focus after the
+		// embedded window is closed. When the embedded window is closed while it has focus,
+		// the parent window (the editor) does not become active. It appears focused but is not truly activated.
+		// Opening a new window and closing it forces Windows to set the focus and activation correctly.
+		DWORD style = WS_POPUP | WS_VISIBLE;
+		DWORD style_ex = WS_EX_TOPMOST;
 
-	WNDCLASSW wcTemp = {};
-	wcTemp.lpfnWndProc = DefWindowProcW;
-	wcTemp.hInstance = GetModuleHandle(nullptr);
-	wcTemp.lpszClassName = L"Engine temp window";
-	RegisterClassW(&wcTemp);
+		WNDCLASSW wcTemp = {};
+		wcTemp.lpfnWndProc = DefWindowProcW;
+		wcTemp.hInstance = GetModuleHandle(nullptr);
+		wcTemp.lpszClassName = L"Engine temp window";
+		RegisterClassW(&wcTemp);
 
-	HWND hWnd = CreateWindowExW(
-			style_ex,
-			L"Engine temp window", L"",
-			style,
-			0,
-			0,
-			1,
-			1,
-			ep->parent_window_handle,
-			nullptr,
-			GetModuleHandle(nullptr),
-			nullptr);
+		HWND hWnd = CreateWindowExW(
+				style_ex,
+				L"Engine temp window", L"",
+				style,
+				0,
+				0,
+				1,
+				1,
+				ep->parent_window_handle,
+				nullptr,
+				GetModuleHandle(nullptr),
+				nullptr);
 
-	SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE);
+		SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE);
 
-	DestroyWindow(hWnd);
-	UnregisterClassW(L"Engine temp window", GetModuleHandle(nullptr));
+		DestroyWindow(hWnd);
+		UnregisterClassW(L"Engine temp window", GetModuleHandle(nullptr));
 
-	SetForegroundWindow(ep->parent_window_handle);
+		SetForegroundWindow(ep->parent_window_handle);
+	}
 
 	embedded_processes.erase(p_pid);
 	memdelete(ep);
@@ -4225,6 +4249,10 @@ Key DisplayServerWindows::keyboard_get_label_from_physical(Key p_keycode) const 
 }
 
 void DisplayServerWindows::show_emoji_and_symbol_picker() const {
+	if (!WindowsUtils::is_current_thread_input_desktop()) {
+		return;
+	}
+
 	if (!WinRTUtils::try_show_onecore_emoji_picker()) {
 		// Send Win + Period shortcut.
 
@@ -4384,7 +4412,9 @@ void DisplayServerWindows::_process_raw_mouse_motion(const Vector2 &p_relative, 
 	// Centering just so it works as before.
 	POINT pos = { (int)c.x, (int)c.y };
 	ClientToScreen(windows[p_window_id].hWnd, &pos);
-	SetCursorPos(pos.x, pos.y);
+	if (WindowsUtils::is_current_thread_input_desktop()) {
+		SetCursorPos(pos.x, pos.y);
+	}
 
 	mm->set_position(c);
 	mm->set_global_position(c);
@@ -6071,7 +6101,9 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 						center = ncenter;
 						POINT pos = { (int)c.x, (int)c.y };
 						ClientToScreen(windows[window_id].hWnd, &pos);
-						SetCursorPos(pos.x, pos.y);
+						if (WindowsUtils::is_current_thread_input_desktop()) {
+							SetCursorPos(pos.x, pos.y);
+						}
 					}
 
 					mm->set_velocity(Input::get_singleton()->get_last_mouse_velocity());
@@ -6354,7 +6386,9 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 				center = ncenter;
 				POINT pos = { (int)c.x, (int)c.y };
 				ClientToScreen(hWnd, &pos);
-				SetCursorPos(pos.x, pos.y);
+				if (WindowsUtils::is_current_thread_input_desktop()) {
+					SetCursorPos(pos.x, pos.y);
+				}
 			}
 
 			mm->set_velocity(Input::get_singleton()->get_last_mouse_velocity());
@@ -6481,7 +6515,9 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 				center = ncenter;
 				POINT pos = { (int)c.x, (int)c.y };
 				ClientToScreen(windows[window_id].hWnd, &pos);
-				SetCursorPos(pos.x, pos.y);
+				if (WindowsUtils::is_current_thread_input_desktop()) {
+					SetCursorPos(pos.x, pos.y);
+				}
 			}
 
 			mm->set_velocity(Input::get_singleton()->get_last_mouse_velocity());
@@ -6810,7 +6846,9 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 					crect.bottom -= off.y;
 					ClientToScreen(window.hWnd, (POINT *)&crect.left);
 					ClientToScreen(window.hWnd, (POINT *)&crect.right);
-					ClipCursor(&crect);
+					if (WindowsUtils::is_current_thread_input_desktop()) {
+						ClipCursor(&crect);
+					}
 				}
 
 				if (!window.minimized && window.was_fullscreen_pre_min) {

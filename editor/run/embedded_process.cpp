@@ -295,7 +295,8 @@ void EmbeddedProcess::_update_embedded_process() {
 	bool must_grab_focus = false;
 	bool focus = has_focus();
 	if (last_updated_embedded_process_focused != focus) {
-		if (focus) {
+		// Control focus can survive application deactivation or be queued before it.
+		if (focus && application_has_focus && window->has_focus() && is_visible_in_tree()) {
 			must_grab_focus = true;
 		}
 		last_updated_embedded_process_focused = focus;
