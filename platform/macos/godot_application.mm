@@ -57,6 +57,10 @@ GodotApplication *GodotApp = nil;
 }
 
 - (void)activateApplication {
+	if (getenv("GODOT_BACKGROUND_MODE")) {
+		// Background runs must not steal focus or bring windows to the front.
+		return;
+	}
 	[NSApp activateIgnoringOtherApps:YES];
 	NSString *nsappname = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleName"];
 	const char *bundled_id = getenv("__CFBundleIdentifier");
