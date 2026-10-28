@@ -35,6 +35,7 @@
 #include "core/variant/dictionary.h"
 #include "scene/3d/bone_rotation_offset_modifier_3d.h"
 #include "scene/3d/copy_transform_modifier_3d.h"
+#include "scene/3d/look_at_modifier_3d.h"
 #include "scene/3d/pawn_animation_pose.h"
 #include "scene/3d/two_bone_ik_3d.h"
 
@@ -70,6 +71,7 @@ private:
 		enum Kind { TWO_BONE,
 			COPY,
 			ROTATION_OFFSET,
+			LOOK_AT,
 			AIM } kind;
 		ObjectID id;
 		real_t influence = 1;
@@ -99,6 +101,19 @@ private:
 		int depth = 0;
 		Quaternion rotation;
 		float weight = 1.0f;
+	};
+	struct LookAtInput {
+		LookAtModifier3D::Solver solver;
+		ObjectID modifier_id, target_id, origin_id;
+		NodePath target_path, origin_path;
+		int bone = -1;
+		int origin_bone = -1;
+		LookAtModifier3D::OriginFrom origin_from = LookAtModifier3D::ORIGIN_FROM_SELF;
+		Vector3 origin_offset;
+		Vector3 target;
+		Transform3D external_origin;
+		bool has_target = false;
+		bool has_external_origin = false;
 	};
 	PawnAnimationPose pawn_pose{ *this };
 	struct GeneratedTarget {
@@ -167,6 +182,7 @@ private:
 	LocalVector<TwoBoneInput> two_bone;
 	LocalVector<CopyInput> copies;
 	LocalVector<RotationOffsetInput> rotation_offsets;
+	LocalVector<LookAtInput> look_ats;
 	LocalVector<Quaternion> rotation_offset_initial_global_rotations;
 	LocalVector<int> scratch_path;
 	void mark_dirty(int p_bone);
@@ -174,6 +190,7 @@ private:
 	Transform3D chain_rest(int p_bone, int p_root, bool p_mutable);
 	void solve_two_bone(TwoBoneInput &r_input);
 	void solve_copy(CopyInput &r_input);
+	void solve_look_at(LookAtInput &r_input);
 	bool fail(const String &p_reason);
 protected:
 	static void _bind_methods();

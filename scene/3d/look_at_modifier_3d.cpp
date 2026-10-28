@@ -550,6 +550,21 @@ void LookAtModifier3D::_process_modification(double p_delta) {
 		bone_rest_space = skeleton->get_global_transform_interpolated() * skeleton->get_bone_global_pose(parent_bone);
 		bone_rest_space.translate_local(bone_rest.origin);
 	}
+	if (Math::is_zero_approx(duration)) {
+		Transform3D origin = bone_rest_space;
+		if (origin_from == ORIGIN_FROM_SPECIFIC_BONE && origin_bone >= 0 && origin_bone < skeleton->get_bone_count()) {
+			origin = skeleton->get_global_transform_interpolated() * skeleton->get_bone_global_pose(origin_bone);
+		} else if (origin_from == ORIGIN_FROM_EXTERNAL_NODE) {
+			if (auto *node = Object::cast_to<Node3D>(get_node_or_null(origin_external_node))) {
+				origin = node->get_global_transform_interpolated();
+			}
+		}
+		auto *target = Object::cast_to<Node3D>(get_node_or_null(target_node));
+		Solver solver = capture_solver();
+		skeleton->set_bone_pose_rotation(bone, solver.solve(skeleton->get_bone_rest(bone), skeleton->get_bone_pose(bone), skeleton->get_bone_pose_rotation(bone), bone_rest_space, origin.translated_local(origin_offset), target != nullptr, target ? target->get_global_transform_interpolated().origin : Vector3()));
+		publish_solver(solver);
+		return;
+	}
 
 	// Calculate forward_vector and destination.
 	is_within_limitations = true;
@@ -706,7 +721,7 @@ Vector2 LookAtModifier3D::get_projection_vector(const Vector3 &p_vector, Vector3
 	return ret;
 }
 
-float LookAtModifier3D::remap_damped(float p_from, float p_to, float p_damp_threshold, float p_value) const {
+float LookAtModifier3D::Solver::remap_damped(float p_from, float p_to, float p_damp_threshold, float p_value) {
 	float sign = std::signbit(p_value) ? -1.0f : 1.0f;
 	float abs_value = Math::abs(p_value);
 
@@ -732,7 +747,7 @@ float LookAtModifier3D::remap_damped(float p_from, float p_to, float p_damp_thre
 	return sign * Math::lerp(p_from, p_to, value);
 }
 
-double LookAtModifier3D::get_bspline_y(const Vector2 &p_from, const Vector2 &p_control, const Vector2 &p_to, double p_x) const {
+double LookAtModifier3D::Solver::get_bspline_y(const Vector2 &p_from, const Vector2 &p_control, const Vector2 &p_to, double p_x) {
 	double a = p_from.x - 2.0 * p_control.x + p_to.x;
 	double b = -2.0 * p_from.x + 2.0 * p_control.x;
 	double c = p_from.x - p_x;
@@ -751,7 +766,7 @@ double LookAtModifier3D::get_bspline_y(const Vector2 &p_from, const Vector2 &p_c
 	return y;
 }
 
-Transform3D LookAtModifier3D::look_at_with_axes(const Transform3D &p_rest) {
+Transform3D LookAtModifier3D::Solver::look_at_with_axes(const Transform3D &p_rest) {
 	// Primary rotation by projection to 2D plane by xform_inv and picking elements.
 	Vector3 current_vector = get_basis_vector_from_bone_axis(p_rest.basis, forward_axis).normalized();
 	Vector2 src_vec2 = get_projection_vector(p_rest.basis.xform_inv(forward_vector_nrm), primary_rotation_axis).normalized();
@@ -817,6 +832,88 @@ Transform3D LookAtModifier3D::look_at_with_axes(const Transform3D &p_rest) {
 	current_result = current_result.rotated_local(get_vector_from_axis(secondary_rotation_axis), calculated_angle);
 
 	return current_result;
+}
+
+LookAtModifier3D::Solver LookAtModifier3D::capture_solver() const {
+	Solver solver;
+	solver.forward_axis = forward_axis;
+	solver.primary_rotation_axis = primary_rotation_axis;
+	solver.secondary_rotation_axis = secondary_rotation_axis;
+	solver.use_secondary_rotation = use_secondary_rotation;
+	solver.relative = relative;
+	solver.use_angle_limitation = use_angle_limitation;
+	solver.symmetry_limitation = symmetry_limitation;
+	solver.use_rest_for_limitation = use_rest_for_limitation;
+	solver.primary_limit_angle = primary_limit_angle;
+	solver.primary_damp_threshold = primary_damp_threshold;
+	solver.primary_positive_limit_angle = primary_positive_limit_angle;
+	solver.primary_positive_damp_threshold = primary_positive_damp_threshold;
+	solver.primary_negative_limit_angle = primary_negative_limit_angle;
+	solver.primary_negative_damp_threshold = primary_negative_damp_threshold;
+	solver.secondary_limit_angle = secondary_limit_angle;
+	solver.secondary_damp_threshold = secondary_damp_threshold;
+	solver.secondary_positive_limit_angle = secondary_positive_limit_angle;
+	solver.secondary_positive_damp_threshold = secondary_positive_damp_threshold;
+	solver.secondary_negative_limit_angle = secondary_negative_limit_angle;
+	solver.secondary_negative_damp_threshold = secondary_negative_damp_threshold;
+	return solver;
+}
+
+void LookAtModifier3D::publish_solver(const Solver &p_solver) {
+	forward_vector = p_solver.forward_vector;
+	forward_vector_nrm = p_solver.forward_vector_nrm;
+	secondary_rotation_axis = p_solver.secondary_rotation_axis;
+	is_within_limitations = p_solver.is_within_limitations;
+	prev_q = p_solver.rotation;
+	prev_twist = p_solver.twist;
+}
+
+Transform3D LookAtModifier3D::look_at_with_axes(const Transform3D &p_rest) {
+	Solver solver = capture_solver();
+	solver.forward_vector_nrm = forward_vector_nrm;
+	solver.is_within_limitations = is_within_limitations;
+	Transform3D result = solver.look_at_with_axes(p_rest);
+	secondary_rotation_axis = solver.secondary_rotation_axis;
+	is_within_limitations = solver.is_within_limitations;
+	return result;
+}
+
+Quaternion LookAtModifier3D::Solver::solve(const Transform3D &p_rest, const Transform3D &p_pose, const Quaternion &p_rotation, const Transform3D &p_bone_space, const Transform3D &p_origin, bool p_has_target, const Vector3 &p_target) {
+	const Transform3D bone_rest = relative ? p_pose : p_rest;
+	rotation = p_rotation;
+	twist = Quaternion();
+	forward_vector = Vector3();
+	forward_vector_nrm = Vector3();
+	is_within_limitations = true;
+	Quaternion rest_rotation;
+	if (use_rest_for_limitation) {
+		rest_rotation = p_rest.basis.get_rotation_quaternion();
+		Vector3 axis = get_vector_from_bone_axis(forward_axis);
+		Quaternion pose_from_rest = (rest_rotation.inverse() * bone_rest.basis.get_rotation_quaternion()).normalized();
+		twist = Quaternion(axis, get_roll_angle(pose_from_rest, axis));
+	}
+	if (!p_has_target) {
+		return rotation;
+	}
+	forward_vector = p_bone_space.orthonormalized().basis.xform_inv(p_target - p_origin.origin);
+	if (forward_vector.is_zero_approx()) {
+		return rotation;
+	}
+	forward_vector_nrm = forward_vector.normalized();
+	if (forward_vector_nrm.abs().is_equal_approx(get_vector_from_axis(primary_rotation_axis))) {
+		forward_vector = Vector3();
+		return rotation;
+	}
+	if (use_rest_for_limitation) {
+		Transform3D rest_transform = bone_rest;
+		rest_transform.basis = Basis(rest_rotation);
+		rotation = (look_at_with_axes(rest_transform).basis.get_rotation_quaternion() * twist).normalized();
+		forward_vector = rest_rotation.xform_inv(forward_vector_nrm);
+	} else {
+		rotation = look_at_with_axes(bone_rest).basis.get_rotation_quaternion();
+		forward_vector = bone_rest.basis.xform_inv(forward_vector_nrm);
+	}
+	return rotation;
 }
 
 void LookAtModifier3D::init_transition() {

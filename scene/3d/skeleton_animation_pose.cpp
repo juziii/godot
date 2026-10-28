@@ -184,7 +184,7 @@ bool SkeletonAnimationPose::capture(Skeleton3D *p_skeleton) {
 	}
 	p_skeleton->_find_modifiers();
 	modifiers.clear();
-	int ti = 0, ci = 0, ri = 0;
+	int ti = 0, ci = 0, ri = 0, li = 0;
 	for (ObjectID id : p_skeleton->modifiers) {
 		if (!p_skeleton->modifiers_enabled) { break; }
 		auto *mod = Object::cast_to<SkeletonModifier3D>(ObjectDB::get_instance(id));
@@ -280,6 +280,40 @@ bool SkeletonAnimationPose::capture(Skeleton3D *p_skeleton) {
 				input.weight = target.name_index < weights.size() ? weights[target.name_index] : 1.0f;
 			}
 			m.count = ri - m.begin;
+		} else if (auto *look_at = Object::cast_to<LookAtModifier3D>(mod)) {
+			if (!Math::is_zero_approx(look_at->get_duration())) {
+				return fail("LookAtModifier3D time interpolation requires synchronous processing (duration must be zero).");
+			}
+			if (look_at->bone < 0 || look_at->bone >= count) {
+				continue;
+			}
+			m.kind = Modifier::LOOK_AT;
+			m.begin = li;
+			m.count = 1;
+			if (li == int(look_ats.size())) {
+				look_ats.resize(li + 1);
+			}
+			LookAtInput &in = look_ats[li++];
+			if (in.modifier_id != id) {
+				in.target_id = ObjectID();
+				in.origin_id = ObjectID();
+			}
+			in.modifier_id = id;
+			in.solver = look_at->capture_solver();
+			in.bone = look_at->bone;
+			in.origin_bone = look_at->origin_bone;
+			in.origin_from = look_at->origin_from;
+			in.origin_offset = look_at->origin_offset;
+			auto *target = capture_target(look_at, look_at->target_node, in.target_path, in.target_id);
+			in.has_target = target != nullptr;
+			in.target = target ? target->get_global_transform_interpolated().origin : Vector3();
+			in.has_external_origin = false;
+			if (in.origin_from == LookAtModifier3D::ORIGIN_FROM_EXTERNAL_NODE) {
+				if (auto *origin = capture_target(look_at, look_at->origin_external_node, in.origin_path, in.origin_id)) {
+					in.has_external_origin = true;
+					in.external_origin = origin->get_global_transform_interpolated();
+				}
+			}
 		} else if (auto *copy = Object::cast_to<CopyTransformModifier3D>(mod)) {
 			if (m.influence < 1 && copy->get_setting_count() > 1) { return fail("Multi-setting partial influence requires synchronous processing."); }
 			m.kind = Modifier::COPY;
@@ -619,6 +653,29 @@ void SkeletonAnimationPose::solve_copy(CopyInput &r_input) {
 	CopyTransformModifier3D::copy_pose(this, &s, s.apply_bone, destination, s.amount);
 }
 
+void SkeletonAnimationPose::solve_look_at(LookAtInput &r_input) {
+	const int bone = r_input.bone;
+	const Transform3D bone_rest = r_input.solver.relative ? get_local_pose(bone) : get_bone_rest(bone);
+	const int parent = get_bone_parent(bone);
+	Transform3D pose_world = world_interpolated;
+	if (attachment_source.is_valid() && attachment_bone >= 0 && attachment_bone < attachment_source->get_bone_count()) {
+		pose_world = attachment_source->world_interpolated * attachment_source->get_global_pose(attachment_bone) * attachment_scale_transform;
+		if (attachment_disable_scale) {
+			pose_world.basis.orthonormalize();
+		}
+		pose_world = pose_world * attachment_offset;
+	}
+	Transform3D bone_space = parent >= 0 ? pose_world * get_global_pose(parent) : pose_world;
+	bone_space.translate_local(bone_rest.origin);
+	Transform3D origin = bone_space;
+	if (r_input.origin_from == LookAtModifier3D::ORIGIN_FROM_SPECIFIC_BONE && r_input.origin_bone >= 0 && r_input.origin_bone < get_bone_count()) {
+		origin = pose_world * get_global_pose(r_input.origin_bone);
+	} else if (r_input.origin_from == LookAtModifier3D::ORIGIN_FROM_EXTERNAL_NODE && r_input.has_external_origin) {
+		origin = r_input.external_origin;
+	}
+	set_bone_pose_rotation(bone, r_input.solver.solve(get_bone_rest(bone), get_local_pose(bone), get_bone_pose_rotation(bone), bone_space, origin.translated_local(r_input.origin_offset), r_input.has_target, r_input.target));
+}
+
 void SkeletonAnimationPose::evaluate() {
 	if (!fallback_reason.is_empty()) {
 		return;
@@ -627,7 +684,7 @@ void SkeletonAnimationPose::evaluate() {
 		Transform3D source_rest = copy_source->world * copy_source->get_bone_global_rest(copy_source_bone);
 		Transform3D target_rest = world * get_bone_global_rest(copy_target_bone);
 		Transform3D rest_offset = source_rest.affine_inverse() * target_rest;
-		Transform3D source_pose = copy_source->world * copy_source->get_base_global_pose(copy_source_bone);
+		Transform3D source_pose = copy_source->world * copy_source->get_global_pose(copy_source_bone);
 		set_bone_global_pose(copy_target_bone, world.affine_inverse() * source_pose * rest_offset);
 	}
 	update_globals();
@@ -660,6 +717,9 @@ void SkeletonAnimationPose::evaluate() {
 				for (int i = m.begin; i < m.begin + m.count; i++) {
 					solve_copy(copies[i]);
 				}
+				break;
+			case Modifier::LOOK_AT:
+				solve_look_at(look_ats[m.begin]);
 				break;
 			case Modifier::ROTATION_OFFSET: {
 				if (m.use_initial_global_pose) {
@@ -767,6 +827,11 @@ bool SkeletonAnimationPose::publish() {
 						*native->mid_joint_solver_info = in.middle;
 					}
 				}
+			}
+		}
+		if (m.kind == Modifier::LOOK_AT) {
+			if (auto *look_at = Object::cast_to<LookAtModifier3D>(ObjectDB::get_instance(m.id))) {
+				look_at->publish_solver(look_ats[m.begin].solver);
 			}
 		}
 		if (auto *mod = ObjectDB::get_instance(m.id)) {
