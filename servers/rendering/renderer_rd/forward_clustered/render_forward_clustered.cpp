@@ -390,6 +390,15 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 			}
 #endif
 			mesh_surface = surf->surface;
+
+			if constexpr (p_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS || p_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI) {
+				// The material opted out of authoring prepass normals/roughness, so draw it
+				// with the default material: geometric normal, default roughness, no shading.
+				if (surf->shader->uses_depth_prepass_no_material) {
+					material_uniform_set = scene_shader.default_material_uniform_set;
+					shader = scene_shader.default_material_shader_ptr;
+				}
+			}
 		}
 
 		if (!mesh_surface) {
