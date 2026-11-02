@@ -208,7 +208,11 @@ int64_t AnimationBatchProcessor::submit(int p_batch_size, int p_max_workers) {
     if (!pending) { worker_count = 0; return frame_id; }
     active_processors.push_back(this);
     worker_count = MIN(MIN(batch_count, p_max_workers), MIN(WorkerThreadPool::get_singleton()->get_thread_count(), MAX(1, OS::get_singleton()->get_processor_count() - 2)));
-    if (units.size() < 16 || worker_count <= 1) {
+    // worker_count already folds in the batch count, the worker cap and the core budget:
+    // a single usable worker means serial inline execution is strictly better, while two or
+    // more workers can overlap evaluation with the caller's remaining frame work. Small
+    // batches still inline because batch_count saturates at 1 for coarse batch sizes.
+    if (worker_count <= 1) {
         worker_count = 1;
         for (int i = 0; i < batch_count; ++i) { _execute_batch(i, false); }
     } else {
