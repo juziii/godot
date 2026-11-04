@@ -35,6 +35,7 @@
 #ifdef MODULE_CZ_ANIMATION_ENABLED
 #include "animation_bridge.h"
 #define CZ_ANIMATION_SYNC(mixer) CZAnimationBridge::synchronize(mixer)
+#define CZ_ANIMATION_SYNC_RESOURCE() CZAnimationBridge::synchronize_resource()
 #define CZ_ANIMATION_INVALIDATE_SKELETON(skeleton) CZAnimationBridge::invalidate_skeleton(skeleton)
 #define CZ_ANIMATION_INVALIDATE_POSE(skeleton) CZAnimationBridge::invalidate_skeleton(skeleton, false)
 class CZAnimationMutationScope {
@@ -45,6 +46,7 @@ public:
 #define CZ_ANIMATION_PLAYER_MUTATION() CZAnimationMutationScope cz_animation_mutation_scope(this)
 #else
 #define CZ_ANIMATION_SYNC(mixer) ((void)0)
+#define CZ_ANIMATION_SYNC_RESOURCE() ((void)0)
 #define CZ_ANIMATION_INVALIDATE_SKELETON(skeleton) ((void)0)
 #define CZ_ANIMATION_INVALIDATE_POSE(skeleton) ((void)0)
 #define CZ_ANIMATION_PLAYER_MUTATION() ((void)0)

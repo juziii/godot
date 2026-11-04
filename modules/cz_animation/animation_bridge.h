@@ -48,6 +48,13 @@ class SkeletonModifier3D;
 class CZAnimationBridge {
 public:
 	struct State;
+	struct MethodValidationStatistics {
+		uint64_t cache_hits = 0;
+		uint64_t scans = 0;
+		uint64_t animations = 0;
+		uint64_t tracks = 0;
+		uint64_t keys = 0;
+	};
 	struct BlendSpaceState {
 		LocalVector<float> weights;
 		LocalVector<float> target_weights;
@@ -60,6 +67,8 @@ public:
 	static State *create(AnimationMixer *p_mixer, AnimationBatchProcessor *p_owner, const TypedArray<SkeletonAnimationPose> &p_poses, const PackedStringArray &p_safe_methods, State *p_parent);
 	static void destroy(State *p_state);
 	static void detach_owner(State *p_state);
+	static void reset_method_validation_statistics(State *p_state);
+	static MethodValidationStatistics get_method_validation_statistics(const State *p_state);
 	static bool prepare(State *p_state, double p_delta, const LocalVector<Ref<SkeletonAnimationPose>> &p_poses);
 	static void evaluate(State *p_state);
 	static bool publish(State *p_state);
@@ -68,6 +77,7 @@ public:
 	static String fallback(const State *p_state);
 	static AnimationMixer *mixer(State *p_state);
 	static void synchronize(AnimationMixer *p_mixer = nullptr);
+	static void synchronize_resource();
 	static void set_callback_mode(AnimationMixer *p_mixer, AnimationMixer::AnimationCallbackModeProcess p_mode);
 	static void begin_player_mutation(AnimationMixer *p_mixer);
 	static void end_player_mutation();

@@ -295,18 +295,26 @@ const StringName &AnimationMixer::find_animation_library(const Ref<Animation> &p
 }
 
 Error AnimationMixer::add_animation_library(const StringName &p_name, const Ref<AnimationLibrary> &p_animation_library) {
-	ERR_FAIL_COND_V(p_animation_library.is_null(), ERR_INVALID_PARAMETER);
+	const StringName name = p_name;
+	const Ref<AnimationLibrary> target_library = p_animation_library;
+	const ObjectID mixer_id = get_instance_id();
+	CZ_ANIMATION_SYNC(this);
+	if (ObjectDB::get_instance(mixer_id) != this) {
+		return ERR_UNAVAILABLE;
+	}
+
+	ERR_FAIL_COND_V(target_library.is_null(), ERR_INVALID_PARAMETER);
 #ifdef DEBUG_ENABLED
-	ERR_FAIL_COND_V_MSG(String(p_name).contains_char('/') || String(p_name).contains_char(':') || String(p_name).contains_char(',') || String(p_name).contains_char('['), ERR_INVALID_PARAMETER, "Invalid animation name: " + String(p_name) + ".");
+	ERR_FAIL_COND_V_MSG(String(name).contains_char('/') || String(name).contains_char(':') || String(name).contains_char(',') || String(name).contains_char('['), ERR_INVALID_PARAMETER, "Invalid animation name: " + String(name) + ".");
 #endif
 
 	int insert_pos = 0;
 
 	for (const AnimationLibraryData &lib : animation_libraries) {
-		ERR_FAIL_COND_V_MSG(lib.name == p_name, ERR_ALREADY_EXISTS, "Can't add animation library twice with name: " + String(p_name));
-		ERR_FAIL_COND_V_MSG(lib.library == p_animation_library, ERR_ALREADY_EXISTS, "Can't add animation library twice (adding as '" + p_name.string() + "', exists as '" + lib.name.string() + "'.");
+		ERR_FAIL_COND_V_MSG(lib.name == name, ERR_ALREADY_EXISTS, "Can't add animation library twice with name: " + String(name));
+		ERR_FAIL_COND_V_MSG(lib.library == target_library, ERR_ALREADY_EXISTS, "Can't add animation library twice (adding as '" + name.string() + "', exists as '" + lib.name.string() + "'.");
 
-		if (lib.name.string() >= p_name.string()) {
+		if (lib.name.string() >= name.string()) {
 			break;
 		}
 
@@ -314,28 +322,37 @@ Error AnimationMixer::add_animation_library(const StringName &p_name, const Ref<
 	}
 
 	AnimationLibraryData ald;
-	ald.name = p_name;
-	ald.library = p_animation_library;
+	ald.name = name;
+	ald.library = target_library;
 
 	animation_libraries.insert(insert_pos, ald);
 
-	ald.library->connect(SNAME("animation_added"), callable_mp(this, &AnimationMixer::_animation_added).bind(p_name));
-	ald.library->connect(SNAME("animation_removed"), callable_mp(this, &AnimationMixer::_animation_removed).bind(p_name));
-	ald.library->connect(SNAME("animation_renamed"), callable_mp(this, &AnimationMixer::_animation_renamed).bind(p_name));
+	ald.library->connect(SNAME("animation_added"), callable_mp(this, &AnimationMixer::_animation_added).bind(name));
+	ald.library->connect(SNAME("animation_removed"), callable_mp(this, &AnimationMixer::_animation_removed).bind(name));
+	ald.library->connect(SNAME("animation_renamed"), callable_mp(this, &AnimationMixer::_animation_renamed).bind(name));
 	ald.library->connect(SceneStringName(animation_changed), callable_mp(this, &AnimationMixer::_animation_changed));
 
 	_animation_set_cache_update();
 
-	notify_property_list_changed();
+	if (ObjectDB::get_instance(mixer_id) == this) {
+		notify_property_list_changed();
+	}
 
 	return OK;
 }
 
 void AnimationMixer::remove_animation_library(const StringName &p_name) {
+	const StringName name = p_name;
+	const ObjectID mixer_id = get_instance_id();
+	CZ_ANIMATION_SYNC(this);
+	if (ObjectDB::get_instance(mixer_id) != this) {
+		return;
+	}
+
 	int at_pos = -1;
 
 	for (uint32_t i = 0; i < animation_libraries.size(); i++) {
-		if (animation_libraries[i].name == p_name) {
+		if (animation_libraries[i].name == name) {
 			at_pos = i;
 			break;
 		}
@@ -351,36 +368,46 @@ void AnimationMixer::remove_animation_library(const StringName &p_name) {
 	animation_libraries.remove_at(at_pos);
 	_animation_set_cache_update();
 
-	notify_property_list_changed();
+	if (ObjectDB::get_instance(mixer_id) == this) {
+		notify_property_list_changed();
+	}
 }
 
 void AnimationMixer::rename_animation_library(const StringName &p_name, const StringName &p_new_name) {
-	if (p_name == p_new_name) {
+	const StringName name = p_name;
+	const StringName new_name = p_new_name;
+	const ObjectID mixer_id = get_instance_id();
+	CZ_ANIMATION_SYNC(this);
+	if (ObjectDB::get_instance(mixer_id) != this) {
+		return;
+	}
+
+	if (name == new_name) {
 		return;
 	}
 #ifdef DEBUG_ENABLED
-	ERR_FAIL_COND_MSG(String(p_new_name).contains_char('/') || String(p_new_name).contains_char(':') || String(p_new_name).contains_char(',') || String(p_new_name).contains_char('['), "Invalid animation library name: " + String(p_new_name) + ".");
+	ERR_FAIL_COND_MSG(String(new_name).contains_char('/') || String(new_name).contains_char(':') || String(new_name).contains_char(',') || String(new_name).contains_char('['), "Invalid animation library name: " + String(new_name) + ".");
 #endif
 
 	bool found = false;
 	for (AnimationLibraryData &lib : animation_libraries) {
-		ERR_FAIL_COND_MSG(lib.name == p_new_name, "Can't rename animation library to another existing name: " + String(p_new_name) + ".");
-		if (lib.name == p_name) {
+		ERR_FAIL_COND_MSG(lib.name == new_name, "Can't rename animation library to another existing name: " + String(new_name) + ".");
+		if (lib.name == name) {
 			found = true;
-			lib.name = p_new_name;
+			lib.name = new_name;
 			// rename connections
 			lib.library->disconnect(SNAME("animation_added"), callable_mp(this, &AnimationMixer::_animation_added));
 			lib.library->disconnect(SNAME("animation_removed"), callable_mp(this, &AnimationMixer::_animation_removed));
 			lib.library->disconnect(SNAME("animation_renamed"), callable_mp(this, &AnimationMixer::_animation_renamed));
 
-			lib.library->connect(SNAME("animation_added"), callable_mp(this, &AnimationMixer::_animation_added).bind(p_new_name));
-			lib.library->connect(SNAME("animation_removed"), callable_mp(this, &AnimationMixer::_animation_removed).bind(p_new_name));
-			lib.library->connect(SNAME("animation_renamed"), callable_mp(this, &AnimationMixer::_animation_renamed).bind(p_new_name));
+			lib.library->connect(SNAME("animation_added"), callable_mp(this, &AnimationMixer::_animation_added).bind(new_name));
+			lib.library->connect(SNAME("animation_removed"), callable_mp(this, &AnimationMixer::_animation_removed).bind(new_name));
+			lib.library->connect(SNAME("animation_renamed"), callable_mp(this, &AnimationMixer::_animation_renamed).bind(new_name));
 
 			for (const KeyValue<StringName, Ref<Animation>> &K : lib.library->animations) {
-				StringName old_name = p_name == StringName() ? K.key : StringName(String(p_name) + "/" + String(K.key));
-				StringName new_name = p_new_name == StringName() ? K.key : StringName(String(p_new_name) + "/" + String(K.key));
-				_rename_animation(old_name, new_name);
+				StringName old_name = name == StringName() ? K.key : StringName(String(name) + "/" + String(K.key));
+				StringName new_animation_name = new_name == StringName() ? K.key : StringName(String(new_name) + "/" + String(K.key));
+				_rename_animation(old_name, new_animation_name);
 			}
 		}
 	}
@@ -391,7 +418,9 @@ void AnimationMixer::rename_animation_library(const StringName &p_name, const St
 
 	_animation_set_cache_update(); // Update cache.
 
-	notify_property_list_changed();
+	if (ObjectDB::get_instance(mixer_id) == this) {
+		notify_property_list_changed();
+	}
 }
 
 LocalVector<StringName> AnimationMixer::get_sorted_animation_list() const {

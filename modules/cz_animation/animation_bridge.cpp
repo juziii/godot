@@ -72,6 +72,11 @@ struct CZAnimationBridge::State {
 	LocalVector<Signal> signals;
 	HashMap<StringName, BlendSpaceState> blend_spaces;
 	HashSet<StringName> safe_methods;
+	MethodValidationStatistics method_statistics;
+	uint64_t method_track_version = 0;
+	uint64_t method_animation_set_pass = 0;
+	bool methods_checked = false;
+	String method_failure;
 	AnimationPlayer::Playback playback;
 	StringName finished_animation;
 	ObjectID from_animation;
@@ -176,8 +181,19 @@ void CZAnimationBridge::detach_owner(State *p_state) {
 	p_state->owner = nullptr;
 }
 
+void CZAnimationBridge::reset_method_validation_statistics(State *p_state) {
+	p_state->method_statistics = MethodValidationStatistics();
+}
+
+CZAnimationBridge::MethodValidationStatistics CZAnimationBridge::get_method_validation_statistics(const State *p_state) {
+	return p_state->method_statistics;
+}
+
 bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVector<Ref<SkeletonAnimationPose>> &p_poses) {
 	AnimationMixer *mixer = p_state->mixer;
+	// The processor retains itself and defers removed entries while preparing.
+	// A callout can delete the Node, but cannot dispose this registration State.
+	const ObjectID mixer_id = p_state->id;
 	p_state->reason = String();
 	p_state->success = false;
 	p_state->signals.clear();
@@ -202,7 +218,7 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 			}
 		}
 	}
-	if (ObjectDB::get_instance(p_state->id) != mixer || mixer->get_script_instance() || mixer->capture_cache.animation.is_valid()) {
+	if (ObjectDB::get_instance(mixer_id) != mixer || mixer->get_script_instance() || mixer->capture_cache.animation.is_valid()) {
 		p_state->reason = "Script mixer or capture animation requires synchronous evaluation.";
 		return false;
 	}
@@ -220,34 +236,93 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 		p_state->reason = "Unresolved animation bindings.";
 		return false;
 	}
-	for (const KeyValue<StringName, AnimationMixer::AnimationData> &kv : mixer->animation_set) {
-		const Ref<Animation> &animation = kv.value.animation;
-		for (int track = 0; track < animation->get_track_count(); track++) {
-			if (animation->track_is_enabled(track) && animation->track_get_type(track) == Animation::TYPE_METHOD) {
-				for (int key = 0; key < animation->track_get_key_count(track); key++) {
-					if (!p_state->safe_methods.has(animation->method_track_get_name(track, key))) {
-						p_state->reason = "Immediate method track requires synchronous evaluation.";
-						return false;
+	if (ObjectDB::get_instance(mixer_id) != mixer) {
+		p_state->reason = "Animation mixer was deleted during preparation.";
+		return false;
+	}
+	// safe_methods is immutable for this registration. Check the whole library,
+	// including inactive clips, once per binding/content revision. New clips can
+	// invalidate cache_valid without _clear_caches(), so both versions matter.
+	if (!p_state->methods_checked || p_state->method_track_version != mixer->track_map_version ||
+			p_state->method_animation_set_pass != mixer->animation_set_update_pass) {
+		p_state->method_statistics.scans++;
+		p_state->method_failure = String();
+		for (const KeyValue<StringName, AnimationMixer::AnimationData> &kv : mixer->animation_set) {
+			p_state->method_statistics.animations++;
+			const Ref<Animation> &animation = kv.value.animation;
+			for (int track = 0; track < animation->get_track_count(); track++) {
+				p_state->method_statistics.tracks++;
+				if (animation->track_is_enabled(track) && animation->track_get_type(track) == Animation::TYPE_METHOD) {
+					for (int key = 0; key < animation->track_get_key_count(track); key++) {
+						p_state->method_statistics.keys++;
+						if (!p_state->safe_methods.has(animation->method_track_get_name(track, key))) {
+							p_state->method_failure = "Immediate method track requires synchronous evaluation.";
+							break;
+						}
 					}
 				}
+				if (!p_state->method_failure.is_empty()) {
+					break;
+				}
+			}
+			if (!p_state->method_failure.is_empty()) {
+				break;
 			}
 		}
+		p_state->method_track_version = mixer->track_map_version;
+		p_state->method_animation_set_pass = mixer->animation_set_update_pass;
+		p_state->methods_checked = true;
+	} else {
+		p_state->method_statistics.cache_hits++;
 	}
+	if (!p_state->method_failure.is_empty()) {
+		p_state->reason = p_state->method_failure;
+		return false;
+	}
+	const auto certificate_current = [&]() {
+		if (ObjectDB::get_instance(mixer_id) != mixer) {
+			p_state->reason = "Animation mixer was deleted during preparation.";
+			return false;
+		}
+		if (!mixer->cache_valid || !p_state->methods_checked || p_state->method_track_version != mixer->track_map_version ||
+				p_state->method_animation_set_pass != mixer->animation_set_update_pass) {
+			p_state->reason = "Animation bindings changed during preparation.";
+			return false;
+		}
+		return true;
+	};
 	if (AnimationTree *tree = Object::cast_to<AnimationTree>(mixer)) {
 		if (tree->properties_dirty || tree->validation_dirty) {
 			p_state->blend_spaces.clear();
 		}
 		tree->_update_properties();
+		if (!certificate_current()) {
+			return false;
+		}
 		if (tree->validation_dirty) {
 			tree->_update_connections();
 			tree->validation_dirty = false;
 		}
+		LocalVector<Ref<AnimationNodeBlendSpace2D>> dirty_spaces;
 		for (const KeyValue<StringName, AnimationNodeInstance> &kv : tree->instance_map) {
 			if (AnimationNodeBlendSpace2D *space = Object::cast_to<AnimationNodeBlendSpace2D>(kv.value.resource.ptr())) {
-				space->_update_triangles();
+				if (space->auto_triangles && space->triangles_dirty) {
+					dirty_spaces.push_back(Ref<AnimationNodeBlendSpace2D>(space));
+				}
+			}
+		}
+		// triangles_updated can replace the graph. Keep resources alive and do
+		// not retain an instance_map iterator across that arbitrary callout.
+		for (const Ref<AnimationNodeBlendSpace2D> &space : dirty_spaces) {
+			space->_update_triangles();
+			if (!certificate_current()) {
+				return false;
 			}
 		}
 		tree->_update_properties();
+		if (!certificate_current()) {
+			return false;
+		}
 		if (tree->validation_dirty) {
 			tree->_update_connections();
 			tree->validation_dirty = false;
@@ -257,6 +332,12 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 			return false;
 		}
 		for (const KeyValue<StringName, AnimationNodeInstance> &kv : tree->instance_map) {
+			if (AnimationNodeBlendSpace2D *space = Object::cast_to<AnimationNodeBlendSpace2D>(kv.value.resource.ptr())) {
+				if (space->auto_triangles && space->triangles_dirty) {
+					p_state->reason = "Animation graph changed during triangle preparation.";
+					return false;
+				}
+			}
 			if (!p_state->blend_spaces.has(kv.key)) {
 				p_state->blend_spaces.insert(kv.key, BlendSpaceState());
 			}
@@ -389,7 +470,7 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 			binding.tracks_valid = true;
 		}
 	}
-	return true;
+	return certificate_current();
 }
 
 void CZAnimationBridge::evaluate(State *p_state) {
@@ -621,6 +702,16 @@ void CZAnimationBridge::synchronize(AnimationMixer *p_mixer) {
 	}
 }
 
+void CZAnimationBridge::synchronize_resource() {
+	// Resource construction on a worker must not wait for its own group. A
+	// library mutation on the scene thread can affect several mixers, including
+	// inside a Player mutation scope, so it cannot use that scope's global skip.
+	if (!Thread::is_main_thread() || (evaluation_state && evaluation_state->evaluating)) {
+		return;
+	}
+	AnimationBatchProcessor::finish_pending_frames();
+}
+
 void CZAnimationBridge::begin_player_mutation(AnimationMixer *p_mixer) {
 	synchronize(p_mixer);
 	player_mutation_depth++;
@@ -811,6 +902,7 @@ void CZAnimationBridge::invalidate_skeleton(Skeleton3D *p_skeleton, bool p_bindi
 void CZAnimationBridge::invalidate_binding_cache(AnimationMixer *p_mixer) {
 	State **state = mixer_states.getptr(p_mixer->get_instance_id());
 	if (state) {
+		(*state)->methods_checked = false;
 		for (State::PoseBinding &binding : (*state)->poses) {
 			binding.track_version = 0;
 			binding.tracks_valid = false;

@@ -190,6 +190,7 @@ int64_t AnimationBatchProcessor::submit(int p_batch_size, int p_max_workers) {
 	batch_size = p_batch_size;
 	preparing = true;
 	for (Entry *entry : entries) {
+		CZAnimationBridge::reset_method_validation_statistics(entry->state);
 		if (!entry->queued || entry->removed || !CZAnimationBridge::mixer(entry->state)) {
 			continue;
 		}
@@ -482,6 +483,7 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
 	int counts[3] = {}, fallback_counts[3] = {}, evaluated_counts[3] = {};
 	int samples = 0, displays = 0, exact = 0, active_bones = 0, total_bones = 0;
 	uint64_t sample_blend_us = 0, interpolate_us = 0, skin_pack_us = 0, matrix_us = 0, pose_memory_bytes = 0, copies = 0, captured_bones = 0;
+	CZAnimationBridge::MethodValidationStatistics method_statistics;
 	for (const Entry *entry : work) {
 		AnimationMixer *mixer = CZAnimationBridge::mixer(entry->state);
 		if (!mixer || entry->removed) {
@@ -489,6 +491,12 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
 		}
 		const int kind = entry->parent ? 2 : (Object::cast_to<AnimationPlayer>(mixer) ? 1 : 0);
 		counts[kind]++;
+		const CZAnimationBridge::MethodValidationStatistics validation = CZAnimationBridge::get_method_validation_statistics(entry->state);
+		method_statistics.cache_hits += validation.cache_hits;
+		method_statistics.scans += validation.scans;
+		method_statistics.animations += validation.animations;
+		method_statistics.tracks += validation.tracks;
+		method_statistics.keys += validation.keys;
 		fallback_counts[kind] += !entry->prepared;
 		evaluated_counts[kind] += was_evaluated(entry->handle);
 		bool sampled = entry->sample;
@@ -526,6 +534,11 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
 	result["active_bones"] = active_bones;
 	result["total_bones"] = total_bones;
 	result["full_bones"] = total_bones;
+	result["method_validation_cache_hits"] = method_statistics.cache_hits;
+	result["method_validation_scans"] = method_statistics.scans;
+	result["method_validation_animations"] = method_statistics.animations;
+	result["method_validation_tracks"] = method_statistics.tracks;
+	result["method_validation_keys"] = method_statistics.keys;
 	if (group == -1) {
 		// These are work totals across entries, not parallel frame wall time.
 		result["sample_blend_us"] = sample_blend_us;

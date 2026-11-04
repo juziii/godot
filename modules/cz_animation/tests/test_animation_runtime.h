@@ -38,6 +38,7 @@
 #include "tests/test_macros.h"
 
 #include "modules/cz_animation/animation_batch_processor.h"
+#include "modules/cz_animation/animation_hooks.h"
 
 namespace TestCZAnimationRuntime {
 
@@ -64,7 +65,7 @@ struct Rig {
 	Ref<AnimationBatchProcessor> processor;
 	int64_t handle = 0;
 
-	explicit Rig(const Ref<AnimationBatchProcessor> &p_processor = Ref<AnimationBatchProcessor>()) {
+	explicit Rig(const Ref<AnimationBatchProcessor> &p_processor = Ref<AnimationBatchProcessor>(), const PackedStringArray &p_safe_methods = PackedStringArray()) {
 		root = memnew(Node3D);
 		skeleton = memnew(Skeleton3D);
 		skeleton->set_name("Skeleton3D");
@@ -116,7 +117,7 @@ struct Rig {
 			processor.instantiate();
 		}
 		REQUIRE(pose->capture(skeleton));
-		handle = processor->register_tree(tree, { pose }, {});
+		handle = processor->register_tree(tree, { pose }, p_safe_methods);
 		REQUIRE(handle != 0);
 	}
 
@@ -129,6 +130,66 @@ struct Rig {
 		processor->unregister_tree(handle);
 		processor->complete_and_publish();
 		memdelete(root);
+	}
+};
+
+static Ref<Animation> make_method_animation(const StringName &p_method) {
+	Ref<Animation> animation;
+	animation.instantiate();
+	const int track = animation->add_track(Animation::TYPE_METHOD);
+	animation->track_set_path(track, NodePath("."));
+	Dictionary key;
+	key["method"] = p_method;
+	key["args"] = Array{ 0.125 };
+	animation->track_insert_key(track, 0.5, key);
+	return animation;
+}
+
+static int64_t method_statistic(const Ref<AnimationBatchProcessor> &p_processor, const StringName &p_name) {
+	return int64_t(p_processor->get_statistics().get(p_name, int64_t(-1)));
+}
+
+class LibraryBeforeApply : public RefCounted {
+	GDCLASS(LibraryBeforeApply, RefCounted);
+
+protected:
+	static void _bind_methods() {}
+
+public:
+	Ref<AnimationLibrary> library;
+	Ref<Animation> expected_animation;
+	AnimationTree *tree = nullptr;
+	StringName name;
+	bool expected_library = false;
+	bool matches = true;
+	int calls = 0;
+
+	void watch_animation(const Ref<AnimationLibrary> &p_library, const StringName &p_name, const Ref<Animation> &p_expected) {
+		library = p_library;
+		expected_animation = p_expected;
+		tree = nullptr;
+		name = p_name;
+		matches = true;
+		calls = 0;
+	}
+	void watch_library(AnimationTree *p_tree, const StringName &p_name, bool p_present) {
+		tree = p_tree;
+		name = p_name;
+		expected_library = p_present;
+		matches = true;
+		calls = 0;
+	}
+	void applied() {
+		calls++;
+		if (tree) {
+			matches &= tree->has_animation_library(name) == expected_library;
+		} else {
+			const bool present = library->has_animation(name);
+			matches &= present == expected_animation.is_valid();
+			if (present && expected_animation.is_valid()) {
+				matches &= library->get_animation(name) == expected_animation;
+			}
+		}
 	}
 };
 
@@ -547,6 +608,224 @@ TEST_CASE("[SceneTree][CZAnimation] Live deprecated global overrides invalidate 
 		rig.processor->complete_and_publish();
 		CHECK(rig.processor->was_evaluated(rig.handle));
 	}
+}
+#endif
+
+TEST_CASE("[SceneTree][CZAnimation] Method policy certificates invalidate on method keys enabled tracks and new clips") {
+	Rig rig(Ref<AnimationBatchProcessor>(), { "rotate_y" });
+	const Ref<AnimationLibrary> library = rig.tree->get_animation_library(StringName());
+	const Ref<Animation> still = library->get_animation("Still");
+	const Ref<Animation> new_unsafe = make_method_animation("rotate_x");
+	rig.submit();
+	rig.processor->complete_and_publish();
+	CHECK(rig.processor->was_evaluated(rig.handle));
+	CHECK(method_statistic(rig.processor, "method_validation_scans") == 1);
+	CHECK(method_statistic(rig.processor, "method_validation_tracks") == 2);
+	rig.submit();
+	rig.processor->complete_and_publish();
+	CHECK(method_statistic(rig.processor, "method_validation_cache_hits") == 1);
+	CHECK(method_statistic(rig.processor, "method_validation_scans") == 0);
+	CHECK(method_statistic(rig.processor, "method_validation_tracks") == 0);
+
+	const int method = still->add_track(Animation::TYPE_METHOD);
+	still->track_set_path(method, NodePath("."));
+	Dictionary key;
+	key["method"] = StringName("rotate_y");
+	key["args"] = Array{ 0.125 };
+	still->track_insert_key(method, 0.5, key);
+	rig.submit();
+	rig.processor->complete_and_publish();
+	CHECK(rig.processor->was_evaluated(rig.handle));
+	CHECK(method_statistic(rig.processor, "method_validation_scans") == 1);
+	CHECK(method_statistic(rig.processor, "method_validation_keys") == 1);
+
+	// Same track/key count and target path: content changes must still expire
+	// the certificate, including clips not selected by the current graph.
+	key["method"] = StringName("rotate_x");
+	still->track_set_key_value(method, 0, key);
+	rig.submit();
+	rig.processor->complete_and_publish();
+	CHECK_FALSE(rig.processor->was_evaluated(rig.handle));
+	CHECK(rig.processor->get_fallback_reason(rig.handle) == "Immediate method track requires synchronous evaluation.");
+	CHECK(method_statistic(rig.processor, "method_validation_scans") == 1);
+	REQUIRE(rig.pose->capture(rig.skeleton));
+	rig.submit();
+	rig.processor->complete_and_publish();
+	CHECK_FALSE(rig.processor->was_evaluated(rig.handle));
+	CHECK(method_statistic(rig.processor, "method_validation_cache_hits") == 1);
+	CHECK(method_statistic(rig.processor, "method_validation_scans") == 0);
+
+	still->track_set_enabled(method, false);
+	REQUIRE(rig.pose->capture(rig.skeleton));
+	rig.submit();
+	rig.processor->complete_and_publish();
+	CHECK(rig.processor->was_evaluated(rig.handle));
+	CHECK(method_statistic(rig.processor, "method_validation_scans") == 1);
+	still->track_set_enabled(method, true);
+	rig.submit();
+	rig.processor->complete_and_publish();
+	CHECK_FALSE(rig.processor->was_evaluated(rig.handle));
+	key["method"] = StringName("rotate_y");
+	still->track_set_key_value(method, 0, key);
+	REQUIRE(rig.pose->capture(rig.skeleton));
+	rig.submit();
+	rig.processor->complete_and_publish();
+	CHECK(rig.processor->was_evaluated(rig.handle));
+
+	// A new library entry only sets cache_valid=false in the official mixer;
+	// it does not necessarily call invalidate_binding_cache().
+	REQUIRE(library->add_animation("Unused", new_unsafe) == OK);
+	rig.submit();
+	rig.processor->complete_and_publish();
+	CHECK_FALSE(rig.processor->was_evaluated(rig.handle));
+	CHECK(method_statistic(rig.processor, "method_validation_scans") == 1);
+	library->remove_animation("Unused");
+	REQUIRE(rig.pose->capture(rig.skeleton));
+	rig.submit();
+	rig.processor->complete_and_publish();
+	CHECK(rig.processor->was_evaluated(rig.handle));
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Animation library mutations finish pending publication before changing contents") {
+	Rig rig;
+	Rig other;
+	const Ref<AnimationLibrary> library = rig.tree->get_animation_library(StringName());
+	const Ref<Animation> extra = rig.animation->duplicate(true);
+	const Ref<Animation> replacement = rig.animation->duplicate(true);
+	Ref<LibraryBeforeApply> check;
+	check.instantiate();
+	rig.tree->connect(SNAME("mixer_applied"), callable_mp(check.ptr(), &LibraryBeforeApply::applied));
+	check->watch_animation(library, "Extra", Ref<Animation>());
+	rig.submit();
+	{
+		// An unrelated Player mutation scope must not suppress the shared
+		// resource barrier, even though its own mixer has no pending work.
+		CZAnimationMutationScope scope(other.tree);
+		REQUIRE(library->add_animation("Extra", extra) == OK);
+	}
+	CHECK_FALSE(rig.processor->is_pending());
+	CHECK(check->calls == 1);
+	CHECK(check->matches);
+
+	check->watch_animation(library, "Extra", extra);
+	rig.submit();
+	REQUIRE(library->add_animation("Extra", replacement) == OK);
+	CHECK_FALSE(rig.processor->is_pending());
+	CHECK(check->calls == 1);
+	CHECK(check->matches);
+	CHECK(library->get_animation("Extra") == replacement);
+
+	check->watch_animation(library, "Extra", replacement);
+	rig.submit();
+	library->rename_animation("Extra", "Renamed");
+	CHECK_FALSE(rig.processor->is_pending());
+	CHECK(check->calls == 1);
+	CHECK(check->matches);
+	CHECK_FALSE(library->has_animation("Extra"));
+	CHECK(library->get_animation("Renamed") == replacement);
+
+	check->watch_animation(library, "Renamed", replacement);
+	rig.submit();
+	library->remove_animation("Renamed");
+	CHECK_FALSE(rig.processor->is_pending());
+	CHECK(check->calls == 1);
+	CHECK(check->matches);
+	CHECK_FALSE(library->has_animation("Renamed"));
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Tree library changes publish the old frame before writing membership") {
+	Rig rig;
+	Ref<AnimationLibrary> extra;
+	extra.instantiate();
+	REQUIRE(extra->add_animation("ExtraMove", rig.animation->duplicate(true)) == OK);
+	Ref<LibraryBeforeApply> check;
+	check.instantiate();
+	rig.tree->connect(SNAME("mixer_applied"), callable_mp(check.ptr(), &LibraryBeforeApply::applied));
+	check->watch_library(rig.tree, "Extra", false);
+	rig.submit();
+	REQUIRE(rig.tree->add_animation_library("Extra", extra) == OK);
+	CHECK(rig.processor->is_pending());
+	CHECK(check->calls == 1);
+	CHECK(check->matches);
+	rig.processor->complete_and_publish();
+	CHECK_FALSE(rig.processor->is_pending());
+	CHECK(check->calls == 1);
+
+	check->watch_library(rig.tree, "Extra", true);
+	rig.submit();
+	rig.tree->rename_animation_library("Extra", "Renamed");
+	CHECK(rig.processor->is_pending());
+	CHECK(check->calls == 1);
+	CHECK(check->matches);
+	rig.processor->complete_and_publish();
+	CHECK_FALSE(rig.processor->is_pending());
+	CHECK(check->calls == 1);
+	CHECK(rig.tree->has_animation_library("Renamed"));
+	CHECK(rig.tree->has_animation("Renamed/ExtraMove"));
+	CHECK_FALSE(rig.tree->has_animation("Extra/ExtraMove"));
+
+	check->watch_library(rig.tree, "Renamed", true);
+	rig.submit();
+	rig.tree->remove_animation_library("Renamed");
+	CHECK(rig.processor->is_pending());
+	CHECK(check->calls == 1);
+	CHECK(check->matches);
+	rig.processor->complete_and_publish();
+	CHECK_FALSE(rig.processor->is_pending());
+	CHECK(check->calls == 1);
+	CHECK_FALSE(rig.tree->has_animation_library("Renamed"));
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Shared animation method certificates remain specific to each registration policy") {
+	Rig allowed(Ref<AnimationBatchProcessor>(), { "rotate_y" });
+	Rig rejected;
+	const Ref<Animation> shared = make_method_animation("rotate_y");
+	REQUIRE(allowed.tree->get_animation_library(StringName())->add_animation("Unused", shared) == OK);
+	REQUIRE(rejected.tree->get_animation_library(StringName())->add_animation("Unused", shared) == OK);
+	allowed.submit();
+	rejected.submit();
+	allowed.processor->complete_and_publish();
+	rejected.processor->complete_and_publish();
+	CHECK(allowed.processor->was_evaluated(allowed.handle));
+	CHECK_FALSE(rejected.processor->was_evaluated(rejected.handle));
+	REQUIRE(rejected.pose->capture(rejected.skeleton));
+	allowed.submit();
+	rejected.submit();
+	allowed.processor->complete_and_publish();
+	rejected.processor->complete_and_publish();
+	CHECK(allowed.processor->was_evaluated(allowed.handle));
+	CHECK_FALSE(rejected.processor->was_evaluated(rejected.handle));
+	CHECK(method_statistic(allowed.processor, "method_validation_cache_hits") == 1);
+	CHECK(method_statistic(rejected.processor, "method_validation_cache_hits") == 1);
+	CHECK(method_statistic(allowed.processor, "method_validation_scans") == 0);
+	CHECK(method_statistic(rejected.processor, "method_validation_scans") == 0);
+}
+
+#ifdef THREADS_ENABLED
+TEST_CASE("[SceneTree][CZAnimation] Independent worker library construction does not join pending scene work") {
+	Rig rig;
+	rig.submit();
+	Ref<AnimationLibrary> built;
+	Thread worker;
+	worker.start([](void *p_userdata) {
+		Ref<AnimationLibrary> &library = *static_cast<Ref<AnimationLibrary> *>(p_userdata);
+		library.instantiate();
+		Ref<Animation> clip;
+		clip.instantiate();
+		library->add_animation("First", clip);
+		library->rename_animation("First", "Ready");
+		library->remove_animation("Ready");
+		library->add_animation("Ready", clip);
+	},
+			&built);
+	REQUIRE(worker.is_started());
+	worker.wait_to_finish();
+	REQUIRE(built.is_valid());
+	CHECK(built->has_animation("Ready"));
+	CHECK(rig.processor->is_pending());
+	CHECK(rig.observer->count == 0);
+	rig.processor->complete_and_publish();
+	CHECK(rig.observer->count == 1);
 }
 #endif
 

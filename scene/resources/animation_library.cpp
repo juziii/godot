@@ -34,6 +34,8 @@
 #include "core/object/class_db.h"
 #include "scene/scene_string_names.h"
 
+#include "modules/cz_animation/animation_hooks.h"
+
 bool AnimationLibrary::is_valid_animation_name(const String &p_name) {
 	return !(p_name.is_empty() || p_name.contains_char('/') || p_name.contains_char(':') || p_name.contains_char(',') || p_name.contains_char('['));
 }
@@ -47,41 +49,52 @@ String AnimationLibrary::validate_library_name(const String &p_name) {
 }
 
 Error AnimationLibrary::add_animation(const StringName &p_name, const Ref<Animation> &p_animation) {
-	ERR_FAIL_COND_V_MSG(!is_valid_animation_name(p_name), ERR_INVALID_PARAMETER, "Invalid animation name: '" + String(p_name) + "'.");
-	ERR_FAIL_COND_V(p_animation.is_null(), ERR_INVALID_PARAMETER);
+	const StringName animation_name = p_name;
+	Ref<AnimationLibrary> keep_alive(this);
+	const Ref<Animation> animation = p_animation;
+	CZ_ANIMATION_SYNC_RESOURCE();
+	ERR_FAIL_COND_V_MSG(!is_valid_animation_name(animation_name), ERR_INVALID_PARAMETER, "Invalid animation name: '" + String(animation_name) + "'.");
+	ERR_FAIL_COND_V(animation.is_null(), ERR_INVALID_PARAMETER);
 
-	if (animations.has(p_name)) {
-		animations[p_name]->disconnect_changed(callable_mp(this, &AnimationLibrary::_animation_changed));
-		animations.erase(p_name);
-		emit_signal(SNAME("animation_removed"), p_name);
+	if (animations.has(animation_name)) {
+		animations[animation_name]->disconnect_changed(callable_mp(this, &AnimationLibrary::_animation_changed));
+		animations.erase(animation_name);
+		emit_signal(SNAME("animation_removed"), animation_name);
 	}
 
-	animations.insert(p_name, p_animation);
-	animations[p_name]->connect_changed(callable_mp(this, &AnimationLibrary::_animation_changed).bind(p_name));
-	emit_signal(SNAME("animation_added"), p_name);
+	animations.insert(animation_name, animation);
+	animations[animation_name]->connect_changed(callable_mp(this, &AnimationLibrary::_animation_changed).bind(animation_name));
+	emit_signal(SNAME("animation_added"), animation_name);
 	notify_property_list_changed();
 	return OK;
 }
 
 void AnimationLibrary::remove_animation(const StringName &p_name) {
-	ERR_FAIL_COND_MSG(!animations.has(p_name), vformat("Animation not found: %s.", p_name));
+	const StringName animation_name = p_name;
+	Ref<AnimationLibrary> keep_alive(this);
+	CZ_ANIMATION_SYNC_RESOURCE();
+	ERR_FAIL_COND_MSG(!animations.has(animation_name), vformat("Animation not found: %s.", animation_name));
 
-	animations[p_name]->disconnect_changed(callable_mp(this, &AnimationLibrary::_animation_changed));
-	animations.erase(p_name);
-	emit_signal(SNAME("animation_removed"), p_name);
+	animations[animation_name]->disconnect_changed(callable_mp(this, &AnimationLibrary::_animation_changed));
+	animations.erase(animation_name);
+	emit_signal(SNAME("animation_removed"), animation_name);
 	notify_property_list_changed();
 }
 
 void AnimationLibrary::rename_animation(const StringName &p_name, const StringName &p_new_name) {
-	ERR_FAIL_COND_MSG(!animations.has(p_name), vformat("Animation not found: %s.", p_name));
-	ERR_FAIL_COND_MSG(!is_valid_animation_name(p_new_name), "Invalid animation name: '" + String(p_new_name) + "'.");
-	ERR_FAIL_COND_MSG(animations.has(p_new_name), vformat("Animation name \"%s\" already exists in library.", p_new_name));
+	const StringName animation_name = p_name;
+	const StringName new_name = p_new_name;
+	Ref<AnimationLibrary> keep_alive(this);
+	CZ_ANIMATION_SYNC_RESOURCE();
+	ERR_FAIL_COND_MSG(!animations.has(animation_name), vformat("Animation not found: %s.", animation_name));
+	ERR_FAIL_COND_MSG(!is_valid_animation_name(new_name), "Invalid animation name: '" + String(new_name) + "'.");
+	ERR_FAIL_COND_MSG(animations.has(new_name), vformat("Animation name \"%s\" already exists in library.", new_name));
 
-	animations[p_name]->disconnect_changed(callable_mp(this, &AnimationLibrary::_animation_changed));
-	animations[p_name]->connect_changed(callable_mp(this, &AnimationLibrary::_animation_changed).bind(p_new_name));
-	animations.insert(p_new_name, animations[p_name]);
-	animations.erase(p_name);
-	emit_signal(SNAME("animation_renamed"), p_name, p_new_name);
+	animations[animation_name]->disconnect_changed(callable_mp(this, &AnimationLibrary::_animation_changed));
+	animations[animation_name]->connect_changed(callable_mp(this, &AnimationLibrary::_animation_changed).bind(new_name));
+	animations.insert(new_name, animations[animation_name]);
+	animations.erase(animation_name);
+	emit_signal(SNAME("animation_renamed"), animation_name, new_name);
 }
 
 bool AnimationLibrary::has_animation(const StringName &p_name) const {
