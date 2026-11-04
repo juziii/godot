@@ -33,18 +33,20 @@ namespace Godot.NativeInterop
             // If it doesn't have a CSharpInstance script instance, try with native instance bindings
 
             gcHandlePtr = NativeFuncs.godotsharp_internal_unmanaged_get_instance_binding_managed(unmanaged);
+            if (gcHandlePtr == IntPtr.Zero)
+                return null;
 
-            object target = gcHandlePtr != IntPtr.Zero ? GCHandle.FromIntPtr(gcHandlePtr).Target : null;
-
-            if (target != null)
-                return (GodotObject)target;
-
-            // If the native instance binding GC handle target was collected, create a new one
-
-            gcHandlePtr = NativeFuncs.godotsharp_internal_unmanaged_instance_binding_create_managed(
-                unmanaged, gcHandlePtr);
-
-            return gcHandlePtr != IntPtr.Zero ? (GodotObject)GCHandle.FromIntPtr(gcHandlePtr).Target : null;
+            // This independent strong handle stays valid if the binding swaps or
+            // releases its own handle before we finish reading the target.
+            var temporaryHandle = GCHandle.FromIntPtr(gcHandlePtr);
+            try
+            {
+                return (GodotObject)temporaryHandle.Target;
+            }
+            finally
+            {
+                temporaryHandle.Free();
+            }
         }
 
         public static void TieManagedToUnmanaged(GodotObject managed, IntPtr unmanaged,
@@ -57,7 +59,7 @@ namespace Godot.NativeInterop
             if (type == nativeType)
             {
                 var nativeNameSelf = (godot_string_name)nativeName.NativeValue;
-                NativeFuncs.godotsharp_internal_tie_native_managed_to_unmanaged(
+                managed.NativeInstanceBindingGeneration = NativeFuncs.godotsharp_internal_tie_native_managed_to_unmanaged(
                     GCHandle.ToIntPtr(gcHandle), unmanaged, nativeNameSelf, refCounted.ToGodotBool());
             }
             else

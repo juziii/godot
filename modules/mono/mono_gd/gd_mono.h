@@ -58,7 +58,13 @@ struct PluginCallbacks {
 
 } // namespace gdmono
 
+namespace TestResourceCache {
+class CSharpCacheTestAccess;
+}
+
 class GDMono {
+	friend class TestResourceCache::CSharpCacheTestAccess;
+
 	bool initialized = false;
 	bool runtime_initialized = false;
 	bool finalizing_scripts_domain = false;

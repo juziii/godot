@@ -39,11 +39,14 @@ TEST_FORCE_LINK(test_resource_cache)
 #include "core/os/os.h"
 #include "core/os/semaphore.h"
 #include "core/os/thread.h"
+#include "core/templates/hash_set.h"
+#include "core/templates/local_vector.h"
 
 #include "modules/modules_enabled.gen.h"
 
 #ifdef MODULE_MONO_ENABLED
 #include "modules/mono/csharp_script.h"
+#include "modules/mono/mono_gd/gd_mono.h"
 #include "modules/mono/mono_gd/gd_mono_cache.h"
 #endif
 
@@ -253,6 +256,14 @@ public:
 		mutex.unlock();
 		return true;
 	}
+
+	static CSharpScriptBinding &binding(Object *p_owner) {
+		return ((RBMap<Object *, CSharpScriptBinding>::Element *)CSharpLanguage::get_existing_instance_binding(p_owner))->value();
+	}
+
+	static void set_test_runtime_initialized(GDMono *p_runtime, bool p_initialized) {
+		p_runtime->runtime_initialized = p_initialized;
+	}
 };
 
 struct CSharpReferenceRaceState {
@@ -367,6 +378,276 @@ TEST_CASE("[ResourceCache] CSharp handle demotion excludes cached-reference prep
 	CHECK(state.queried.ptr() == state.owner);
 	CHECK_EQ(state.promotions.get(), 1);
 	CHECK(CSharpCacheTestAccess::has_strong_handle(state.instance));
+}
+
+// Exercise the native binding protocol without a CLR. These callbacks model
+// separate owned handles and collected short-weak targets, not managed GC itself.
+struct NativeBindingHandle {
+	uint64_t target = 0;
+	bool weak = false;
+};
+
+struct NativeBindingTestState;
+static NativeBindingTestState *native_binding_test = nullptr;
+
+struct NativeBindingTestState {
+	GDMonoCache::ManagedCallbacks previous_callbacks;
+	GDMono *runtime = nullptr;
+	bool previous_api_cache_updated = false;
+	Ref<Resource> native;
+	ObjectID owner_id;
+	HashMap<uintptr_t, NativeBindingHandle> handles;
+	LocalVector<uint64_t> wrappers;
+	HashSet<uint64_t> collected;
+	uintptr_t next_handle = 1;
+	int creations = 0;
+	bool fail_create = false;
+	bool fail_copy = false;
+	SafeFlag invalid_handle;
+	SafeFlag block_copy;
+	SafeFlag release_finished;
+	Semaphore copy_entered;
+	Semaphore copy_release;
+	Semaphore release_started;
+	Thread copy_thread;
+	Thread release_thread;
+	bool copy_thread_started = false;
+	bool release_thread_started = false;
+	GCHandleIntPtr copied_handle = { nullptr };
+	GCHandleIntPtr handle_to_release = { nullptr };
+	CSharpScriptBinding *binding_to_release = nullptr;
+
+	GCHandleIntPtr allocate(uint64_t p_target, bool p_weak) {
+		uintptr_t handle = next_handle++;
+		handles.insert(handle, { p_target, p_weak });
+		return { reinterpret_cast<void *>(handle) };
+	}
+
+	bool alive(GCHandleIntPtr p_handle) {
+		const NativeBindingHandle *handle = handles.getptr(uintptr_t(p_handle.value));
+		if (!handle) {
+			invalid_handle.set();
+			return false;
+		}
+		return !handle->weak || !collected.has(handle->target);
+	}
+
+	void free(GCHandleIntPtr p_handle) {
+		if (!handles.erase(uintptr_t(p_handle.value))) {
+			invalid_handle.set();
+		}
+	}
+
+	Resource *owner() { return Object::cast_to<Resource>(ObjectDB::get_instance(owner_id)); }
+	CSharpScriptBinding &binding() { return CSharpCacheTestAccess::binding(owner()); }
+	void dispose(uint64_t p_generation) {
+		CSharpLanguage::dispose_instance_binding(owner(), p_generation, true);
+		wrappers.erase(p_generation);
+	}
+	NativeBindingTestState();
+	~NativeBindingTestState();
+};
+
+static GCHandleIntPtr GD_CLR_STDCALL create_test_binding(const StringName *, Object *, uint64_t p_generation) {
+	NativeBindingTestState &state = *native_binding_test;
+	if (state.fail_create) {
+		return { nullptr };
+	}
+	state.creations++;
+	state.wrappers.push_back(p_generation);
+	return state.allocate(p_generation, false);
+}
+
+static GCHandleIntPtr GD_CLR_STDCALL copy_test_binding(GCHandleIntPtr p_handle, bool *r_target_alive) {
+	NativeBindingTestState &state = *native_binding_test;
+	*r_target_alive = state.alive(p_handle);
+	if (!*r_target_alive || state.fail_copy) {
+		return { nullptr };
+	}
+	if (state.block_copy.is_set()) {
+		state.copy_entered.post();
+		state.copy_release.wait();
+	}
+	return state.allocate(state.handles[uintptr_t(p_handle.value)].target, false);
+}
+
+static bool GD_CLR_STDCALL swap_test_binding(GCHandleIntPtr p_handle, GCHandleIntPtr *r_new_handle, bool p_weak) {
+	NativeBindingTestState &state = *native_binding_test;
+	if (!state.alive(p_handle)) {
+		*r_new_handle = p_handle;
+		return false;
+	}
+	uint64_t target = state.handles[uintptr_t(p_handle.value)].target;
+	state.free(p_handle);
+	*r_new_handle = state.allocate(target, p_weak);
+	return true;
+}
+
+static void GD_CLR_STDCALL free_test_binding(GCHandleIntPtr p_handle) {
+	native_binding_test->free(p_handle);
+}
+
+static void GD_CLR_STDCALL clear_test_binding_pointer(GCHandleIntPtr, Object *) {}
+
+NativeBindingTestState::NativeBindingTestState() {
+	// Native --test has no CLR. A scoped real GDMono object and synthetic
+	// initialized host state let release() exercise its normal callback path;
+	// its production preconditions remain unchanged. All callbacks used below
+	// are replaced before any synthetic handle is installed.
+	runtime = memnew(GDMono);
+	CSharpCacheTestAccess::set_test_runtime_initialized(runtime, true);
+	previous_callbacks = GDMonoCache::managed_callbacks;
+	previous_api_cache_updated = GDMonoCache::godot_api_cache_updated;
+	native_binding_test = this;
+	GDMonoCache::managed_callbacks.ScriptManagerBridge_CreateManagedForGodotObjectBinding = create_test_binding;
+	GDMonoCache::managed_callbacks.GCHandleBridge_AllocStrongGCHandle = copy_test_binding;
+	GDMonoCache::managed_callbacks.ScriptManagerBridge_SwapGCHandleForType = swap_test_binding;
+	GDMonoCache::managed_callbacks.GCHandleBridge_FreeGCHandle = free_test_binding;
+	GDMonoCache::managed_callbacks.ScriptManagerBridge_SetGodotObjectPtr = clear_test_binding_pointer;
+	GDMonoCache::godot_api_cache_updated = true;
+	native.instantiate();
+	owner_id = native->get_instance_id();
+}
+
+NativeBindingTestState::~NativeBindingTestState() {
+	block_copy.clear();
+	copy_release.post();
+	if (copy_thread_started) {
+		copy_thread.wait_to_finish();
+	}
+	if (release_thread_started) {
+		release_thread.wait_to_finish();
+	}
+	if (copied_handle.value) {
+		free(copied_handle);
+	}
+	while (!wrappers.is_empty()) {
+		dispose(wrappers[wrappers.size() - 1]);
+	}
+	native.unref();
+	CHECK(handles.is_empty());
+	CHECK_FALSE(invalid_handle.is_set());
+	GDMonoCache::managed_callbacks = previous_callbacks;
+	GDMonoCache::godot_api_cache_updated = previous_api_cache_updated;
+	native_binding_test = nullptr;
+	CSharpCacheTestAccess::set_test_runtime_initialized(runtime, false);
+	memdelete(runtime);
+}
+
+static void copy_native_binding(void *p_userdata) {
+	NativeBindingTestState &state = *static_cast<NativeBindingTestState *>(p_userdata);
+	state.copied_handle = CSharpLanguage::get_instance_binding_managed(state.owner());
+}
+
+static void release_native_binding(void *p_userdata) {
+	NativeBindingTestState &state = *static_cast<NativeBindingTestState *>(p_userdata);
+	state.release_started.post();
+	CSharpLanguage::release_binding_gchandle_thread_safe(state.handle_to_release, *state.binding_to_release);
+	state.release_finished.set();
+}
+
+TEST_CASE("[ResourceCache] Native binding reinitialization does not reuse a released handle") {
+	REQUIRE(CSharpLanguage::get_singleton() != nullptr);
+	REQUIRE(GDMono::get_singleton() == nullptr);
+	NativeBindingTestState state;
+	GCHandleIntPtr first = CSharpLanguage::get_instance_binding_managed(state.owner());
+	REQUIRE(first.value != nullptr);
+	state.free(first);
+	uint64_t old_generation = state.binding().generation;
+	CSharpLanguage::release_binding_gchandle_thread_safe(state.binding().gchandle.get_intptr(), state.binding());
+	CHECK_FALSE(state.binding().inited);
+	GCHandleIntPtr replacement = CSharpLanguage::get_instance_binding_managed(state.owner());
+	REQUIRE(replacement.value != nullptr);
+	state.free(replacement);
+	CHECK_EQ(state.creations, 2);
+	CHECK(state.binding().generation > old_generation);
+	state.dispose(old_generation);
+	CHECK(state.binding().inited);
+	CHECK_EQ(state.owner()->get_reference_count(), 2); // Native Ref and replacement wrapper.
+}
+
+TEST_CASE("[ResourceCache] Collected native wrapper finalizer cannot clear its replacement") {
+	REQUIRE(CSharpLanguage::get_singleton() != nullptr);
+	REQUIRE(GDMono::get_singleton() == nullptr);
+	NativeBindingTestState state;
+	GCHandleIntPtr first = CSharpLanguage::get_instance_binding_managed(state.owner());
+	REQUIRE(first.value != nullptr);
+	state.free(first);
+	uint64_t old_generation = state.binding().generation;
+	state.native.unref();
+	REQUIRE(state.binding().gchandle.is_weak());
+	state.collected.insert(old_generation);
+	// Model ResourceCache reacquiring a native Ref before the old finalizer runs.
+	state.native = state.owner();
+	GCHandleIntPtr replacement = CSharpLanguage::get_instance_binding_managed(state.owner());
+	REQUIRE(replacement.value != nullptr);
+	state.free(replacement);
+	uint64_t new_generation = state.binding().generation;
+	state.native.unref();
+	state.dispose(old_generation); // This decrement demotes the replacement.
+	CHECK(state.binding().inited);
+	CHECK_EQ(state.binding().generation, new_generation);
+	CHECK(state.binding().gchandle.is_weak());
+	CHECK_EQ(state.owner()->get_reference_count(), 1);
+}
+
+TEST_CASE("[ResourceCache] Native binding creation and strong-copy failures preserve ownership") {
+	REQUIRE(CSharpLanguage::get_singleton() != nullptr);
+	REQUIRE(GDMono::get_singleton() == nullptr);
+	NativeBindingTestState state;
+	GCHandleIntPtr first = CSharpLanguage::get_instance_binding_managed(state.owner());
+	REQUIRE(first.value != nullptr);
+	state.free(first);
+	state.fail_copy = true;
+	CHECK(CSharpLanguage::get_instance_binding_managed(state.owner()).value == nullptr);
+	CHECK_EQ(state.creations, 1);
+	CHECK_EQ(state.owner()->get_reference_count(), 2);
+	state.fail_copy = false;
+	uint64_t generation = state.binding().generation;
+	state.native.unref();
+	state.collected.insert(generation);
+	state.native = state.owner();
+	state.fail_create = true;
+	GCHandleIntPtr previous = state.binding().gchandle.get_intptr();
+	ERR_PRINT_OFF;
+	GCHandleIntPtr failed = CSharpLanguage::get_instance_binding_managed(state.owner());
+	ERR_PRINT_ON;
+	CHECK(failed.value == nullptr);
+	CHECK_EQ(state.binding().generation, generation);
+	CHECK(state.binding().gchandle.get_intptr().value == previous.value);
+	CHECK_EQ(state.owner()->get_reference_count(), 2); // Failed creation returned its pin.
+}
+
+TEST_CASE("[ResourceCache] Native binding copies its target before a concurrent release") {
+	REQUIRE(CSharpLanguage::get_singleton() != nullptr);
+	REQUIRE(GDMono::get_singleton() == nullptr);
+	NativeBindingTestState state;
+	GCHandleIntPtr first = CSharpLanguage::get_instance_binding_managed(state.owner());
+	REQUIRE(first.value != nullptr);
+	state.free(first);
+	state.binding_to_release = &state.binding();
+	state.handle_to_release = state.binding().gchandle.get_intptr();
+	state.block_copy.set();
+	state.copy_thread_started = state.copy_thread.start(copy_native_binding, &state) != Thread::UNASSIGNED_ID;
+	REQUIRE(state.copy_thread_started);
+	state.copy_entered.wait();
+	state.release_thread_started = state.release_thread.start(release_native_binding, &state) != Thread::UNASSIGNED_ID;
+	REQUIRE(state.release_thread_started);
+	state.release_started.wait();
+	for (int i = 0; i < 100 && !state.release_finished.is_set(); i++) {
+		OS::get_singleton()->delay_usec(1000);
+	}
+	CHECK_FALSE(state.release_finished.is_set());
+	state.block_copy.clear();
+	state.copy_release.post();
+	state.copy_thread.wait_to_finish();
+	state.copy_thread_started = false;
+	state.release_thread.wait_to_finish();
+	state.release_thread_started = false;
+	CHECK(state.release_finished.is_set());
+	CHECK_FALSE(state.binding().inited);
+	REQUIRE(state.copied_handle.value != nullptr);
+	CHECK(state.alive(state.copied_handle)); // Independent ownership after binding release.
 }
 
 #endif // MODULE_MONO_ENABLED

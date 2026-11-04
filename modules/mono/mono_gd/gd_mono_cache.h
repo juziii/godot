@@ -84,7 +84,7 @@ struct ManagedCallbacks {
 	using FuncDelegateUtils_TrySerializeDelegateWithGCHandle = bool(GD_CLR_STDCALL *)(GCHandleIntPtr, const Array *);
 	using FuncDelegateUtils_TryDeserializeDelegateWithGCHandle = bool(GD_CLR_STDCALL *)(const Array *, GCHandleIntPtr *);
 	using FuncScriptManagerBridge_FrameCallback = void(GD_CLR_STDCALL *)();
-	using FuncScriptManagerBridge_CreateManagedForGodotObjectBinding = GCHandleIntPtr(GD_CLR_STDCALL *)(const StringName *, Object *);
+	using FuncScriptManagerBridge_CreateManagedForGodotObjectBinding = GCHandleIntPtr(GD_CLR_STDCALL *)(const StringName *, Object *, uint64_t);
 	using FuncScriptManagerBridge_CreateManagedForGodotObjectScriptInstance = bool(GD_CLR_STDCALL *)(const CSharpScript *, Object *, const Variant **, int32_t);
 	using FuncScriptManagerBridge_GetScriptNativeName = void(GD_CLR_STDCALL *)(const CSharpScript *, StringName *);
 	using FuncScriptManagerBridge_GetGlobalClassName = void(GD_CLR_STDCALL *)(const String *, String *, String *, bool *, bool *, String *);
@@ -118,6 +118,7 @@ struct ManagedCallbacks {
 	using FuncCSharpInstanceBridge_SerializeState = void(GD_CLR_STDCALL *)(GCHandleIntPtr, const Dictionary *, const Dictionary *);
 	using FuncCSharpInstanceBridge_DeserializeState = void(GD_CLR_STDCALL *)(GCHandleIntPtr, const Dictionary *, const Dictionary *);
 	using FuncGCHandleBridge_FreeGCHandle = void(GD_CLR_STDCALL *)(GCHandleIntPtr);
+	using FuncGCHandleBridge_AllocStrongGCHandle = GCHandleIntPtr(GD_CLR_STDCALL *)(GCHandleIntPtr, bool *);
 	using FuncGCHandleBridge_GCHandleIsTargetCollectible = bool(GD_CLR_STDCALL *)(GCHandleIntPtr);
 	using FuncDebuggingUtils_GetCurrentStackInfo = void(GD_CLR_STDCALL *)(Vector<ScriptLanguage::StackInfo> *);
 	using FuncDisposablesTracker_OnGodotShuttingDown = void(GD_CLR_STDCALL *)();
@@ -166,6 +167,7 @@ struct ManagedCallbacks {
 	FuncDebuggingUtils_GetCurrentStackInfo DebuggingUtils_GetCurrentStackInfo;
 	FuncDisposablesTracker_OnGodotShuttingDown DisposablesTracker_OnGodotShuttingDown;
 	FuncGD_OnCoreApiAssemblyLoaded GD_OnCoreApiAssemblyLoaded;
+	FuncGCHandleBridge_AllocStrongGCHandle GCHandleBridge_AllocStrongGCHandle;
 };
 
 extern ManagedCallbacks managed_callbacks;

@@ -454,6 +454,8 @@ public:
 
 struct CSharpScriptBinding {
 	bool inited = false;
+	// Identifies a wrapper, independently of strong/weak handle replacements.
+	uint64_t generation = 0;
 	StringName type_name;
 	MonoGCHandleData gchandle;
 	Object *owner = nullptr;
@@ -518,6 +520,9 @@ public:
 	static void *get_instance_binding(Object *p_object);
 	static void *get_existing_instance_binding(Object *p_object);
 	static void *get_instance_binding_with_setup(Object *p_object);
+	// Transfers a temporary strong handle to the caller, which must free it.
+	static GCHandleIntPtr get_instance_binding_managed(Object *p_object);
+	static void dispose_instance_binding(Object *p_object, uint64_t p_generation, bool p_ref_counted);
 	static bool has_instance_binding(Object *p_object);
 
 	const Mutex &get_language_bind_mutex() {
@@ -635,8 +640,9 @@ public:
 
 	RBMap<Object *, CSharpScriptBinding>::Element *insert_script_binding(Object *p_object, const CSharpScriptBinding &p_script_binding);
 	bool setup_csharp_script_binding(CSharpScriptBinding &r_script_binding, Object *p_object);
+	static GCHandleIntPtr _get_instance_binding_managed(Object *p_object, void **r_binding);
 
-	static void tie_native_managed_to_unmanaged(GCHandleIntPtr p_gchandle_intptr, Object *p_unmanaged, const StringName *p_native_name, bool p_ref_counted);
+	static uint64_t tie_native_managed_to_unmanaged(GCHandleIntPtr p_gchandle_intptr, Object *p_unmanaged, const StringName *p_native_name, bool p_ref_counted);
 	static void tie_user_managed_to_unmanaged(GCHandleIntPtr p_gchandle_intptr, Object *p_unmanaged, Ref<CSharpScript> *p_script, bool p_ref_counted);
 	static void tie_managed_to_unmanaged_with_pre_setup(GCHandleIntPtr p_gchandle_intptr, Object *p_unmanaged);
 

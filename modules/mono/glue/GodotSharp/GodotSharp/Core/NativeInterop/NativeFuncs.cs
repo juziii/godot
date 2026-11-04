@@ -80,7 +80,7 @@ namespace Godot.NativeInterop
             in godot_string_name signal,
             IntPtr target, IntPtr awaiterHandlePtr);
 
-        internal static partial void godotsharp_internal_tie_native_managed_to_unmanaged(IntPtr gcHandleIntPtr,
+        internal static partial ulong godotsharp_internal_tie_native_managed_to_unmanaged(IntPtr gcHandleIntPtr,
             IntPtr unmanaged, in godot_string_name nativeName, godot_bool refCounted);
 
         internal static partial void godotsharp_internal_tie_user_managed_to_unmanaged(IntPtr gcHandleIntPtr,
@@ -94,8 +94,8 @@ namespace Godot.NativeInterop
 
         internal static partial IntPtr godotsharp_internal_unmanaged_get_instance_binding_managed(IntPtr p_unmanaged);
 
-        internal static partial IntPtr godotsharp_internal_unmanaged_instance_binding_create_managed(IntPtr p_unmanaged,
-            IntPtr oldGCHandlePtr);
+        internal static partial void godotsharp_internal_instance_binding_disposed(IntPtr p_unmanaged,
+            ulong generation, godot_bool refCounted);
 
         internal static partial void godotsharp_internal_new_csharp_script(godot_ref* r_dest);
 

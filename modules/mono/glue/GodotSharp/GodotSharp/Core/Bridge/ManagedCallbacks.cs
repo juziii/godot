@@ -16,7 +16,7 @@ namespace Godot.Bridge
         public delegate* unmanaged<IntPtr, godot_array*, godot_bool> DelegateUtils_TrySerializeDelegateWithGCHandle;
         public delegate* unmanaged<godot_array*, IntPtr*, godot_bool> DelegateUtils_TryDeserializeDelegateWithGCHandle;
         public delegate* unmanaged<void> ScriptManagerBridge_FrameCallback;
-        public delegate* unmanaged<godot_string_name*, IntPtr, IntPtr> ScriptManagerBridge_CreateManagedForGodotObjectBinding;
+        public delegate* unmanaged<godot_string_name*, IntPtr, ulong, IntPtr> ScriptManagerBridge_CreateManagedForGodotObjectBinding;
         public delegate* unmanaged<IntPtr, IntPtr, godot_variant**, int, godot_bool> ScriptManagerBridge_CreateManagedForGodotObjectScriptInstance;
         public delegate* unmanaged<IntPtr, godot_string_name*, void> ScriptManagerBridge_GetScriptNativeName;
         public delegate* unmanaged<godot_string*, godot_string*, godot_string*, godot_bool*, godot_bool*, godot_string*, void> ScriptManagerBridge_GetGlobalClassName;
@@ -55,6 +55,7 @@ namespace Godot.Bridge
         public delegate* unmanaged<void*, void> DebuggingUtils_GetCurrentStackInfo;
         public delegate* unmanaged<void> DisposablesTracker_OnGodotShuttingDown;
         public delegate* unmanaged<godot_bool, void> GD_OnCoreApiAssemblyLoaded;
+        public delegate* unmanaged<IntPtr, godot_bool*, IntPtr> GCHandleBridge_AllocStrongGCHandle;
         // @formatter:on
 
         public static ManagedCallbacks Create()
@@ -105,6 +106,7 @@ namespace Godot.Bridge
                 DebuggingUtils_GetCurrentStackInfo = &DebuggingUtils.GetCurrentStackInfo,
                 DisposablesTracker_OnGodotShuttingDown = &DisposablesTracker.OnGodotShuttingDown,
                 GD_OnCoreApiAssemblyLoaded = &GD.OnCoreApiAssemblyLoaded,
+                GCHandleBridge_AllocStrongGCHandle = &GCHandleBridge.AllocStrongGCHandle,
                 // @formatter:on
             };
         }

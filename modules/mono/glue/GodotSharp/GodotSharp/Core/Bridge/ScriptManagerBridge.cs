@@ -89,20 +89,25 @@ namespace Godot.Bridge
 
         [UnmanagedCallersOnly]
         internal static unsafe IntPtr CreateManagedForGodotObjectBinding(godot_string_name* nativeTypeName,
-            IntPtr godotObject)
+            IntPtr godotObject, ulong bindingGeneration)
         {
+            GodotObject? instance = null;
             try
             {
                 using var stringName = StringName.CreateTakingOwnershipOfDisposableValue(
                     NativeFuncs.godotsharp_string_name_new_copy(CustomUnsafe.AsRef(nativeTypeName)));
                 string nativeTypeNameStr = stringName.ToString();
 
-                var instance = Constructors.Invoke(nativeTypeNameStr, godotObject);
+                instance = Constructors.Invoke(nativeTypeNameStr, godotObject);
+                instance.NativeInstanceBindingGeneration = bindingGeneration;
 
                 return GCHandle.ToIntPtr(CustomGCHandle.AllocStrong(instance));
             }
             catch (Exception e)
             {
+                // A failed creation did not commit an unsafe native reference.
+                if (instance != null)
+                    instance.NativePtr = IntPtr.Zero;
                 ExceptionUtils.LogException(e);
                 return IntPtr.Zero;
             }

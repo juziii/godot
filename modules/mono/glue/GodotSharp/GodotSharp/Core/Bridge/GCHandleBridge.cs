@@ -6,6 +6,27 @@ namespace Godot.Bridge
 {
     internal static class GCHandleBridge
     {
+        // Native holds the binding handle lock until this independent copy is made.
+        [UnmanagedCallersOnly]
+        internal static unsafe IntPtr AllocStrongGCHandle(IntPtr gcHandlePtr, godot_bool* targetAlive)
+        {
+            *targetAlive = godot_bool.False;
+            try
+            {
+                object target = GCHandle.FromIntPtr(gcHandlePtr).Target;
+                if (target == null)
+                    return IntPtr.Zero;
+
+                *targetAlive = godot_bool.True;
+                return GCHandle.ToIntPtr(GCHandle.Alloc(target, GCHandleType.Normal));
+            }
+            catch (Exception e)
+            {
+                ExceptionUtils.LogException(e);
+                return IntPtr.Zero;
+            }
+        }
+
         [UnmanagedCallersOnly]
         internal static void FreeGCHandle(IntPtr gcHandlePtr)
         {
