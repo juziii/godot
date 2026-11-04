@@ -41,6 +41,8 @@
 #include "scene/theme/theme_db.h"
 #include "servers/display/display_server.h"
 
+#include "modules/modules_enabled.gen.h"
+
 void EmbeddedProcessBase::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_READY: {
@@ -295,7 +297,11 @@ void EmbeddedProcess::_update_embedded_process() {
 	bool must_grab_focus = false;
 	bool focus = has_focus();
 	if (last_updated_embedded_process_focused != focus) {
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+		if (focus && application_has_focus && window->has_focus() && is_visible_in_tree()) {
+#else
 		if (focus) {
+#endif
 			must_grab_focus = true;
 		}
 		last_updated_embedded_process_focused = focus;

@@ -34,6 +34,12 @@
 #import "godot_application_delegate.h"
 #import "os_macos.h"
 
+#include "modules/modules_enabled.gen.h"
+
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+#include "modules/cz_background/cz_background.h"
+#endif
+
 GodotApplication *GodotApp = nil;
 
 @interface GodotApplication ()
@@ -57,6 +63,11 @@ GodotApplication *GodotApp = nil;
 }
 
 - (void)activateApplication {
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+	if (CZBackground::is_background_mode()) {
+		return;
+	}
+#endif
 	[NSApp activateIgnoringOtherApps:YES];
 	NSString *nsappname = [[[NSBundle mainBundle] infoDictionary] objectForKey:@"CFBundleName"];
 	const char *bundled_id = getenv("__CFBundleIdentifier");

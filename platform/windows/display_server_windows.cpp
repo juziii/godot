@@ -56,6 +56,12 @@
 #include "servers/rendering/dummy/rasterizer_dummy.h"
 #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
 
+#include "modules/modules_enabled.gen.h"
+
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+#include "modules/cz_background/cz_background.h"
+#endif
+
 #ifdef SDL_ENABLED
 #include "drivers/sdl/joypad_sdl.h"
 #endif
@@ -261,6 +267,10 @@ Vector2i DisplayServerWindows::_get_screen_expand_offset(int p_screen) const {
 }
 
 void DisplayServerWindows::_set_mouse_mode_impl(DisplayServerEnums::MouseMode p_mode) {
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+	const bool allow_system_cursor = CZBackground::is_current_thread_input_desktop();
+#endif
+
 	if (p_mode == DisplayServerEnums::MOUSE_MODE_HIDDEN || p_mode == DisplayServerEnums::MOUSE_MODE_CAPTURED || p_mode == DisplayServerEnums::MOUSE_MODE_CONFINED_HIDDEN) {
 		// Hide cursor before moving.
 		if (hCursor == nullptr) {
@@ -287,12 +297,24 @@ void DisplayServerWindows::_set_mouse_mode_impl(DisplayServerEnums::MouseMode p_
 		clipRect.bottom -= off.y;
 		ClientToScreen(wd.hWnd, (POINT *)&clipRect.left);
 		ClientToScreen(wd.hWnd, (POINT *)&clipRect.right);
-		ClipCursor(&clipRect);
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+		if (allow_system_cursor) {
+#endif
+			ClipCursor(&clipRect);
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+		}
+#endif
 		if (p_mode == DisplayServerEnums::MOUSE_MODE_CAPTURED) {
 			center = window_get_size() / 2;
 			POINT pos = { (int)center.x, (int)center.y };
 			ClientToScreen(wd.hWnd, &pos);
-			SetCursorPos(pos.x, pos.y);
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+			if (allow_system_cursor) {
+#endif
+				SetCursorPos(pos.x, pos.y);
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+			}
+#endif
 			SetCapture(wd.hWnd);
 
 			_register_raw_input_devices(window_id);
@@ -309,7 +331,13 @@ void DisplayServerWindows::_set_mouse_mode_impl(DisplayServerEnums::MouseMode p_
 		if (!_has_moving_window()) {
 			ReleaseCapture();
 		}
-		ClipCursor(nullptr);
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+		if (allow_system_cursor) {
+#endif
+			ClipCursor(nullptr);
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+		}
+#endif
 
 		_register_raw_input_devices(DisplayServerEnums::INVALID_WINDOW_ID);
 	}
@@ -1088,7 +1116,13 @@ void DisplayServerWindows::warp_mouse(const Point2i &p_position) {
 		p.y = p_position.y;
 		ClientToScreen(windows[window_id].hWnd, &p);
 
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+		if (CZBackground::is_current_thread_input_desktop()) {
+			SetCursorPos(p.x, p.y);
+		}
+#else
 		SetCursorPos(p.x, p.y);
+#endif
 	}
 }
 
@@ -2016,7 +2050,13 @@ void DisplayServerWindows::show_window(DisplayServerEnums::WindowID p_id) {
 	}
 	wd.initialized = true;
 
-	if (wd.maximized) {
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+	// Embedded games and background editor subwindows leave activation to their host.
+	if (wd.parent_hwnd || (p_id != DisplayServerEnums::MAIN_WINDOW_ID && Engine::get_singleton()->is_editor_hint() && !CZBackground::is_current_process_foreground())) {
+		ShowWindow(wd.hWnd, SW_SHOWNA);
+	} else
+#endif
+			if (wd.maximized) {
 		ShowWindow(wd.hWnd, SW_SHOWMAXIMIZED);
 		SetForegroundWindow(wd.hWnd); // Slightly higher priority.
 		SetFocus(wd.hWnd); // Set keyboard focus.
@@ -2034,7 +2074,11 @@ void DisplayServerWindows::show_window(DisplayServerEnums::WindowID p_id) {
 		SetFocus(wd.hWnd); // Set keyboard focus.
 	}
 	if (_is_always_on_top_recursive(p_id)) {
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+		SetWindowPos(wd.hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+#else
 		SetWindowPos(wd.hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | ((wd.no_focus || wd.is_popup) ? SWP_NOACTIVATE : 0));
+#endif
 	}
 }
 
@@ -2740,7 +2784,11 @@ void DisplayServerWindows::_update_window_style(DisplayServerEnums::WindowID p_w
 		}
 	}
 
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+	SetWindowPos(wd.hWnd, _is_always_on_top_recursive(p_window) ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+#else
 	SetWindowPos(wd.hWnd, _is_always_on_top_recursive(p_window) ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | ((wd.no_focus || wd.is_popup) ? SWP_NOACTIVATE : 0));
+#endif
 
 	if (p_repaint) {
 		RECT rect;
@@ -3722,7 +3770,13 @@ Error DisplayServerWindows::embed_process(DisplayServerEnums::WindowID p_window,
 		ep->is_visible = p_visible;
 	}
 
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+	// Queued focus requests can outlive the user's switch to another application.
+	HWND foreground_window = GetForegroundWindow();
+	if (p_grab_focus && p_visible && (foreground_window == ep->parent_window_handle || foreground_window == ep->window_handle)) {
+#else
 	if (p_grab_focus) {
+#endif
 		SetForegroundWindow(ep->window_handle);
 		SetFocus(ep->window_handle);
 	}
@@ -3754,40 +3808,49 @@ Error DisplayServerWindows::remove_embedded_process(ProcessID p_pid) {
 
 	EmbeddedProcessData *ep = embedded_processes.get(p_pid);
 
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+	const bool restore_focus = GetForegroundWindow() == ep->window_handle;
+#endif
 	request_close_embedded_process(p_pid);
 
-	// This is a workaround to ensure the parent window correctly regains focus after the
-	// embedded window is closed. When the embedded window is closed while it has focus,
-	// the parent window (the editor) does not become active. It appears focused but is not truly activated.
-	// Opening a new window and closing it forces Windows to set the focus and activation correctly.
-	DWORD style = WS_POPUP | WS_VISIBLE;
-	DWORD style_ex = WS_EX_TOPMOST;
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+	if (restore_focus && GetForegroundWindow() == ep->window_handle) {
+#endif
+		// This is a workaround to ensure the parent window correctly regains focus after the
+		// embedded window is closed. When the embedded window is closed while it has focus,
+		// the parent window (the editor) does not become active. It appears focused but is not truly activated.
+		// Opening a new window and closing it forces Windows to set the focus and activation correctly.
+		DWORD style = WS_POPUP | WS_VISIBLE;
+		DWORD style_ex = WS_EX_TOPMOST;
 
-	WNDCLASSW wcTemp = {};
-	wcTemp.lpfnWndProc = DefWindowProcW;
-	wcTemp.hInstance = GetModuleHandle(nullptr);
-	wcTemp.lpszClassName = L"Engine temp window";
-	RegisterClassW(&wcTemp);
+		WNDCLASSW wcTemp = {};
+		wcTemp.lpfnWndProc = DefWindowProcW;
+		wcTemp.hInstance = GetModuleHandle(nullptr);
+		wcTemp.lpszClassName = L"Engine temp window";
+		RegisterClassW(&wcTemp);
 
-	HWND hWnd = CreateWindowExW(
-			style_ex,
-			L"Engine temp window", L"",
-			style,
-			0,
-			0,
-			1,
-			1,
-			ep->parent_window_handle,
-			nullptr,
-			GetModuleHandle(nullptr),
-			nullptr);
+		HWND hWnd = CreateWindowExW(
+				style_ex,
+				L"Engine temp window", L"",
+				style,
+				0,
+				0,
+				1,
+				1,
+				ep->parent_window_handle,
+				nullptr,
+				GetModuleHandle(nullptr),
+				nullptr);
 
-	SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE);
+		SetWindowPos(hWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE);
 
-	DestroyWindow(hWnd);
-	UnregisterClassW(L"Engine temp window", GetModuleHandle(nullptr));
+		DestroyWindow(hWnd);
+		UnregisterClassW(L"Engine temp window", GetModuleHandle(nullptr));
 
-	SetForegroundWindow(ep->parent_window_handle);
+		SetForegroundWindow(ep->parent_window_handle);
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+	}
+#endif
 
 	embedded_processes.erase(p_pid);
 	memdelete(ep);
@@ -4224,6 +4287,12 @@ Key DisplayServerWindows::keyboard_get_label_from_physical(Key p_keycode) const 
 }
 
 void DisplayServerWindows::show_emoji_and_symbol_picker() const {
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+	if (!CZBackground::is_current_thread_input_desktop()) {
+		return;
+	}
+#endif
+
 	if (!WinRTUtils::try_show_onecore_emoji_picker()) {
 		// Send Win + Period shortcut.
 
@@ -4383,7 +4452,13 @@ void DisplayServerWindows::_process_raw_mouse_motion(const Vector2 &p_relative, 
 	// Centering just so it works as before.
 	POINT pos = { (int)c.x, (int)c.y };
 	ClientToScreen(windows[p_window_id].hWnd, &pos);
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+	if (CZBackground::is_current_thread_input_desktop()) {
+		SetCursorPos(pos.x, pos.y);
+	}
+#else
 	SetCursorPos(pos.x, pos.y);
+#endif
 
 	mm->set_position(c);
 	mm->set_global_position(c);
@@ -6070,7 +6145,13 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 						center = ncenter;
 						POINT pos = { (int)c.x, (int)c.y };
 						ClientToScreen(windows[window_id].hWnd, &pos);
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+						if (CZBackground::is_current_thread_input_desktop()) {
+							SetCursorPos(pos.x, pos.y);
+						}
+#else
 						SetCursorPos(pos.x, pos.y);
+#endif
 					}
 
 					mm->set_velocity(Input::get_singleton()->get_last_mouse_velocity());
@@ -6353,7 +6434,13 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 				center = ncenter;
 				POINT pos = { (int)c.x, (int)c.y };
 				ClientToScreen(hWnd, &pos);
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+				if (CZBackground::is_current_thread_input_desktop()) {
+					SetCursorPos(pos.x, pos.y);
+				}
+#else
 				SetCursorPos(pos.x, pos.y);
+#endif
 			}
 
 			mm->set_velocity(Input::get_singleton()->get_last_mouse_velocity());
@@ -6480,7 +6567,13 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 				center = ncenter;
 				POINT pos = { (int)c.x, (int)c.y };
 				ClientToScreen(windows[window_id].hWnd, &pos);
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+				if (CZBackground::is_current_thread_input_desktop()) {
+					SetCursorPos(pos.x, pos.y);
+				}
+#else
 				SetCursorPos(pos.x, pos.y);
+#endif
 			}
 
 			mm->set_velocity(Input::get_singleton()->get_last_mouse_velocity());
@@ -6809,7 +6902,13 @@ LRESULT DisplayServerWindows::WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 					crect.bottom -= off.y;
 					ClientToScreen(window.hWnd, (POINT *)&crect.left);
 					ClientToScreen(window.hWnd, (POINT *)&crect.right);
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+					if (CZBackground::is_current_thread_input_desktop()) {
+						ClipCursor(&crect);
+					}
+#else
 					ClipCursor(&crect);
+#endif
 				}
 
 				if (!window.minimized && window.was_fullscreen_pre_min) {

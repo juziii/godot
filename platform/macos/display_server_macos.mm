@@ -61,6 +61,12 @@
 #include "servers/display/accessibility_server.h"
 #include "servers/rendering/dummy/rasterizer_dummy.h"
 
+#include "modules/modules_enabled.gen.h"
+
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+#include "modules/cz_background/cz_background.h"
+#endif
+
 #ifdef TOOLS_ENABLED
 #import "display_server_macos_embedded.h"
 
@@ -1802,6 +1808,12 @@ void DisplayServerMacOS::show_window(DisplayServerEnums::WindowID p_id) {
 	}
 
 	popup_open(p_id);
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+	if (CZBackground::is_background_mode()) {
+		[wd.window_object orderOut:nil];
+		return;
+	}
+#endif
 	if ([wd.window_object isMiniaturized]) {
 		return;
 	} else if (wd.no_focus) {
@@ -2756,6 +2768,12 @@ void DisplayServerMacOS::window_set_taskbar_progress_state(DisplayServerEnums::P
 
 void DisplayServerMacOS::window_move_to_foreground(DisplayServerEnums::WindowID p_window) {
 	_THREAD_SAFE_METHOD_
+
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+	if (CZBackground::is_background_mode()) {
+		return;
+	}
+#endif
 
 	ERR_FAIL_COND(!windows.has(p_window));
 	const WindowData &wd = windows[p_window];

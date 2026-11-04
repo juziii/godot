@@ -67,6 +67,8 @@
 #include "scene/main/scene_tree.h"
 #include "servers/display/display_server.h"
 
+#include "modules/modules_enabled.gen.h"
+
 void GameViewDebugger::_session_started(Ref<EditorDebuggerSession> p_session) {
 	bool is_native = EditorRunBar::get_singleton()->is_running_natively();
 
@@ -604,6 +606,22 @@ void GameView::_show_update_window_wrapper() {
 		size = placement.size + size_diff_embedded_process + wrapped_margins_size;
 	}
 	window_wrapper->restore_window_from_saved_position(Rect2(position, size), screen, Rect2i());
+
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+	Window *floating_window = get_window();
+	if (floating_window->get_mode() == Window::MODE_WINDOWED && !DisplayServer::get_singleton()->has_feature(DisplayServerEnums::FEATURE_SELF_FITTING_WINDOWS)) {
+		// Saved placement describes the client area; also keep native decorations on screen.
+		Rect2i usable_rect = DisplayServer::get_singleton()->screen_get_usable_rect(floating_window->get_current_screen());
+		Size2i decoration_size = floating_window->get_size_with_decorations() - floating_window->get_size();
+		Point2i decoration_offset = floating_window->get_position() - floating_window->get_position_with_decorations();
+		floating_window->set_size(floating_window->get_size().min((usable_rect.size - decoration_size).max(Size2i(1, 1))));
+
+		// Controls can enforce a larger minimum size, so measure after resizing.
+		Point2i max_position = (usable_rect.get_end() - floating_window->get_size_with_decorations()).max(usable_rect.position);
+		Point2i outer_position = floating_window->get_position_with_decorations().clamp(usable_rect.position, max_position);
+		floating_window->set_position(outer_position + decoration_offset);
+	}
+#endif
 }
 
 void GameView::_play_pressed() {
@@ -701,7 +719,14 @@ void GameView::_editor_or_project_settings_changed() {
 	_update_embed_window_size();
 
 	if (window_wrapper->get_window_enabled()) {
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+		// Settings updates must not restore a window the user minimized.
+		if (get_window()->get_mode() != Window::MODE_MINIMIZED) {
+			_show_update_window_wrapper();
+		}
+#else
 		_show_update_window_wrapper();
+#endif
 		if (embedded_process->is_embedding_completed()) {
 			embedded_process->queue_update_embedded_process();
 		}

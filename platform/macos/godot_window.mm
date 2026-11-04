@@ -32,6 +32,12 @@
 
 #import "display_server_macos.h"
 
+#include "modules/modules_enabled.gen.h"
+
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+#include "modules/cz_background/cz_background.h"
+#endif
+
 @implementation GodotWindow
 
 - (id)init {
@@ -78,5 +84,45 @@
 	DisplayServerMacOS::WindowData &wd = ds->get_window(window_id);
 	return !wd.no_focus && !wd.is_popup;
 }
+
+#ifdef MODULE_CZ_BACKGROUND_ENABLED
+// AppKit can surface a window without DisplayServer::show_window().
+
+- (void)deminiaturize:(id)sender {
+	if (!CZBackground::is_background_mode()) {
+		[super deminiaturize:sender];
+	}
+}
+
+- (void)miniaturize:(id)sender {
+	if (!CZBackground::is_background_mode()) {
+		[super miniaturize:sender];
+	}
+}
+
+- (void)performMiniaturize:(id)sender {
+	if (!CZBackground::is_background_mode()) {
+		[super performMiniaturize:sender];
+	}
+}
+
+- (void)toggleFullScreen:(id)sender {
+	if (!CZBackground::is_background_mode()) {
+		[super toggleFullScreen:sender];
+	}
+}
+
+- (void)performZoom:(id)sender {
+	if (!CZBackground::is_background_mode()) {
+		[super performZoom:sender];
+	}
+}
+
+- (void)zoom:(id)sender {
+	if (!CZBackground::is_background_mode()) {
+		[super zoom:sender];
+	}
+}
+#endif // MODULE_CZ_BACKGROUND_ENABLED
 
 @end
