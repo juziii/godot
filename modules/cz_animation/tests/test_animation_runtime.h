@@ -255,13 +255,17 @@ TEST_CASE("[SceneTree][CZAnimation] Phase diagnostics latch at construction and 
 	disabled->complete_and_publish();
 	const Dictionary disabled_statistics = disabled->get_statistics();
 	CHECK_FALSE(bool(disabled_statistics["phase_diagnostics_enabled"]));
-	for (const char *key : { "submit_total_us", "submit_inline_us", "evaluate_total_us", "evaluate_graph_us", "evaluate_weights_us", "evaluate_pose_us", "evaluate_aux_blend_us", "evaluate_calls", "evaluate_first_key_calls" }) {
+	for (const char *key : { "submit_total_us", "submit_inline_us", "evaluate_total_us", "evaluate_graph_us", "evaluate_weights_us", "evaluate_pose_us", "evaluate_aux_blend_us", "evaluate_calls", "evaluate_first_key_calls", "evaluate_instance_track_skips", "publish_instance_track_skips" }) {
 		CHECK_FALSE(disabled_statistics.has(key));
 	}
 	enabled_rig.submit();
 	CHECK_FALSE(enabled->get_statistics().has("evaluate_total_us"));
+	CHECK_FALSE(enabled->get_statistics().has("evaluate_instance_track_skips"));
+	CHECK_FALSE(enabled->get_statistics().has("publish_instance_track_skips"));
 	enabled->complete();
 	CHECK_FALSE(enabled->get_statistics().has("evaluate_total_us"));
+	CHECK_FALSE(enabled->get_statistics().has("evaluate_instance_track_skips"));
+	CHECK_FALSE(enabled->get_statistics().has("publish_instance_track_skips"));
 	CHECK(enabled_rig.observer->count == 0);
 	enabled->complete_and_publish();
 	const Dictionary statistics = enabled->get_statistics();
@@ -411,9 +415,12 @@ TEST_CASE("[SceneTree][CZAnimation] Latched pose fastpaths preserve mixed tracks
 	CHECK(method_statistic(disabled, "evaluate_normalized_copy_elements") > 0);
 	CHECK(method_statistic(enabled, "evaluate_normalized_copy_elements") == 0);
 	CHECK(method_statistic(enabled, "evaluate_raw_weight_elements") > 0);
+	CHECK(method_statistic(enabled, "evaluate_instance_track_skips") == 0);
+	CHECK(method_statistic(enabled, "publish_instance_track_skips") == 0);
 }
 
 TEST_CASE("[SceneTree][CZAnimation] Early track skipping refreshes switched root motion paths") {
+	PhaseDiagnosticsEnvironment diagnostics(true);
 	PoseFastpathsEnvironment environment(false);
 	Rig legacy;
 	environment.set_enabled(true);
@@ -443,6 +450,135 @@ TEST_CASE("[SceneTree][CZAnimation] Early track skipping refreshes switched root
 			if (path.is_empty()) {
 				CHECK(rig->tree->get_root_motion_position().is_zero_approx());
 				CHECK(rig->tree->get_root_motion_position_accumulator().is_zero_approx());
+			}
+			for (const char *key : { "evaluate_instance_track_skips", "publish_instance_track_skips" }) {
+				CHECK((method_statistic(rig->processor, key) > 0) == (rig == &fast && path.is_empty()));
+			}
+		}
+	}
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Bone-only instance skips preserve Player first keys and reject non-deterministic mixing") {
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	PoseFastpathsEnvironment environment(false);
+	Rig legacy;
+	environment.set_enabled(true);
+	Rig fast;
+	Rig original;
+	for (Rig *rig : { &original, &legacy, &fast }) {
+		rig->processor->unregister_tree(rig->handle);
+		rig->player->set_callback_mode_process(AnimationMixer::ANIMATION_CALLBACK_MODE_PROCESS_MANUAL);
+		rig->player->set_deterministic(true);
+		rig->player->play("Move");
+	}
+	for (Rig *rig : { &legacy, &fast }) {
+		REQUIRE(rig->pose->capture(rig->skeleton));
+		rig->handle = rig->processor->register_player(rig->player, { rig->pose }, {});
+		REQUIRE(rig->handle != 0);
+		rig->player->connect(SNAME("mixer_applied"), callable_mp(rig->observer.ptr(), &AppliedCounter::on_applied));
+	}
+	CHECK_FALSE(CZAnimationBridge::skip_animation_instance(fast.player, fast.animation));
+	for (int step = 0; step < 4; step++) {
+		if (step >= 2) {
+			for (Rig *rig : { &original, &legacy, &fast }) {
+				rig->player->set_deterministic(step != 2);
+			}
+		}
+		original.player->advance(0.1);
+		for (Rig *rig : { &legacy, &fast }) {
+			rig->submit();
+			rig->processor->complete();
+			CHECK(rig->observer->count == step);
+			rig->processor->publish(rig->handle);
+			rig->processor->publish(rig->handle);
+			rig->processor->complete_and_publish();
+			CHECK(rig->observer->count == step + 1);
+			CHECK(rig->processor->was_evaluated(rig->handle));
+			CHECK(rig->skeleton->get_bone_pose(0).is_equal_approx(original.skeleton->get_bone_pose(0)));
+			const bool skipped = rig == &fast && step != 2;
+			CHECK((method_statistic(rig->processor, "evaluate_instance_track_skips") > 0) == skipped);
+			CHECK((method_statistic(rig->processor, "publish_instance_track_skips") > 0) == skipped);
+			if (skipped) {
+				CHECK(method_statistic(rig->processor, "evaluate_instance_track_skips") == method_statistic(rig->processor, "evaluate_animation_instances"));
+				CHECK(method_statistic(rig->processor, "publish_instance_track_skips") == method_statistic(rig->processor, "evaluate_animation_instances") + method_statistic(rig->processor, "evaluate_first_key_calls"));
+			}
+		}
+		CHECK(method_statistic(legacy.processor, "evaluate_raw_weight_elements") == method_statistic(fast.processor, "evaluate_raw_weight_elements"));
+		if (step == 0) {
+			CHECK(method_statistic(fast.processor, "evaluate_first_key_calls") == 1);
+		}
+	}
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Instance track certificates rebuild for enabled event and replacement animations") {
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	PoseFastpathsEnvironment environment(false);
+	Rig legacy(Ref<AnimationBatchProcessor>(), { "rotate_y" });
+	environment.set_enabled(true);
+	Rig fast(Ref<AnimationBatchProcessor>(), { "rotate_y" });
+	Rig original;
+	original.processor->unregister_tree(original.handle);
+	Rig *rigs[] = { &original, &legacy, &fast };
+	Node3D *targets[3] = {};
+	int event_tracks[3] = {};
+	for (int index = 0; index < 3; index++) {
+		targets[index] = memnew(Node3D);
+		targets[index]->set_name("Target");
+		rigs[index]->root->add_child(targets[index]);
+		rigs[index]->tree->set_callback_mode_method(AnimationMixer::ANIMATION_CALLBACK_MODE_METHOD_IMMEDIATE);
+	}
+	for (int step = 0; step < 8; step++) {
+		for (int index = 0; index < 3; index++) {
+			Rig &rig = *rigs[index];
+			if (step == 2) {
+				rig.animation->track_set_enabled(0, false);
+			} else if (step == 3) {
+				rig.animation->track_set_enabled(0, true);
+				rig.animation->position_track_insert_key(0, 0.6, Vector3(8, 0, 0));
+			} else if (step == 4) {
+				const int track = rig.animation->add_track(Animation::TYPE_METHOD);
+				event_tracks[index] = track;
+				rig.animation->track_set_path(track, NodePath("Target"));
+				Dictionary key;
+				key["method"] = StringName("rotate_y");
+				key["args"] = Array{ 0.125 };
+				rig.animation->track_insert_key(track, 0.45, key);
+			} else if (step == 5) {
+				rig.animation->track_set_enabled(event_tracks[index], false);
+			} else if (step == 6) {
+				Ref<Animation> replacement;
+				replacement.instantiate();
+				replacement->set_length(1);
+				replacement->set_loop_mode(Animation::LOOP_LINEAR);
+				const int track = replacement->add_track(Animation::TYPE_POSITION_3D);
+				replacement->track_set_path(track, NodePath("Skeleton3D:Root"));
+				replacement->position_track_insert_key(track, 0, Vector3());
+				replacement->position_track_insert_key(track, 1, Vector3(20, 0, 0));
+				REQUIRE(rig.player->get_animation_library(StringName())->add_animation("Move", replacement) == OK);
+				rig.animation = replacement;
+			}
+		}
+		original.tree->advance(0.1);
+		for (int index = 1; index < 3; index++) {
+			Rig &rig = *rigs[index];
+			const Vector3 rotation_before = targets[index]->get_rotation();
+			rig.submit();
+			rig.processor->complete();
+			CHECK(rig.observer->count == step);
+			CHECK(targets[index]->get_rotation().is_equal_approx(rotation_before));
+			rig.processor->publish(rig.handle);
+			rig.processor->publish(rig.handle);
+			rig.processor->complete_and_publish();
+			CHECK(rig.observer->count == step + 1);
+			CHECK(rig.processor->was_evaluated(rig.handle));
+			CHECK(rig.skeleton->get_bone_pose(0).is_equal_approx(original.skeleton->get_bone_pose(0)));
+			CHECK(targets[index]->get_rotation().is_equal_approx(targets[0]->get_rotation()));
+			CHECK(Math::is_equal_approx(targets[index]->get_rotation().y, step >= 4 ? real_t(0.125) : real_t(0)));
+			for (const char *key : { "evaluate_instance_track_skips", "publish_instance_track_skips" }) {
+				CHECK((method_statistic(rig.processor, key) > 0) == (index == 2 && step != 2 && step != 4));
+			}
+			if (index == 2 && (step == 1 || step == 7)) {
+				CHECK(method_statistic(rig.processor, "zero_weight_mask_rebuilds") == 0);
 			}
 		}
 	}
@@ -1533,6 +1669,10 @@ TEST_CASE("[SceneTree][CZAnimation] Zero weight masks include every registered P
 		}
 		CHECK(method_statistic(legacy.processor, "sample_certified_zero_weight_calls") == 0);
 		CHECK(method_statistic(fast.processor, "zero_weight_mask_rebuilds") == int64_t(step != 1));
+		for (const char *key : { "evaluate_instance_track_skips", "publish_instance_track_skips" }) {
+			CHECK(method_statistic(legacy.processor, key) == 0);
+			CHECK(method_statistic(fast.processor, key) > 0);
+		}
 		for (const char *key : { "sample_pose_instance_calls", "sample_zero_bone_weight_calls", "sample_no_written_bone_calls", "sample_empty_binding_calls" }) {
 			CHECK(method_statistic(legacy.processor, key) == method_statistic(fast.processor, key));
 		}

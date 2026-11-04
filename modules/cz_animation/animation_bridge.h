@@ -73,6 +73,8 @@ public:
 		uint64_t sample_empty_binding_calls = 0;
 		uint64_t sample_certified_zero_weight_calls = 0;
 		uint64_t zero_weight_mask_rebuilds = 0;
+		uint64_t evaluate_instance_track_skips = 0;
+		uint64_t publish_instance_track_skips = 0;
 	};
 	struct BlendSpaceState {
 		LocalVector<float> weights;
@@ -107,6 +109,7 @@ public:
 	static void complete_pose(const SkeletonAnimationPose *p_pose);
 	static bool skip_track(const AnimationMixer *p_mixer, Animation::TrackType p_type, bool p_root_motion);
 	static bool can_skip_tracks_early(const AnimationMixer *p_mixer);
+	static bool skip_animation_instance(const AnimationMixer *p_mixer, const Ref<Animation> &p_animation);
 	static bool skip_apply(const AnimationMixer *p_mixer, Animation::TrackType p_type, bool p_root_motion);
 	static bool queue_animation_signal(AnimationMixer *p_mixer, const StringName &p_signal, const StringName &p_animation);
 	static bool queue_resource_signal(const Ref<Resource> &p_resource, const StringName &p_signal, const StringName &p_value);

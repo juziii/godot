@@ -151,9 +151,9 @@ void AnimationLibrary::_set_data(const Dictionary &p_data) {
 	// their animation sets. A fixed list also bounds reentrant callback changes.
 	LocalVector<StringName> old_names;
 	get_animation_list(&old_names);
-	for (const StringName &name : old_names) {
-		if (animations.has(name)) {
-			remove_animation(name);
+	for (const StringName &old_name : old_names) {
+		if (animations.has(old_name)) {
+			remove_animation(old_name);
 		}
 	}
 	for (const KeyValue<Variant, Variant> &kv : data) {

@@ -1297,6 +1297,12 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 		ERR_CONTINUE_EDMSG(!t_cache, "No animation in cache.");
 		LocalVector<TrackCache *> &track_num_to_track_cache = *t_cache;
 
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+		if (skip_tracks_early && CZAnimationBridge::skip_animation_instance(this, a)) {
+			continue;
+		}
+#endif
+
 		const LocalVector<Animation::Track *> &tracks = a->get_tracks();
 		Animation::Track *const *tracks_ptr = tracks.ptr();
 		double a_length = a->get_length();

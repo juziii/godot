@@ -114,3 +114,11 @@ With `CZ_ANIM_PHASE_DIAGNOSTICS=1`, completed statistics additionally report act
 Only deterministic fastpaths can additionally certify an instance's exact +/-0 weights for the union of all registered Poses' actual bone blend indices while copying its owned snapshot. Non-finite instance weights, nonzero/non-finite masked elements, invalid indices or an unprepared mask use normal sampling; non-deterministic and disabled-fastpaths flows do not use this certificate. Masks are built during existing binding reconstruction and unioned only after a binding change, never by a steady-frame animation-library rescan. Raw/first-key instances, auxiliary/root-motion/event passes and per-Pose evaluation remain intact.
 
 Completed phase diagnostics additionally expose `sample_certified_zero_weight_calls` (a subset of existing zero-weight/no-written calls, retaining the old call/empty-binding counts) and `zero_weight_mask_rebuilds` (actual union reconstructions, normally zero on unchanged warmed frames). These counts are not a performance promise; the new behavior regressions still require the matching unified native build/run.
+
+### 纯骨骼实例的辅助轨道遍历
+
+deterministic mixing、同 mixer TLS 且构造时 fastpaths 开启时，可进一步省略 `_blend_process` 中已经没有剩余工作的单个动画实例轨道循环。证书仅接收至少一个 enabled 轨道，且所有 enabled 轨道都有有效 cache/blend index、属于已注册 Skeleton 的非 root-motion TRS 通道。其 cache path 必须与轨道一致，`root_motion` 标志已经为 false，使原逐轨赋值本来就是无变化操作。禁用轨道不参与资格判定。root-motion、method/audio、BlendShape、普通 Node3D 属性、无效映射及非 deterministic mixing 保留原循环；首版 Evaluate 和 Publish 使用相同的严格证书。
+
+证书附着于模块的每个 Pose binding，并在现有绑定重建扫描中生成；所有已注册 Pose 的交集随原零权重 mask 重建计算。没有新增稳定帧全库扫描。读取时核对 library/binding 版本与 Pose layout/dirty 状态；缓存失效会清空证书。原动画 cache 查找及缺失错误检查仍在 shortcut 之前。此 shortcut 不省略图求值、总权重、raw/first-key snapshot、SoA 采样、事件发布顺序或官方 apply/post-process，也不按实例权重为零跳过音频。
+
+阶段诊断开启且整批完成发布后，`evaluate_instance_track_skips` / `publish_instance_track_skips` 记录本帧实际省略的辅助轨道循环实例数，包含既有重算；Publish 值直接读取发布结束后的 State。Complete 尚未发布、回调重入中或诊断关闭时不输出这些字段。它们不是省略的 SoA 实例数、轨道数、CPU 时间或性能收益。新增首键/开关、事件和 cache 替换、root-motion 切换及多 Pose/LOD 行为断言仍待统一候选编译和运行；本次仅做源码与格式检查。
