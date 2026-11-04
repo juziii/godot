@@ -85,6 +85,7 @@ class AnimationBatchProcessor : public RefCounted {
 	uint64_t submit_total_us = 0;
 	uint64_t submit_inline_us = 0;
 	bool phase_diagnostics_enabled = false;
+	bool pose_fastpaths_enabled = true;
 	uint64_t submission_generation = 0;
 	bool pending = false;
 	bool publishing = false;

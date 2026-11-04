@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/math/vector2.h"
 #include "tests/test_macros.h"
 
 #include "modules/cz_animation/bone_lod.h"
@@ -343,6 +344,186 @@ TEST_CASE("[CZAnimation] Four-wide slerp matches official hemisphere near-angle 
 		}
 	}
 	print_line("CZ_ANIMATION_SLERP_MAX_COMPONENT_ERROR=" + String::num_scientific(maximum_error));
+}
+
+TEST_CASE("[CZAnimation] Lazy sampling leaves zero contribution scratch untouched and legacy refreshes it") {
+	for (bool simd : { false, true }) {
+		for (int count : { 0, 1, 3, 4, 5, 17 }) {
+			Ref<Animation> animation;
+			animation.instantiate();
+			const int track = animation->add_track(Animation::TYPE_POSITION_3D);
+			animation->position_track_insert_key(track, 0, Vector3(10, 20, 30));
+			CZPoseTrackBinding fast_binding, legacy_binding;
+			fast_binding.reset(animation, count);
+			legacy_binding.reset(animation, count);
+			if (count > 0) {
+				fast_binding.add_track(Animation::TYPE_POSITION_3D, track, count - 1, 0);
+				legacy_binding.add_track(Animation::TYPE_POSITION_3D, track, count - 1, 0);
+			}
+			CZPoseSoA rest, fast, legacy, fast_sample, legacy_sample;
+			rest.resize(count);
+			for (int bone = 0; bone < count; bone++) {
+				rest.set_position(bone, Vector3(bone, 2, 3));
+				rest.set_scale(bone, Vector3(-1, 2, 3));
+			}
+			fast.copy_from(rest);
+			legacy.copy_from(rest);
+			fast_sample.copy_from(rest);
+			legacy_sample.copy_from(rest);
+			if (count > 0) {
+				fast_sample.set_position(count - 1, Vector3(111, 222, 333));
+				legacy_sample.set_position(count - 1, Vector3(111, 222, 333));
+			}
+			LocalVector<real_t> weights = { 0 };
+			CZPoseTrackBinding::SamplingStatistics fast_statistics, legacy_statistics;
+			fast_binding.sample_and_blend(0, 1, &weights, 1, rest, fast_sample, fast, simd, true, &fast_statistics);
+			legacy_binding.sample_and_blend(0, 1, &weights, 1, rest, legacy_sample, legacy, simd, false, &legacy_statistics);
+			CHECK(fast_statistics.calls == 1);
+			CHECK(fast_statistics.zero_weight_calls == 1);
+			CHECK(fast_statistics.no_written_calls == 1);
+			CHECK(fast_statistics.empty_binding_calls == uint64_t(count == 0));
+			CHECK(legacy_statistics.zero_weight_calls == 1);
+			CHECK(legacy_statistics.no_written_calls == 1);
+			for (int bone = 0; bone < count; bone++) {
+				CHECK(fast.get_transform(bone).is_equal_approx(rest.get_transform(bone)));
+				CHECK(legacy.get_transform(bone).is_equal_approx(rest.get_transform(bone)));
+				CHECK(legacy_sample.get_position(bone).is_equal_approx(rest.get_position(bone)));
+			}
+			if (count > 0) {
+				CHECK(fast_sample.get_position(count - 1) == Vector3(111, 222, 333));
+			}
+		}
+	}
+}
+
+TEST_CASE("[CZAnimation] Lazy sampling clears stale channel weights and preserves ordered extrapolation") {
+	const real_t tolerance = sizeof(real_t) == sizeof(double) ? 1e-12 : 1e-6;
+	const Vector3 masks[] = { Vector3(1, 0, 0), Vector3(), Vector3(0, 0.5, 0), Vector3(0, 0, -0.25), Vector3(1.25, 1.25, 1.25), Vector3(-0.5, -0.5, -0.5), Vector3() };
+	for (bool simd : { false, true }) {
+		for (int count : { 1, 3, 4, 5, 17, 257 }) {
+			Ref<Animation> animation;
+			animation.instantiate();
+			const int position = animation->add_track(Animation::TYPE_POSITION_3D);
+			const int rotation = animation->add_track(Animation::TYPE_ROTATION_3D);
+			const int scale = animation->add_track(Animation::TYPE_SCALE_3D);
+			animation->position_track_insert_key(position, 0, Vector3(10, -3, 4));
+			animation->rotation_track_insert_key(rotation, 0, -Quaternion(Vector3(0, 1, 0), Math::PI - 0.001));
+			animation->scale_track_insert_key(scale, 0, Vector3(2, -3, 4));
+			CZPoseTrackBinding fast_binding, legacy_binding;
+			fast_binding.reset(animation, count);
+			legacy_binding.reset(animation, count);
+			for (int bone = 0; bone < count; bone++) {
+				fast_binding.add_track(Animation::TYPE_POSITION_3D, position, bone, 0);
+				fast_binding.add_track(Animation::TYPE_ROTATION_3D, rotation, bone, 1);
+				fast_binding.add_track(Animation::TYPE_SCALE_3D, scale, bone, 2);
+				legacy_binding.add_track(Animation::TYPE_POSITION_3D, position, bone, 0);
+				legacy_binding.add_track(Animation::TYPE_ROTATION_3D, rotation, bone, 1);
+				legacy_binding.add_track(Animation::TYPE_SCALE_3D, scale, bone, 2);
+			}
+			CZPoseSoA rest, fast, legacy, fast_sample, legacy_sample;
+			rest.resize(count);
+			for (int bone = 0; bone < count; bone++) {
+				rest.set_position(bone, Vector3(1, 2, 3));
+				rest.set_rotation(bone, Quaternion(Vector3(1, 0, 0), 0.25));
+				rest.set_scale(bone, Vector3(-1, 2, 3));
+			}
+			fast.copy_from(rest);
+			legacy.copy_from(rest);
+			CZPoseTrackBinding::SamplingStatistics statistics;
+			for (const Vector3 &mask : masks) {
+				LocalVector<real_t> weights = { mask.x, mask.y, mask.z };
+				fast_binding.sample_and_blend(0, 1, &weights, 1.3, rest, fast_sample, fast, simd, true, &statistics);
+				legacy_binding.sample_and_blend(0, 1, &weights, 1.3, rest, legacy_sample, legacy, simd, false);
+				for (int component = 0; component < CZPoseSoA::COMPONENT_COUNT; component++) {
+					for (int bone = 0; bone < fast.padded_size(); bone++) {
+						CHECK(Math::abs(fast.data(CZPoseSoA::Component(component))[bone] - legacy.data(CZPoseSoA::Component(component))[bone]) <= tolerance);
+					}
+				}
+			}
+			CHECK(statistics.calls == 7);
+			CHECK(statistics.zero_weight_calls == 2);
+			CHECK(statistics.no_written_calls == 2);
+			CHECK(statistics.empty_binding_calls == 0);
+		}
+	}
+}
+
+TEST_CASE("[CZAnimation] Lazy sampling distinguishes absent keys disabled tracks and empty bindings") {
+	for (bool simd : { false, true }) {
+		for (bool fastpaths : { false, true }) {
+			Ref<Animation> animation;
+			animation.instantiate();
+			const int track = animation->add_track(Animation::TYPE_POSITION_3D);
+			CZPoseTrackBinding binding;
+			binding.reset(animation, 1);
+			binding.add_track(Animation::TYPE_POSITION_3D, track, 0, 0);
+			CZPoseSoA rest, result, sample;
+			rest.resize(1);
+			rest.set_position(0, Vector3(1, 2, 3));
+			result.copy_from(rest);
+			sample.copy_from(rest);
+			sample.set_position(0, Vector3(10, 20, 30));
+			CZPoseTrackBinding::SamplingStatistics statistics;
+			binding.sample_and_blend(0, 1, nullptr, 1, rest, sample, result, simd, fastpaths, &statistics);
+			CHECK(result.get_position(0) == rest.get_position(0));
+			CHECK(statistics.calls == 1);
+			CHECK(statistics.zero_weight_calls == 0);
+			CHECK(statistics.no_written_calls == 1);
+			CHECK(statistics.empty_binding_calls == 0);
+			CHECK(sample.get_position(0) == (fastpaths ? Vector3(10, 20, 30) : rest.get_position(0)));
+			animation->track_set_enabled(track, false);
+			binding.sample_and_blend(0, 1, nullptr, 1, rest, sample, result, simd, fastpaths, &statistics);
+			CHECK(statistics.zero_weight_calls == 1);
+			CHECK(statistics.no_written_calls == 2);
+			binding.reset(animation, 1);
+			binding.sample_and_blend(0, 1, nullptr, 1, rest, sample, result, simd, fastpaths, &statistics);
+			CHECK(statistics.calls == 3);
+			CHECK(statistics.zero_weight_calls == 2);
+			CHECK(statistics.no_written_calls == 3);
+			CHECK(statistics.empty_binding_calls == 1);
+		}
+	}
+}
+
+TEST_CASE("[CZAnimation] Lazy sampling preserves near-zero negative over-one and NaN weight semantics") {
+	const real_t tolerance = sizeof(real_t) == sizeof(double) ? 1e-12 : 1e-6;
+	const Vector2 amounts[] = { Vector2(0, 1), Vector2(CMP_EPSILON * 0.5, 1), Vector2(-CMP_EPSILON * 0.5, 1), Vector2(-0.5, 1), Vector2(1.25, 1), Vector2(real_t(Math::NaN), 1), Vector2(0, real_t(Math::NaN)), Vector2(real_t(Math::NaN), 0) };
+	Ref<Animation> animation;
+	animation.instantiate();
+	const int track = animation->add_track(Animation::TYPE_POSITION_3D);
+	animation->position_track_insert_key(track, 0, Vector3(10, 20, 30));
+	for (bool simd : { false, true }) {
+		for (const Vector2 &amount : amounts) {
+			CZPoseTrackBinding fast_binding, legacy_binding;
+			fast_binding.reset(animation, 1);
+			legacy_binding.reset(animation, 1);
+			fast_binding.add_track(Animation::TYPE_POSITION_3D, track, 0, 0);
+			legacy_binding.add_track(Animation::TYPE_POSITION_3D, track, 0, 0);
+			CZPoseSoA rest, fast, legacy, fast_sample, legacy_sample;
+			rest.resize(1);
+			rest.set_position(0, Vector3(1, 2, 3));
+			fast.copy_from(rest);
+			legacy.copy_from(rest);
+			CZPoseTrackBinding::SamplingStatistics statistics;
+			LocalVector<real_t> weights = { amount.y };
+			fast_binding.sample_and_blend(0, amount.x, &weights, 1, rest, fast_sample, fast, simd, true, &statistics);
+			legacy_binding.sample_and_blend(0, amount.x, &weights, 1, rest, legacy_sample, legacy, simd, false);
+			for (int component = 0; component < CZPoseSoA::COMPONENT_COUNT; component++) {
+				for (int bone = 0; bone < fast.padded_size(); bone++) {
+					const real_t expected = legacy.data(CZPoseSoA::Component(component))[bone];
+					const real_t actual = fast.data(CZPoseSoA::Component(component))[bone];
+					if (Math::is_nan(expected)) {
+						CHECK(Math::is_nan(actual));
+					} else {
+						CHECK(Math::abs(actual - expected) <= tolerance);
+					}
+				}
+			}
+			CHECK(statistics.calls == 1);
+			CHECK(statistics.zero_weight_calls == uint64_t(Math::is_zero_approx(amount.x * amount.y)));
+			CHECK(statistics.no_written_calls == uint64_t(Math::is_zero_approx(amount.x * amount.y)));
+		}
+	}
 }
 
 } // namespace TestCZAnimation

@@ -74,7 +74,9 @@ struct CZAnimationBridge::State {
 	HashSet<StringName> safe_methods;
 	MethodValidationStatistics method_statistics;
 	EvaluationStatistics evaluation_statistics;
+	CZPoseTrackBinding::SamplingStatistics sampling_statistics;
 	bool phase_diagnostics_enabled = false;
+	bool pose_fastpaths_enabled = true;
 	uint64_t method_track_version = 0;
 	uint64_t method_animation_set_pass = 0;
 	bool methods_checked = false;
@@ -133,6 +135,7 @@ public:
 
 CZAnimationBridge::State *CZAnimationBridge::create(AnimationMixer *p_mixer, AnimationBatchProcessor *p_owner, const TypedArray<SkeletonAnimationPose> &p_poses, const PackedStringArray &p_safe_methods, State *p_parent) {
 	ERR_FAIL_NULL_V(p_mixer, nullptr);
+	ERR_FAIL_NULL_V(p_owner, nullptr);
 	ERR_FAIL_COND_V(mixer_states.has(p_mixer->get_instance_id()), nullptr);
 	LocalVector<Ref<SkeletonAnimationPose>> poses;
 	for (int i = 0; i < p_poses.size(); i++) {
@@ -154,6 +157,7 @@ CZAnimationBridge::State *CZAnimationBridge::create(AnimationMixer *p_mixer, Ani
 	state->mixer = p_mixer;
 	state->id = p_mixer->get_instance_id();
 	state->owner = p_owner;
+	state->pose_fastpaths_enabled = p_owner->pose_fastpaths_enabled;
 	state->parent_id = p_parent ? p_parent->id : ObjectID();
 	state->poses.resize(poses.size());
 	for (uint32_t i = 0; i < poses.size(); i++) {
@@ -386,7 +390,7 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 			binding.tracks.clear();
 			binding.transform_caches.clear();
 			for (const KeyValue<Animation::TrackCacheID, AnimationMixer::TrackCache *> &entry : mixer->track_cache) {
-				if (entry.value->type == Animation::TYPE_POSITION_3D && !entry.value->root_motion) {
+				if (entry.value->type == Animation::TYPE_POSITION_3D && entry.value->path != mixer->root_motion_track) {
 					auto *transform = static_cast<AnimationMixer::TrackCacheTransform *>(entry.value);
 					if (transform->skeleton_id == pose->skeleton_id) {
 						binding.transform_caches.push_back(transform);
@@ -478,10 +482,16 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 void CZAnimationBridge::reset_evaluation_statistics(State *p_state, bool p_enabled) {
 	p_state->phase_diagnostics_enabled = p_enabled;
 	p_state->evaluation_statistics = EvaluationStatistics();
+	p_state->sampling_statistics = CZPoseTrackBinding::SamplingStatistics();
 }
 
 CZAnimationBridge::EvaluationStatistics CZAnimationBridge::get_evaluation_statistics(const State *p_state) {
-	return p_state->evaluation_statistics;
+	EvaluationStatistics statistics = p_state->evaluation_statistics;
+	statistics.sample_calls = p_state->sampling_statistics.calls;
+	statistics.sample_zero_weight_calls = p_state->sampling_statistics.zero_weight_calls;
+	statistics.sample_no_written_calls = p_state->sampling_statistics.no_written_calls;
+	statistics.sample_empty_binding_calls = p_state->sampling_statistics.empty_binding_calls;
+	return statistics;
 }
 
 void CZAnimationBridge::evaluate(State *p_state) {
@@ -513,6 +523,9 @@ void CZAnimationBridge::evaluate(State *p_state) {
 			r_snapshot.weights[track] = source && track < int(source->size()) ? (*source)[track] : 1;
 		}
 		r_snapshot.value.playback_info.track_weights = &r_snapshot.weights;
+		if (diagnostics) {
+			p_state->evaluation_statistics.raw_weight_elements += mixer->track_count;
+		}
 	};
 	AnimationPlayer::Playback original_playback;
 	if (player) {
@@ -546,15 +559,24 @@ void CZAnimationBridge::evaluate(State *p_state) {
 			phase_start = now;
 		}
 		p_state->instance_count = mixer->animation_instances.size();
+		if (diagnostics) {
+			p_state->evaluation_statistics.animation_instances += p_state->instance_count;
+			p_state->evaluation_statistics.track_count_sum += mixer->track_count;
+		}
 		if (p_state->instances.size() < p_state->instance_count) {
 			p_state->instances.resize(p_state->instance_count);
 		}
 		for (uint32_t i = 0; i < mixer->animation_instances.size(); i++) {
 			State::Instance &snapshot = p_state->instances[i];
 			snapshot_weights(snapshot, mixer->animation_instances[i]);
-			snapshot.normalized_weights.resize(mixer->track_count);
-			for (int track = 0; track < mixer->track_count; track++) {
-				snapshot.normalized_weights[track] = snapshot.weights[track];
+			if (!p_state->pose_fastpaths_enabled || !mixer->deterministic) {
+				snapshot.normalized_weights.resize(mixer->track_count);
+				for (int track = 0; track < mixer->track_count; track++) {
+					snapshot.normalized_weights[track] = snapshot.weights[track];
+				}
+				if (diagnostics) {
+					p_state->evaluation_statistics.normalized_copy_elements += mixer->track_count;
+				}
 			}
 			if (!mixer->deterministic) {
 				for (const KeyValue<Animation::TrackCacheID, AnimationMixer::TrackCache *> &kv : mixer->track_cache) {
@@ -583,8 +605,10 @@ void CZAnimationBridge::evaluate(State *p_state) {
 						State::Instance &snapshot = p_state->instances[i];
 						CZPoseTrackBinding *tracks = binding.tracks.getptr(snapshot.value.animation);
 						if (tracks) {
+							const LocalVector<real_t> *sample_weights = p_state->pose_fastpaths_enabled && mixer->deterministic ? &snapshot.weights : &snapshot.normalized_weights;
 							tracks->sample_and_blend(snapshot.value.playback_info.time, snapshot.value.playback_info.weight,
-									&snapshot.normalized_weights, pose->motion_scale, pose->reference_pose, pose->sampled, pose->blended, pose->simd_enabled);
+									sample_weights, pose->motion_scale, pose->reference_pose, pose->sampled, pose->blended, pose->simd_enabled,
+									p_state->pose_fastpaths_enabled, diagnostics ? &p_state->sampling_statistics : nullptr);
 						}
 					}
 					if (!mixer->deterministic) {
@@ -813,6 +837,10 @@ bool CZAnimationBridge::skip_track(const AnimationMixer *p_mixer, Animation::Tra
 	}
 	return p_type == Animation::TYPE_METHOD || p_type == Animation::TYPE_AUDIO ||
 			((p_type == Animation::TYPE_POSITION_3D || p_type == Animation::TYPE_ROTATION_3D || p_type == Animation::TYPE_SCALE_3D) && !p_root_motion);
+}
+
+bool CZAnimationBridge::can_skip_tracks_early(const AnimationMixer *p_mixer) {
+	return evaluation_state && evaluation_state->mixer == p_mixer && evaluation_state->pose_fastpaths_enabled;
 }
 
 bool CZAnimationBridge::skip_apply(const AnimationMixer *p_mixer, Animation::TrackType p_type, bool p_root_motion) {

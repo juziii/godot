@@ -100,3 +100,13 @@ configure_ik 空字典禁用求解。实际键包括 has_hand_target、hand_targ
 模块有50项启用的 native tests，加8项 PhysicalBone测试为58；源码还留两项 #if0 旧内部谓词档案，不能计为已运行测试。double/Tracy的66项还包含额外8项核心测试。Game/图形/平台验证与性能应分别列证据；单一原生通过不等同全部计划验收。运行API文档与测试数量的准确元数据应从本构建 ClassDB / doctool 提取，不能直接照抄旧核心布局。
 
 上述58/66是原稳定版已运行的数量。当前另增5项method证书/动画库写前同步行为回归，其中1项仅THREADS_ENABLED构建启用；本次改动尚待统一编译/运行，不能引用旧日志称新增用例已经通过。
+
+### Pose fastpaths and controlled comparison
+
+Pose fastpaths are enabled by default. `CZ_ANIM_DISABLE_POSE_FASTPATHS=1`, read once when a processor is constructed, selects the previous sampling/weight-copy/track-prefix flow for a controlled comparison. This internal diagnostic switch does not revert correctness fixes, change graph time, events, SIMD selection, LOD, or worker scheduling. It does not add a ClassDB or managed API.
+
+For deterministic mixing, the sampler reads each instance's owned raw weight snapshot directly; non-deterministic mixing still uses normalized weights. The owned raw snapshot remains alive through event publication. A sampled Pose/instance initializes its scratch pose and channel weights only when the first nonzero effective channel successfully interpolates. If no channel writes, it leaves the blended pose unchanged. Scratch contents are private and unspecified for such a call. Track order, the original near-zero test, and ordered quaternion interpolation remain unchanged; an instance is never skipped solely because its scalar weight is zero.
+
+Within module evaluation/publication, early track skipping retains enabled/cache/index checks and the original non-deterministic zero-total-weight behavior. It updates root-motion classification before skipping a track, then computes weights only for surviving tracks. The official synchronous and module-disabled flows retain their original order. Root-motion path changes synchronize pending work and invalidate binding/reference/history caches; changing the local-root-motion option also synchronizes pending work.
+
+With `CZ_ANIM_PHASE_DIAGNOSTICS=1`, completed statistics additionally report actual animation instances, mixer track-count sums, raw weight elements (including Player first-key snapshots), normalized-copy elements, and sampler calls/zero-weight/no-written/empty-binding calls. These are counts, not memory-bus traffic or timing. They reset per Submit, include dirty publication re-evaluation, and are absent before completed publication or with diagnostics disabled. Existing phase timers include their diagnostic overhead; do not use an enabled diagnostic run as formal whole-frame acceptance evidence.

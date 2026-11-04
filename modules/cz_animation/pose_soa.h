@@ -85,6 +85,12 @@ public:
 // SoA lanes; unsupported/root-motion tracks remain on the official path.
 class CZPoseTrackBinding {
 public:
+	struct SamplingStatistics {
+		uint64_t calls = 0;
+		uint64_t zero_weight_calls = 0;
+		uint64_t no_written_calls = 0;
+		uint64_t empty_binding_calls = 0;
+	};
 	struct Track {
 		int animation_track = -1;
 		int compact_bone = -1;
@@ -107,5 +113,6 @@ public:
 	void reset(const Ref<Animation> &p_animation, int p_compact_bone_count);
 	void add_track(Animation::TrackType p_type, int p_animation_track, int p_compact_bone, int p_blend_index);
 	void sample_and_blend(double p_time, real_t p_weight, const LocalVector<real_t> *p_track_weights,
-			real_t p_motion_scale, const CZPoseSoA &p_rest, CZPoseSoA &r_sample, CZPoseSoA &r_blended, bool p_simd);
+			real_t p_motion_scale, const CZPoseSoA &p_rest, CZPoseSoA &r_sample, CZPoseSoA &r_blended, bool p_simd,
+			bool p_fastpaths = true, SamplingStatistics *r_statistics = nullptr);
 };

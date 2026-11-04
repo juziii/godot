@@ -48,6 +48,7 @@ static thread_local uint64_t drain_cutoff = 0;
 
 AnimationBatchProcessor::AnimationBatchProcessor() {
 	phase_diagnostics_enabled = OS::get_singleton()->get_environment("CZ_ANIM_PHASE_DIAGNOSTICS") == "1";
+	pose_fastpaths_enabled = OS::get_singleton()->get_environment("CZ_ANIM_DISABLE_POSE_FASTPATHS") != "1";
 }
 
 int64_t AnimationBatchProcessor::_register(AnimationMixer *p_mixer, const TypedArray<SkeletonAnimationPose> &p_poses, const PackedStringArray &p_safe_methods, int64_t p_parent) {
@@ -485,6 +486,7 @@ String AnimationBatchProcessor::get_fallback_reason(int64_t p_handle) const {
 Dictionary AnimationBatchProcessor::get_statistics() const {
 	Dictionary result;
 	result["phase_diagnostics_enabled"] = phase_diagnostics_enabled;
+	result["pose_fastpaths_enabled"] = pose_fastpaths_enabled;
 	const bool diagnostics_ready = phase_diagnostics_enabled && Thread::is_main_thread() && frame > 0 && group == -1 && !pending && !preparing && !publishing;
 	CZAnimationBridge::EvaluationStatistics evaluation_statistics;
 	result["frame"] = frame;
@@ -528,6 +530,14 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
 			evaluation_statistics.aux_blend_us += statistics.aux_blend_us;
 			evaluation_statistics.calls += statistics.calls;
 			evaluation_statistics.first_key_calls += statistics.first_key_calls;
+			evaluation_statistics.animation_instances += statistics.animation_instances;
+			evaluation_statistics.track_count_sum += statistics.track_count_sum;
+			evaluation_statistics.raw_weight_elements += statistics.raw_weight_elements;
+			evaluation_statistics.normalized_copy_elements += statistics.normalized_copy_elements;
+			evaluation_statistics.sample_calls += statistics.sample_calls;
+			evaluation_statistics.sample_zero_weight_calls += statistics.sample_zero_weight_calls;
+			evaluation_statistics.sample_no_written_calls += statistics.sample_no_written_calls;
+			evaluation_statistics.sample_empty_binding_calls += statistics.sample_empty_binding_calls;
 		}
 		fallback_counts[kind] += !entry->prepared;
 		evaluated_counts[kind] += was_evaluated(entry->handle);
@@ -591,6 +601,14 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
 		result["evaluate_aux_blend_us"] = evaluation_statistics.aux_blend_us;
 		result["evaluate_calls"] = evaluation_statistics.calls;
 		result["evaluate_first_key_calls"] = evaluation_statistics.first_key_calls;
+		result["evaluate_animation_instances"] = evaluation_statistics.animation_instances;
+		result["evaluate_track_count_sum"] = evaluation_statistics.track_count_sum;
+		result["evaluate_raw_weight_elements"] = evaluation_statistics.raw_weight_elements;
+		result["evaluate_normalized_copy_elements"] = evaluation_statistics.normalized_copy_elements;
+		result["sample_pose_instance_calls"] = evaluation_statistics.sample_calls;
+		result["sample_zero_bone_weight_calls"] = evaluation_statistics.sample_zero_weight_calls;
+		result["sample_no_written_bone_calls"] = evaluation_statistics.sample_no_written_calls;
+		result["sample_empty_binding_calls"] = evaluation_statistics.sample_empty_binding_calls;
 	}
 	return result;
 }

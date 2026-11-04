@@ -30,12 +30,15 @@
 
 #pragma once
 
+#include "core/error/error_macros.h"
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
 #include "core/os/thread.h"
+#include "scene/3d/mesh_instance_3d.h"
 #include "scene/animation/animation_blend_tree.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
+#include "scene/resources/mesh.h"
 #include "tests/test_macros.h"
 
 #include "modules/cz_animation/animation_batch_processor.h"
@@ -165,6 +168,62 @@ struct PhaseDiagnosticsEnvironment {
 	}
 };
 
+struct PoseFastpathsEnvironment {
+	bool existed = OS::get_singleton()->has_environment("CZ_ANIM_DISABLE_POSE_FASTPATHS");
+	String previous = OS::get_singleton()->get_environment("CZ_ANIM_DISABLE_POSE_FASTPATHS");
+
+	explicit PoseFastpathsEnvironment(bool p_enabled) { set_enabled(p_enabled); }
+	void set_enabled(bool p_enabled) { OS::get_singleton()->set_environment("CZ_ANIM_DISABLE_POSE_FASTPATHS", p_enabled ? "0" : "1"); }
+	~PoseFastpathsEnvironment() {
+		if (existed) {
+			OS::get_singleton()->set_environment("CZ_ANIM_DISABLE_POSE_FASTPATHS", previous);
+		} else {
+			OS::get_singleton()->unset_environment("CZ_ANIM_DISABLE_POSE_FASTPATHS");
+		}
+	}
+};
+
+struct AuxiliaryTracks {
+	Node3D *target = nullptr;
+	MeshInstance3D *mesh_instance = nullptr;
+
+	explicit AuxiliaryTracks(Rig &p_rig) {
+		target = memnew(Node3D);
+		target->set_name("Target");
+		p_rig.root->add_child(target);
+		mesh_instance = memnew(MeshInstance3D);
+		mesh_instance->set_name("Mesh");
+		Ref<ArrayMesh> mesh;
+		mesh.instantiate();
+		mesh->add_blend_shape("Smile");
+		Vector<Vector3> vertices{ Vector3(), Vector3(1, 0, 0), Vector3(0, 1, 0) };
+		Array arrays;
+		arrays.resize(Mesh::ARRAY_MAX);
+		arrays[Mesh::ARRAY_VERTEX] = vertices;
+		TypedArray<Array> blend_shapes;
+		blend_shapes.push_back(arrays);
+		mesh->add_surface_from_arrays(Mesh::PRIMITIVE_TRIANGLES, arrays, blend_shapes);
+		mesh_instance->set_mesh(mesh);
+		p_rig.root->add_child(mesh_instance);
+		int track = p_rig.animation->add_track(Animation::TYPE_VALUE);
+		p_rig.animation->track_set_path(track, NodePath("Target:position"));
+		p_rig.animation->track_insert_key(track, 0, Vector3());
+		p_rig.animation->track_insert_key(track, 1, Vector3(0, 2, 0));
+		track = p_rig.animation->add_track(Animation::TYPE_BLEND_SHAPE);
+		p_rig.animation->track_set_path(track, NodePath("Mesh:Smile"));
+		p_rig.animation->blend_shape_track_insert_key(track, 0, 0);
+		p_rig.animation->blend_shape_track_insert_key(track, 1, 1);
+		track = p_rig.animation->add_track(Animation::TYPE_METHOD);
+		p_rig.animation->track_set_path(track, NodePath("Target"));
+		Dictionary key;
+		key["method"] = StringName("rotate_y");
+		key["args"] = Array{ 0.125 };
+		for (double time : { 0.0, 0.2, 0.8 }) {
+			p_rig.animation->track_insert_key(track, time, key);
+		}
+	}
+};
+
 static void check_phase_diagnostics(const Dictionary &p_statistics) {
 	for (const char *key : { "submit_total_us", "submit_inline_us", "evaluate_total_us", "evaluate_graph_us", "evaluate_weights_us", "evaluate_pose_us", "evaluate_aux_blend_us", "evaluate_calls", "evaluate_first_key_calls" }) {
 		REQUIRE(p_statistics.has(key));
@@ -278,6 +337,212 @@ TEST_CASE("[SceneTree][CZAnimation] Phase diagnostics cover empty submissions an
 	}
 }
 
+TEST_CASE("[SceneTree][CZAnimation] Latched pose fastpaths preserve mixed tracks and first loop seek events") {
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	PoseFastpathsEnvironment environment(false);
+	Ref<AnimationBatchProcessor> disabled;
+	disabled.instantiate();
+	environment.set_enabled(true);
+	Ref<AnimationBatchProcessor> enabled;
+	enabled.instantiate();
+	environment.set_enabled(false);
+	CHECK_FALSE(bool(disabled->get_statistics()["pose_fastpaths_enabled"]));
+	CHECK(bool(enabled->get_statistics()["pose_fastpaths_enabled"]));
+	Rig original;
+	Rig legacy(disabled, { "rotate_y" });
+	Rig fast(enabled, { "rotate_y" });
+	AuxiliaryTracks original_aux(original);
+	AuxiliaryTracks legacy_aux(legacy);
+	AuxiliaryTracks fast_aux(fast);
+	CHECK_FALSE(CZAnimationBridge::can_skip_tracks_early(original.tree));
+	CHECK_FALSE(CZAnimationBridge::can_skip_tracks_early(fast.tree));
+	for (Rig *rig : { &original, &legacy, &fast }) {
+		rig->processor->unregister_tree(rig->handle);
+		rig->player->set_callback_mode_process(AnimationMixer::ANIMATION_CALLBACK_MODE_PROCESS_MANUAL);
+		rig->player->set_callback_mode_method(AnimationMixer::ANIMATION_CALLBACK_MODE_METHOD_IMMEDIATE);
+		rig->player->set_deterministic(true);
+		rig->player->play("Move");
+	}
+	for (Rig *rig : { &legacy, &fast }) {
+		REQUIRE(rig->pose->capture(rig->skeleton));
+		rig->handle = rig->processor->register_player(rig->player, { rig->pose }, { "rotate_y" });
+		REQUIRE(rig->handle != 0);
+		rig->player->connect(SNAME("mixer_applied"), callable_mp(rig->observer.ptr(), &AppliedCounter::on_applied));
+	}
+	const double deltas[] = { 0.1, 0.25, 0.8, 0 };
+	const real_t expected_rotations[] = { 0.125, 0.25, 0.5, 0.625 };
+	for (int step = 0; step < 4; step++) {
+		if (step == 3) {
+			for (Rig *rig : { &original, &legacy, &fast }) {
+				rig->player->seek(0.8);
+			}
+		}
+		original.player->advance(deltas[step]);
+		// Preparing another processor captures native inputs and may legally
+		// synchronize older processors. Test Complete before any such callout.
+		for (int variant = 0; variant < 2; variant++) {
+			Rig *rig = variant == 0 ? &legacy : &fast;
+			AuxiliaryTracks *aux = variant == 0 ? &legacy_aux : &fast_aux;
+			const Vector3 rotation_before = aux->target->get_rotation();
+			const Vector3 position_before = aux->target->get_position();
+			const float blend_shape_before = aux->mesh_instance->get_blend_shape_value(0);
+			rig->submit(deltas[step]);
+			rig->processor->complete();
+			CHECK(rig->observer->count == step);
+			CHECK(aux->target->get_rotation().is_equal_approx(rotation_before));
+			CHECK(aux->target->get_position().is_equal_approx(position_before));
+			CHECK(Math::is_equal_approx(aux->mesh_instance->get_blend_shape_value(0), blend_shape_before));
+			rig->processor->publish(rig->handle);
+			rig->processor->publish(rig->handle);
+			rig->processor->complete_and_publish();
+			CHECK(rig->observer->count == step + 1);
+			CHECK(rig->processor->was_evaluated(rig->handle));
+			CHECK(rig->skeleton->get_bone_pose(0).is_equal_approx(original.skeleton->get_bone_pose(0)));
+		}
+		for (AuxiliaryTracks *aux : { &legacy_aux, &fast_aux }) {
+			CHECK(aux->target->get_position().is_equal_approx(original_aux.target->get_position()));
+			CHECK(aux->target->get_rotation().is_equal_approx(original_aux.target->get_rotation()));
+			CHECK(Math::is_equal_approx(aux->target->get_rotation().y, expected_rotations[step]));
+			CHECK(Math::is_equal_approx(aux->mesh_instance->get_blend_shape_value(0), original_aux.mesh_instance->get_blend_shape_value(0)));
+		}
+	}
+	CHECK_FALSE(bool(disabled->get_statistics()["pose_fastpaths_enabled"]));
+	CHECK(bool(enabled->get_statistics()["pose_fastpaths_enabled"]));
+	CHECK(method_statistic(disabled, "evaluate_normalized_copy_elements") > 0);
+	CHECK(method_statistic(enabled, "evaluate_normalized_copy_elements") == 0);
+	CHECK(method_statistic(enabled, "evaluate_raw_weight_elements") > 0);
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Early track skipping refreshes switched root motion paths") {
+	PoseFastpathsEnvironment environment(false);
+	Rig legacy;
+	environment.set_enabled(true);
+	Rig fast;
+	Rig original;
+	original.processor->unregister_tree(original.handle);
+	for (Rig *rig : { &original, &legacy, &fast }) {
+		const int track = rig->animation->add_track(Animation::TYPE_POSITION_3D);
+		rig->animation->track_set_path(track, NodePath("Skeleton3D:Finger"));
+		rig->animation->position_track_insert_key(track, 0, Vector3());
+		rig->animation->position_track_insert_key(track, 1, Vector3(0, 4, 0));
+	}
+	for (const NodePath &path : { NodePath("Skeleton3D:Root"), NodePath("Skeleton3D:Root"), NodePath("Skeleton3D:Finger"), NodePath("Skeleton3D:Finger"), NodePath(), NodePath("Skeleton3D:Root"), NodePath() }) {
+		for (Rig *rig : { &original, &legacy, &fast }) {
+			rig->tree->set_root_motion_track(path);
+		}
+		original.tree->advance(0.1);
+		for (Rig *rig : { &legacy, &fast }) {
+			rig->submit();
+			rig->processor->complete_and_publish();
+			CHECK(rig->processor->was_evaluated(rig->handle));
+			for (int bone = 0; bone < 2; bone++) {
+				CHECK(rig->skeleton->get_bone_pose(bone).is_equal_approx(original.skeleton->get_bone_pose(bone)));
+			}
+			CHECK(rig->tree->get_root_motion_position().is_equal_approx(original.tree->get_root_motion_position()));
+			CHECK(rig->tree->get_root_motion_position_accumulator().is_equal_approx(original.tree->get_root_motion_position_accumulator()));
+			if (path.is_empty()) {
+				CHECK(rig->tree->get_root_motion_position().is_zero_approx());
+				CHECK(rig->tree->get_root_motion_position_accumulator().is_zero_approx());
+			}
+		}
+	}
+}
+
+class MixerDeletion : public RefCounted {
+	GDCLASS(MixerDeletion, RefCounted);
+
+protected:
+	static void _bind_methods() {}
+
+public:
+	AnimationTree **target = nullptr;
+	void remove() {
+		AnimationTree *mixer = *target;
+		*target = nullptr;
+		if (mixer) {
+			memdelete(mixer);
+		}
+	}
+};
+
+struct ExpectedSignalFreeError {
+	ErrorHandlerList handler;
+	bool previous_print_error = CoreGlobals::print_error_enabled;
+	int expected = 0;
+	int unexpected = 0;
+
+	static void detect(void *p_self, const char *p_function, const char *p_file, int p_line, const char *p_error, const char *p_message, bool p_editor_notify, ErrorHandlerType p_type) {
+		ExpectedSignalFreeError *self = static_cast<ExpectedSignalFreeError *>(p_self);
+		if (p_type == ERR_HANDLER_ERROR && String(p_error).contains("was freed or unreferenced while a signal is being emitted from it.")) {
+			self->expected++;
+		} else {
+			self->unexpected++;
+		}
+	}
+	ExpectedSignalFreeError() {
+		handler.errfunc = detect;
+		handler.userdata = this;
+		add_error_handler(&handler);
+		CoreGlobals::print_error_enabled = false;
+	}
+	~ExpectedSignalFreeError() {
+		CoreGlobals::print_error_enabled = previous_print_error;
+		remove_error_handler(&handler);
+	}
+};
+
+TEST_CASE("[SceneTree][CZAnimation] Root motion setters finish readers and survive publication or cache clear deletion") {
+	Rig rig;
+	rig.submit();
+	rig.tree->set_root_motion_track(NodePath("Skeleton3D:Root"));
+	CHECK(rig.observer->count == 1);
+	CHECK(rig.skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(1, 0, 0)));
+	rig.processor->complete_and_publish();
+	CHECK_FALSE(rig.processor->is_pending());
+	CHECK(rig.observer->count == 1);
+	rig.submit();
+	rig.tree->set_root_motion_local(true);
+	CHECK(rig.observer->count == 2);
+	CHECK(rig.tree->is_root_motion_local());
+	rig.processor->complete_and_publish();
+	CHECK_FALSE(rig.processor->is_pending());
+	CHECK(rig.observer->count == 2);
+	Ref<AppliedCounter> cache_clears;
+	cache_clears.instantiate();
+	rig.tree->connect(SNAME("caches_cleared"), callable_mp(cache_clears.ptr(), &AppliedCounter::on_applied));
+	rig.tree->set_root_motion_track(NodePath("Skeleton3D:Root"));
+	CHECK(cache_clears->count == 0);
+	rig.tree->set_root_motion_track(NodePath());
+	CHECK(cache_clears->count == 1);
+	for (int callout = 0; callout < 3; callout++) {
+		Rig doomed;
+		const ObjectID mixer_id = doomed.tree->get_instance_id();
+		Ref<MixerDeletion> deletion;
+		deletion.instantiate();
+		deletion->target = &doomed.tree;
+		if (callout < 2) {
+			doomed.submit();
+			doomed.tree->connect(SNAME("mixer_applied"), callable_mp(deletion.ptr(), &MixerDeletion::remove), Object::CONNECT_ONE_SHOT);
+		} else {
+			doomed.tree->connect(SNAME("caches_cleared"), callable_mp(deletion.ptr(), &MixerDeletion::remove), Object::CONNECT_ONE_SHOT);
+		}
+		{
+			// Deliberately exercise immediate deletion during a signal rather
+			// than the recommended queue_free(). Capture its one expected error.
+			ExpectedSignalFreeError errors;
+			if (callout == 1) {
+				doomed.tree->set_root_motion_local(true);
+			} else {
+				doomed.tree->set_root_motion_track(NodePath("Skeleton3D:Root"));
+			}
+			CHECK(errors.expected == 1);
+			CHECK(errors.unexpected == 0);
+		}
+		CHECK(doomed.tree == nullptr);
+		CHECK(ObjectDB::get_instance(mixer_id) == nullptr);
+	}
+}
+
 class LibraryBeforeApply : public RefCounted {
 	GDCLASS(LibraryBeforeApply, RefCounted);
 
@@ -335,9 +600,11 @@ public:
 	Ref<SkeletonAnimationPose> *drop_pose = nullptr;
 	Ref<SkinReference> *drop_skin = nullptr;
 	Skeleton3D *capture_target = nullptr;
+	Ref<Animation> mutate_animation;
 	bool nested_publish = false;
 	bool captured = false;
 	int calls = 0;
+	int mutations = 0;
 
 	void submit() {
 		calls++;
@@ -347,6 +614,12 @@ public:
 		processor->submit(8, 2);
 		if (nested_publish) {
 			processor->complete_and_publish();
+		}
+		if (mutate_animation.is_valid()) {
+			const Ref<Animation> animation = mutate_animation;
+			mutate_animation.unref();
+			animation->position_track_insert_key(0, 0.5, Vector3(8, 0, 0));
+			mutations++;
 		}
 	}
 	void capture() { captured = capture_pose->capture(capture_target); }
@@ -536,19 +809,25 @@ TEST_CASE("[SceneTree][CZAnimation] Resource synchronization joins callback gene
 }
 
 TEST_CASE("[SceneTree][CZAnimation] Nested publication restores the outer animation context") {
-	Rig first;
-	Rig second;
-	Ref<ReentryAction> action;
-	action.instantiate();
-	action->processor = second.processor;
-	action->handles.push_back(second.handle);
-	action->nested_publish = true;
-	first.skeleton->connect(SNAME("skeleton_updated"), callable_mp(action.ptr(), &ReentryAction::submit));
-	first.submit();
-	first.processor->complete_and_publish();
-	CHECK(action->calls == 1);
-	CHECK(first.skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(1, 0, 0)));
-	CHECK(second.skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(1, 0, 0)));
+	for (bool fastpaths : { false, true }) {
+		PoseFastpathsEnvironment environment(fastpaths);
+		Rig first;
+		Rig second;
+		Ref<ReentryAction> action;
+		action.instantiate();
+		action->processor = second.processor;
+		action->handles.push_back(second.handle);
+		action->nested_publish = true;
+		action->mutate_animation = first.animation;
+		first.skeleton->connect(SNAME("skeleton_updated"), callable_mp(action.ptr(), &ReentryAction::submit));
+		first.submit();
+		first.processor->complete_and_publish();
+		CHECK(action->calls == 1);
+		CHECK(action->mutations == 1);
+		CHECK(first.animation->track_get_key_count(0) == 3);
+		CHECK(first.skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(1, 0, 0)));
+		CHECK(second.skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(1, 0, 0)));
+	}
 }
 
 TEST_CASE("[SceneTree][CZAnimation] Capture reentry and configuration callouts retain their correct owners") {
@@ -690,34 +969,37 @@ TEST_CASE("[SceneTree][CZAnimation] Animated captures retain SoA storage and ref
 }
 
 TEST_CASE("[SceneTree][CZAnimation] Zero-weight transform caches preserve the published base only when non-deterministic") {
-	for (bool deterministic : { false, true }) {
-		Rig original;
-		Rig batched;
-		original.processor->unregister_tree(original.handle);
-		for (Rig *rig : { &original, &batched }) {
-			rig->tree->set_deterministic(deterministic);
-			Ref<Animation> empty;
-			empty.instantiate();
-			rig->player->get_animation_library(StringName())->add_animation("Empty", empty);
+	for (bool fastpaths : { false, true }) {
+		PoseFastpathsEnvironment environment(fastpaths);
+		for (bool deterministic : { false, true }) {
+			Rig original;
+			Rig batched;
+			original.processor->unregister_tree(original.handle);
+			for (Rig *rig : { &original, &batched }) {
+				rig->tree->set_deterministic(deterministic);
+				Ref<Animation> empty;
+				empty.instantiate();
+				rig->player->get_animation_library(StringName())->add_animation("Empty", empty);
+			}
+			BoneRotationOffsetModifier3D *modifier = memnew(BoneRotationOffsetModifier3D);
+			modifier->set_bone_names({ "Root" });
+			modifier->set_rotation_offset(Quaternion(Vector3(0, 1, 0), 0.4));
+			batched.skeleton->add_child(modifier);
+			original.tree->advance(0.2);
+			batched.submit(0.2);
+			batched.processor->complete_and_publish();
+			for (Rig *rig : { &original, &batched }) {
+				rig->animation_node->set_animation("Empty");
+			}
+			original.tree->advance(0.1);
+			batched.submit(0.1);
+			batched.processor->complete_and_publish();
+			CHECK(batched.processor->was_evaluated(batched.handle));
+			CHECK(batched.skeleton->get_bone_pose(0).is_equal_approx(original.skeleton->get_bone_pose(0)));
+			CHECK(batched.pose->get_base_local_pose(0).is_equal_approx(original.skeleton->get_bone_pose(0)));
+			CHECK(batched.skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(deterministic ? 0 : 2, 0, 0)));
+			CHECK(batched.skeleton->get_bone_pose_rotation(0).is_equal_approx(Quaternion()));
 		}
-		BoneRotationOffsetModifier3D *modifier = memnew(BoneRotationOffsetModifier3D);
-		modifier->set_bone_names({ "Root" });
-		modifier->set_rotation_offset(Quaternion(Vector3(0, 1, 0), 0.4));
-		batched.skeleton->add_child(modifier);
-		original.tree->advance(0.2);
-		batched.submit(0.2);
-		batched.processor->complete_and_publish();
-		for (Rig *rig : { &original, &batched }) {
-			rig->animation_node->set_animation("Empty");
-		}
-		original.tree->advance(0.1);
-		batched.submit(0.1);
-		batched.processor->complete_and_publish();
-		CHECK(batched.processor->was_evaluated(batched.handle));
-		CHECK(batched.skeleton->get_bone_pose(0).is_equal_approx(original.skeleton->get_bone_pose(0)));
-		CHECK(batched.pose->get_base_local_pose(0).is_equal_approx(original.skeleton->get_bone_pose(0)));
-		CHECK(batched.skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(deterministic ? 0 : 2, 0, 0)));
-		CHECK(batched.skeleton->get_bone_pose_rotation(0).is_equal_approx(Quaternion()));
 	}
 }
 

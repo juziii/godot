@@ -474,21 +474,39 @@ void CZPoseTrackBinding::add_track(Animation::TrackType p_type, int p_animation_
 }
 
 void CZPoseTrackBinding::sample_and_blend(double p_time, real_t p_weight, const LocalVector<real_t> *p_track_weights,
-		real_t p_motion_scale, const CZPoseSoA &p_rest, CZPoseSoA &r_sample, CZPoseSoA &r_blended, bool p_simd) {
+		real_t p_motion_scale, const CZPoseSoA &p_rest, CZPoseSoA &r_sample, CZPoseSoA &r_blended, bool p_simd,
+		bool p_fastpaths, SamplingStatistics *r_statistics) {
 	ERR_FAIL_COND(animation.is_null());
 	ERR_FAIL_COND(p_rest.size() != compact_bone_count || r_blended.size() != compact_bone_count);
 	ERR_FAIL_COND(&r_sample == &p_rest || &r_sample == &r_blended || &r_blended == &p_rest);
-	r_sample.copy_from(p_rest);
-	for (uint32_t i = 0; i < position_weights.size(); i++) {
-		position_weights[i] = rotation_weights[i] = scale_weights[i] = 0;
+	const auto initialize_sample = [&]() {
+		r_sample.copy_from(p_rest);
+		for (uint32_t i = 0; i < position_weights.size(); i++) {
+			position_weights[i] = rotation_weights[i] = scale_weights[i] = 0;
+		}
+	};
+	if (!p_fastpaths) {
+		initialize_sample();
 	}
+	bool written = false;
+	bool nonzero_weight = false;
 	for (const Track &track : position_tracks) {
 		if (!animation->track_is_enabled(track.animation_track)) {
 			continue;
 		}
 		const real_t weight = _weight(track, p_weight, p_track_weights);
+		if (Math::is_zero_approx(weight)) {
+			continue;
+		}
+		if (r_statistics) {
+			nonzero_weight = true;
+		}
 		Vector3 value;
-		if (!Math::is_zero_approx(weight) && animation->try_position_track_interpolate(track.animation_track, p_time, &value) == OK) {
+		if (animation->try_position_track_interpolate(track.animation_track, p_time, &value) == OK) {
+			if (p_fastpaths && !written) {
+				initialize_sample();
+			}
+			written = true;
 			r_sample.set_position(track.compact_bone, value * p_motion_scale);
 			position_weights[track.compact_bone] = weight;
 		}
@@ -498,8 +516,18 @@ void CZPoseTrackBinding::sample_and_blend(double p_time, real_t p_weight, const 
 			continue;
 		}
 		const real_t weight = _weight(track, p_weight, p_track_weights);
+		if (Math::is_zero_approx(weight)) {
+			continue;
+		}
+		if (r_statistics) {
+			nonzero_weight = true;
+		}
 		Quaternion value;
-		if (!Math::is_zero_approx(weight) && animation->try_rotation_track_interpolate(track.animation_track, p_time, &value) == OK) {
+		if (animation->try_rotation_track_interpolate(track.animation_track, p_time, &value) == OK) {
+			if (p_fastpaths && !written) {
+				initialize_sample();
+			}
+			written = true;
 			r_sample.set_rotation(track.compact_bone, value);
 			rotation_weights[track.compact_bone] = weight;
 		}
@@ -509,11 +537,29 @@ void CZPoseTrackBinding::sample_and_blend(double p_time, real_t p_weight, const 
 			continue;
 		}
 		const real_t weight = _weight(track, p_weight, p_track_weights);
+		if (Math::is_zero_approx(weight)) {
+			continue;
+		}
+		if (r_statistics) {
+			nonzero_weight = true;
+		}
 		Vector3 value;
-		if (!Math::is_zero_approx(weight) && animation->try_scale_track_interpolate(track.animation_track, p_time, &value) == OK) {
+		if (animation->try_scale_track_interpolate(track.animation_track, p_time, &value) == OK) {
+			if (p_fastpaths && !written) {
+				initialize_sample();
+			}
+			written = true;
 			r_sample.set_scale(track.compact_bone, value);
 			scale_weights[track.compact_bone] = weight;
 		}
 	}
-	r_blended.blend(r_sample, p_rest, position_weights.ptr(), rotation_weights.ptr(), scale_weights.ptr(), p_simd);
+	if (!p_fastpaths || written) {
+		r_blended.blend(r_sample, p_rest, position_weights.ptr(), rotation_weights.ptr(), scale_weights.ptr(), p_simd);
+	}
+	if (r_statistics) {
+		r_statistics->calls++;
+		r_statistics->zero_weight_calls += !nonzero_weight;
+		r_statistics->no_written_calls += !written;
+		r_statistics->empty_binding_calls += position_tracks.is_empty() && rotation_tracks.is_empty() && scale_tracks.is_empty();
+	}
 }
