@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="BoneRotationOffsetModifier3D" inherits="SkeletonModifier3D" api_type="core" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Applies weighted quaternion rotation offsets to named skeleton bones, including interpolated offset samples.
+	</brief_description>
+	<description>
+		Place this modifier directly under the Skeleton3D it modifies. Each name in [member bone_names] selects a target; missing names are skipped without shifting the associated offset or weight indices. Keep target names unique when one application per bone is intended.
+		For each target, the effective offset comes from the packed blend samples when present, otherwise from the corresponding entry in [member rotation_offsets], falling back to [member rotation_offset] for missing entries. The modifier blends identity toward that quaternion by the product of the target weight and [member SkeletonModifier3D.influence], clamped to 0.0 through 1.0. An omitted target weight is 1.0. Only bone pose rotations are written; local pose positions and scales are retained.
+		With [member use_initial_global_pose] disabled, offsets are applied in [member bone_names] order using [member rotation_space]. With it enabled, the current global rotations are captured at the beginning of each processing pass and targets are applied in parent-before-child order. This is the pose entering this modifier, including animation and earlier modifier results, rather than the rest pose or a one-time initialization snapshot.
+		This class is provided by the cz_animation module. Use its Node and property API on the main thread. AnimationBatchProcessor captures modifier inputs into detached pose work; changing a Node property does not mutate a worker's captured inputs. Complete pending batch work before manually replacing or dismantling its graph and skeleton. Do not operate on scene Nodes from worker threads or treat their lifetime as RefCounted ownership.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="clear_rotation_offsets">
+			<return type="void" />
+			<description>
+				Clears the explicit per-bone offsets and exits packed blend-sample mode, leaving [member rotation_offset] unchanged. Targets subsequently use the shared offset. Clearing active blend samples also resets their interpolation weight to 0.0.
+			</description>
+		</method>
+		<method name="get_bone_rotation_offset" qualifiers="const">
+			<return type="Quaternion" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Returns the effective offset at the index in [member bone_names]. While packed blend samples contain that index, returns the normalized slerp between their entries using [member rotation_offset_blend_weight]. Otherwise returns the explicit per-bone entry, or [member rotation_offset] when that entry is absent. [param index] must be a valid [member bone_names] index.
+			</description>
+		</method>
+		<method name="set_bone_rotation_offset">
+			<return type="void" />
+			<param index="0" name="index" type="int" />
+			<param index="1" name="rotation" type="Quaternion" />
+			<description>
+				Sets one explicit offset at a valid [member bone_names] index and normalizes [param rotation]. Supply a finite, nonzero quaternion. Exits packed blend-sample mode. If the explicit array must grow, intermediate entries are filled with identity rotations; they do not inherit the shared offset. Other explicit entries are retained.
+			</description>
+		</method>
+		<method name="set_rotation_offset_blend_samples_packed">
+			<return type="bool" />
+			<param index="0" name="from" type="PackedVector4Array" />
+			<param index="1" name="to" type="PackedVector4Array" />
+			<description>
+				Installs two packed per-bone offset samples. Each Vector4 contains quaternion components in x, y, z, w order, indexed by [member bone_names]. The arrays must have equal size; a mismatch returns false without changing the existing samples, explicit offsets, or blend weight. A successful call returns true, clears explicit [member rotation_offsets], and retains the current [member rotation_offset_blend_weight].
+				Each quaternion is normalized once when installed. Non-finite entries and entries with a squared length sufficiently close to zero are replaced by identity. The effective offset is the normalized slerp from [param from] to [param to] at the current blend weight. Arrays shorter than [member bone_names] use the shared offset for uncovered targets; extra entries do not add targets. Two empty arrays are valid.
+			</description>
+		</method>
+		<method name="set_rotation_offsets_packed">
+			<return type="void" />
+			<param index="0" name="rotation_offsets" type="PackedVector4Array" />
+			<description>
+				Sets explicit per-bone offsets from Vector4 quaternion components in x, y, z, w order. Entries correspond to [member bone_names] indices. Normalizes valid entries; non-finite entries and entries with a squared length sufficiently close to zero become identity rotations. Exits packed blend-sample mode and resets its blend weight to 0.0. Missing entries fall back to [member rotation_offset]; extra entries do not create additional targets.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="bone_names" type="PackedStringArray" setter="set_bone_names" getter="get_bone_names" default="PackedStringArray()">
+			Target bone names, with [member rotation_weights], explicit offsets, and packed sample entries matched by the original array index. Missing names are ignored. Targets are processed in this order unless [member use_initial_global_pose] is true, in which case a parent-before-child order is used while preserving the original index mapping. Names resolve against the current parent skeleton, including after its layout changes.
+		</member>
+		<member name="rotation_offset" type="Quaternion" setter="set_rotation_offset" getter="get_rotation_offset" default="Quaternion(0, 0, 0, 1)">
+			Shared fallback offset for targets without an explicit or packed sample entry. The setter normalizes the supplied quaternion; supply a finite, nonzero value. Setting this property exits packed blend-sample mode and resets its blend weight, but retains any existing explicit [member rotation_offsets].
+		</member>
+		<member name="rotation_offset_blend_weight" type="float" setter="set_rotation_offset_blend_weight" getter="get_rotation_offset_blend_weight" default="0.0">
+			Interpolation factor between samples supplied by [method set_rotation_offset_blend_samples_packed]. Finite values are clamped to 0.0 through 1.0; non-finite values become 0.0. Changing only this scalar reuses the installed samples. It has no effect when packed blend-sample mode is inactive.
+		</member>
+		<member name="rotation_offsets" type="Quaternion[]" setter="set_rotation_offsets" getter="get_rotation_offsets" default="[]">
+			Optional explicit per-bone offsets indexed by [member bone_names]. Missing entries use [member rotation_offset]; extra entries do not create targets. The setter normalizes each entry, so supply finite, nonzero quaternions. Setting the array exits packed blend-sample mode and resets its blend weight. While that mode is active, the getter returns the current normalized interpolation of its installed samples rather than a separate explicit array.
+		</member>
+		<member name="rotation_space" type="int" setter="set_rotation_space" getter="get_rotation_space" enum="BoneRotationOffsetModifier3D.RotationSpace" default="0">
+			Space used by sequential offset application when [member use_initial_global_pose] is false. Local space post-multiplies the current local rotation; skeleton space pre-multiplies the current global rotation and converts the result through the current parent pose. This property is ignored when [member use_initial_global_pose] is true.
+		</member>
+		<member name="rotation_weights" type="PackedFloat32Array" setter="set_rotation_weights" getter="get_rotation_weights" default="PackedFloat32Array()">
+			Per-target weights matched by [member bone_names] index. Missing entries default to 1.0. Values are stored as supplied; the effective product with [member SkeletonModifier3D.influence] is clamped to 0.0 through 1.0 during application. Supply finite weights. A zero effective weight leaves that target unchanged.
+		</member>
+		<member name="use_initial_global_pose" type="bool" setter="set_use_initial_global_pose" getter="is_using_initial_global_pose" default="false">
+			Captures every resolved target's global rotation before applying any of this modifier's offsets on each processing pass. The weighted offset pre-multiplies that captured rotation, independently of [member rotation_space]. Parents are processed first so children convert their desired globals through the updated parent without adding the parent's offset again. This does not restore the rest pose and does not retain a first-frame global rotation between passes.
+		</member>
+	</members>
+	<constants>
+		<constant name="ROTATION_SPACE_LOCAL" value="0" enum="RotationSpace">
+			Post-multiply the bone's current local pose rotation by the weighted offset. Used only when [member use_initial_global_pose] is false.
+		</constant>
+		<constant name="ROTATION_SPACE_SKELETON" value="1" enum="RotationSpace">
+			Pre-multiply the bone's current global pose rotation by the weighted offset, then convert through its parent's current global pose. Sequential parent offsets can affect later child targets. Used only when [member use_initial_global_pose] is false.
+		</constant>
+	</constants>
+</class>

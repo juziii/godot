@@ -1,0 +1,268 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="SkeletonAnimationPose" inherits="RefCounted" api_type="core" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Owns a detached skeleton pose, procedural inputs, temporal history and full skin palette.
+	</brief_description>
+	<description>
+		Captures one Skeleton3D into reusable component arrays and value-only modifier/target state. [AnimationBatchProcessor] samples bone tracks directly into this storage, avoiding a whole-pose native AoS conversion on unchanged animated frames.
+		Capture, configuration, public mutation, publication and queries are scene-thread APIs. [method evaluate] may run on a single exclusively owned worker after main-thread capture; the caller must join that worker before mutating inputs, querying outputs, publishing or destroying the pose. Do not concurrently use a standalone evaluator and a registered batch producer.
+		Output-pose queries join a registered producer without publishing its events. They do not make Node transforms, audio or callbacks current. The pose's final/interpolated output differs from Skeleton3D's public base pose after publication: the node temporarily exposes base for pose_updated, final for skeleton_updated/attachments/skin, then restores base. Separate base/final histories retain this distinction through time interpolation.
+		Captures hold callback-control leases and skin resources, not ownership of scene nodes. [method release] ends the live capture lease and history while retaining reusable storage/configuration. A worker-thread finalizer queues scene cleanup for the next main-thread drain; use an explicit main-thread release for deterministic ownership handoff.
+		Bone LOD uses explicitly named profiles, compact maps and ancestor/required-bone closure. Removed bones are expanded using local rest into the full original skin palette. It never guesses bone groups or loads a model to build a profile.
+		Cross-pose sources must form an acyclic, explicitly ordered dependency graph. Independent parallel batch entries cannot consume one another's mutable output; put an earlier source in the same registration or use a supported parent work unit.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="capture">
+			<return type="bool" />
+			<param index="0" name="skeleton" type="Skeleton3D" />
+			<description>
+				Captures [param skeleton], which must be inside the scene tree, and its supported modifier/target/skin inputs on the main thread. Returns false when the object, topology, skin or modifier behavior cannot be captured; inspect [method get_fallback_reason]. The public capture contract refreshes native pose data, resets temporal history as needed and acquires a shared manual-modifier callback lease. A retargeting/reentrant callback invalidates the outer capture rather than publishing to the wrong object.
+			</description>
+		</method>
+		<method name="capture_current">
+			<return type="bool" />
+			<description>
+				Repeats [method capture] for the last captured Skeleton3D instance ID. Returns false if that instance no longer exists or is unsupported. Main thread only; this is an explicit full public recapture, not the animated internal fast-capture path.
+			</description>
+		</method>
+		<method name="configure_aim">
+			<return type="void" />
+			<param index="0" name="modifier_id" type="int" />
+			<param index="1" name="input" type="Dictionary" />
+			<description>
+				Copies the [param input] dictionary for the value-only aim solver; [param modifier_id] is the optional scene ObjectID used for the corresponding main-thread modifier publication callback. All configured *_bone values are zero-based skeleton indices and become bone-LOD requirements. Use valid indices for every chain consumed by the solver.
+				Bone keys: aim_bone, hand_bone, hips_bone, chest_bone, upper_chest_bone, left_leg_bone, right_leg_bone, left_arm_bone, left_elbow_bone, left_hand_bone (default -1). Other keys: left_arm_rest_pole (Vector3, default (0,0,1)), hip_yaw_weight (float, default 0), hand_to_muzzle (Transform3D), optional hand_to_grip (Transform3D), optional hand_to_elbow_pole (Vector3), target_world (Vector3), up_world (Vector3, default UP), grip_target_id and elbow_pole_id (ObjectID integers, default 0). Muzzle/grip/pole offsets are hand-relative; target/up are world-space. It synchronizes pending readers and invalidates affected capture/history on the main thread.
+			</description>
+		</method>
+		<method name="configure_attachment">
+			<return type="void" />
+			<param index="0" name="source" type="SkeletonAnimationPose" />
+			<param index="1" name="bone" type="int" />
+			<param index="2" name="scale_transform" type="Transform3D" />
+			<param index="3" name="offset" type="Transform3D" />
+			<param index="4" name="disable_scale" type="bool" />
+			<description>
+				Configures this pose's effective world frame from [param source]'s final [param bone], followed by [param scale_transform] and [param offset]. If [param disable_scale] is true, the intermediate attachment basis is orthonormalized before the offset. This supplies attachment space; it does not copy source bone components into this skeleton. Null source clears this dependency. Self/cyclic sources are rejected; batched dependencies must be explicitly ordered. The referenced source bone is retained by the LOD requirement closure. Main thread only; pending readers are synchronized.
+			</description>
+		</method>
+		<method name="configure_bone_lod">
+			<return type="void" />
+			<param index="0" name="bone_names" type="PackedStringArray" />
+			<param index="1" name="first_disabled_lod" type="PackedInt32Array" />
+			<description>
+				Sets an explicit profile: [param bone_names] and [param first_disabled_lod] must have equal lengths, unique nonempty names and positive first-disabled levels. Level 0 is always complete. A named bone is a removal candidate at/after its configured level, but ancestors and required modifier/socket/dependency bones are retained. Names must resolve on capture; invalid profiles/bindings are rejected rather than guessed. Empty arrays mean no configured removal. Main thread only; configuration synchronizes readers and invalidates topology/history.
+			</description>
+		</method>
+		<method name="configure_copy_source">
+			<return type="void" />
+			<param index="0" name="source" type="SkeletonAnimationPose" />
+			<param index="1" name="source_bone" type="int" />
+			<param index="2" name="target_bone" type="int" />
+			<description>
+				Configures rest-relative copying from [param source]'s final [param source_bone] to this pose's [param target_bone]. In world space, the result is source_final * source_global_rest.affine_inverse() * target_global_rest, then converted through this pose's world transform and target parent. This preserves differing source/target rest frames rather than directly assigning a source-local transform. Null source disables copying. Indices refer to the respective original skeletons, not compact LOD indices. Self/cyclic sources are rejected and batch dependencies must follow a supported ordering. Source/target requirements participate in LOD closure. Main thread only; pending readers are synchronized.
+			</description>
+		</method>
+		<method name="configure_ik">
+			<return type="void" />
+			<param index="0" name="input" type="Dictionary" />
+			<description>
+				Copies a value-only IK configuration. Empty [param input] disables this solver. Configured *_bone keys are original skeleton indices (default -1) and become required bones; configure valid chains before enabling corresponding weights.
+				Hand keys: has_hand_target (bool), hand_target_world (Transform3D), left_hand_weight (float), left_upper_arm_bone, left_lower_arm_bone, left_hand_bone and left_arm_rest_pole (Vector3). Foot/root keys: hips_bone, left/right_upper_leg_bone, left/right_lower_leg_bone, left/right_foot_bone, left/right_toes_bone, left/right_leg_rest_pole (Vector3), left/right_leg_length (float), left/right_foot_weight (float), leg_reach_epsilon, maximum_ground_slope_degrees, sole_offset_cm, ground_motion_contact (bool), foot_source_stance_calibration_cm, maximum_pelvis_drop_cm and maximum_pelvis_raise_cm. Numeric weights/limits default 0; poles default zero.
+				Ground keys per side: left/right_ground_has_hit, left/right_ground_position, left/right_ground_normal and optional left/right_ground_smoothed_normal (defaults to raw normal). Positions/normals are world-space.
+				Optional scene target ObjectID keys default 0: hand_target_id, elbow_pole_id, pelvis_target_id, left/right_foot_target_id and left/right_knee_pole_id. These receive generated results only during main-thread publication. Dictionary values are copied; no Node is dereferenced on a worker. Main thread only; synchronizes readers and invalidates the capture requirements.
+			</description>
+		</method>
+		<method name="evaluate">
+			<return type="void" />
+			<description>
+				Evaluates captured value-only modifiers/procedural inputs, global matrices, sockets and skin buffers without writing the scene or emitting callbacks. It does not advance an AnimationTree/AnimationPlayer or independently sample their tracks. A standalone caller may run this on one exclusive worker after capture and must join it before any other access. Registered animation evaluation is scheduled by AnimationBatchProcessor; do not evaluate that pose concurrently.
+			</description>
+		</method>
+		<method name="get_active_bone_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the compact retained-bone count for the currently captured topology. Required ancestor/modifier/socket/dependency bones can keep this above the raw profile's removal estimate.
+			</description>
+		</method>
+		<method name="get_aim_error_degrees" qualifiers="const">
+			<return type="float" />
+			<description>
+				Returns the last evaluated aim angular error in degrees. Scene-thread query; joins a registered producer without publishing callbacks.
+			</description>
+		</method>
+		<method name="get_aim_muzzle" qualifiers="const">
+			<return type="Transform3D" />
+			<description>
+				Returns the last evaluated muzzle Transform3D in world space. Scene-thread query; joins a registered producer without publishing callbacks.
+			</description>
+		</method>
+		<method name="get_base_global_pose" qualifiers="const">
+			<return type="Transform3D" />
+			<param index="0" name="bone" type="int" />
+			<description>
+				Returns [param bone]'s base global pose in skeleton space, excluding final modifiers. After temporal display preparation this uses the aligned interpolated base history. Indices are original skeleton bone indices. Scene-thread query; joins its producer without publishing events.
+			</description>
+		</method>
+		<method name="get_base_local_pose" qualifiers="const">
+			<return type="Transform3D" />
+			<param index="0" name="bone" type="int" />
+			<description>
+				Returns [param bone]'s base local components as Transform3D, excluding final modifiers; uses the displayed base when temporal interpolation is valid. Indices are original skeleton bone indices. Scene-thread query; joins its producer without publishing events.
+			</description>
+		</method>
+		<method name="get_bone_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the full captured original skeleton bone count, including bones excluded from compact LOD evaluation.
+			</description>
+		</method>
+		<method name="get_bone_lod" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the requested bone-LOD level, independent of temporary force-full requests and the global enable switch.
+			</description>
+		</method>
+		<method name="get_fallback_reason" qualifiers="const">
+			<return type="String" />
+			<description>
+				Returns the most recent capture/binding diagnostic. An empty string means no recorded capture reason, not proof that an arbitrary animation graph is batch-compatible.
+			</description>
+		</method>
+		<method name="get_global_pose">
+			<return type="Transform3D" />
+			<param index="0" name="bone" type="int" />
+			<description>
+				Returns the latest evaluated final/display global pose for [param bone] in skeleton space. Excluded LOD bones are present through rest expansion. This is separate from Skeleton3D's restored public base pose. Scene-thread query; joins a registered producer without publishing events.
+			</description>
+		</method>
+		<method name="get_local_pose" qualifiers="const">
+			<return type="Transform3D" />
+			<param index="0" name="bone" type="int" />
+			<description>
+				Returns the final/display local pose for [param bone], or current evaluated components before display history is valid. Removed LOD bones use their local rest. Indices always refer to the original skeleton. Scene-thread query; joins the registered producer without publishing events.
+			</description>
+		</method>
+		<method name="get_motion_scale" qualifiers="const">
+			<return type="float" />
+			<description>
+				Returns the Skeleton3D motion scale captured for translation-track post-processing.
+			</description>
+		</method>
+		<method name="get_skeleton_instance_id" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the last captured Skeleton3D's ObjectID integer, or 0 before a skeleton has been identified. It does not retain the Node and may refer to an instance that has since been deleted; validate before using it.
+			</description>
+		</method>
+		<method name="get_skin_buffer_copies" qualifiers="const">
+			<return type="int" />
+			<description>
+				Returns the observed cumulative count of skin-buffer COW pointer replacements for this reusable pose. This is an actual buffer-storage counter, not total memory allocation or bytes uploaded.
+			</description>
+		</method>
+		<method name="get_socket_transform" qualifiers="const">
+			<return type="Transform3D" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Returns the last evaluated local marker Transform3D for socket [param index], as configured by [method set_socket_input]. Scene-thread query; joins its registered producer without publishing events.
+			</description>
+		</method>
+		<method name="publish">
+			<return type="bool" />
+			<description>
+				Publishes a standalone evaluated pose on the main thread, returning false if its capture/version/target became invalid. Uses base -&gt; final -&gt; restore-base Skeleton3D observer semantics; updates supported modifier target nodes and BoneAttachments, and queues skin uploads. Evaluated socket values remain available through [method get_socket_transform]; this pose does not own or automatically write a marker Node. It can invoke user callbacks, so a successful evaluation alone does not guarantee a later publication remains valid. For registered poses use processor publication to preserve event/dependency ordering.
+			</description>
+		</method>
+		<method name="release">
+			<return type="void" />
+			<description>
+				Synchronizes pending readers, ends this capture's modifier callback-control lease and skeleton observation, clears temporal/display validity, and marks the binding dirty. Last-lease release restores the original Skeleton3D callback mode. Reusable arrays, configuration and last instance ID are retained for future capture; this does not free the Skeleton3D or clear source configuration. Main thread only.
+			</description>
+		</method>
+		<method name="set_aim_input">
+			<return type="void" />
+			<param index="0" name="hip_weight" type="float" />
+			<param index="1" name="muzzle" type="Transform3D" />
+			<param index="2" name="has_grip" type="bool" />
+			<param index="3" name="grip" type="Transform3D" />
+			<param index="4" name="target" type="Vector3" />
+			<param index="5" name="up" type="Vector3" />
+			<description>
+				Updates dynamic aim values after [method configure_aim]: [param hip_weight] is hip yaw distribution, [param muzzle] and [param grip] are hand-relative transforms, [param has_grip] enables grip generation, and [param target]/[param up] are world-space vectors. Synchronizes pending readers and invalidates current capture generation. Main thread only.
+			</description>
+		</method>
+		<method name="set_bone_components">
+			<return type="void" />
+			<param index="0" name="bone" type="int" />
+			<param index="1" name="position" type="Vector3" />
+			<param index="2" name="rotation" type="Quaternion" />
+			<param index="3" name="scale" type="Vector3" />
+			<param index="4" name="mask" type="int" />
+			<description>
+				Writes selected local pose components of original [param bone]. [param mask] bits are 1 position, 2 rotation, 4 scale (combine with bitwise OR); [param position], [param rotation] and [param scale] for unselected bits are ignored. Removed compact bones are not written. Recomputes derived globals. Public mutations are main-thread operations and synchronize pending work; internal exclusive solver evaluation can use the same component path on its owning worker. Supply a valid finite rotation quaternion.
+			</description>
+		</method>
+		<method name="set_bone_lod">
+			<return type="void" />
+			<param index="0" name="level" type="int" />
+			<description>
+				Sets the requested nonnegative [param level]. Level 0 keeps the complete skeleton; an empty profile remains complete at every level. A changed level synchronizes readers and invalidates topology/history. It does not alter distance/time sampling configuration. The global enable switch or a temporary full-bone request can override the effective topology without changing this requested level. Main thread only.
+			</description>
+		</method>
+		<method name="set_ik_ground_input">
+			<return type="void" />
+			<param index="0" name="left_hit" type="bool" />
+			<param index="1" name="left_position" type="Vector3" />
+			<param index="2" name="left_normal" type="Vector3" />
+			<param index="3" name="right_hit" type="bool" />
+			<param index="4" name="right_position" type="Vector3" />
+			<param index="5" name="right_normal" type="Vector3" />
+			<description>
+				Updates left/right ground hit flags, world positions and raw world normals. The same raw normals are also used as smoothed normals. Requires an existing [method configure_ik] setup. Synchronizes pending readers; main thread only.
+			</description>
+		</method>
+		<method name="set_ik_ground_motion_input">
+			<return type="void" />
+			<param index="0" name="left_hit" type="bool" />
+			<param index="1" name="left_position" type="Vector3" />
+			<param index="2" name="left_normal" type="Vector3" />
+			<param index="3" name="left_smoothed_normal" type="Vector3" />
+			<param index="4" name="right_hit" type="bool" />
+			<param index="5" name="right_position" type="Vector3" />
+			<param index="6" name="right_normal" type="Vector3" />
+			<param index="7" name="right_smoothed_normal" type="Vector3" />
+			<description>
+				Updates left/right world-space ground contacts while retaining separate raw and smoothed normals for ground-motion foot placement. Hit flags determine whether each contact is usable. Requires [method configure_ik]; synchronizes pending readers on the main thread.
+			</description>
+		</method>
+		<method name="set_ik_hand_input">
+			<return type="void" />
+			<param index="0" name="has_target" type="bool" />
+			<param index="1" name="target" type="Transform3D" />
+			<param index="2" name="weights" type="Vector3" />
+			<description>
+				Updates hand-target presence [param has_target], world-space [param target] and the three weights in [param weights]: x=left hand, y=left foot, z=right foot. Requires [method configure_ik]; synchronizes pending readers on the main thread.
+			</description>
+		</method>
+		<method name="set_socket_input">
+			<return type="void" />
+			<param index="0" name="index" type="int" />
+			<param index="1" name="bone" type="int" />
+			<param index="2" name="offset" type="Vector3" />
+			<param index="3" name="parent" type="Transform3D" />
+			<param index="4" name="marker_basis" type="Basis" />
+			<param index="5" name="enabled" type="bool" />
+			<description>
+				Sets/grows reusable socket [param index] (nonnegative). [param bone] is an original skeleton index; a negative index uses [param marker_basis] and [param offset] directly. For a valid bone, [param offset] is bone-local, [param parent] is the marker-parent transform in effective skeleton space, and the result converts an orthonormalized bone-world marker through that parent. [param enabled] controls evaluation/LOD requirements. A bone/enabled change invalidates binding. Main thread only; synchronizes pending readers.
+			</description>
+		</method>
+		<method name="supports_interpolation" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Reports whether current Skeleton3D observers permit delayed pose publication. pose_updated observers reject it; skeleton_updated observers must be supported plain BoneAttachment3D update connections without overrides/scripts/extra flags. Incompatible observers force ordinary sampling/display through processor preparation. This query does not create history or guarantee that two valid compatible samples already exist.
+			</description>
+		</method>
+	</methods>
+</class>

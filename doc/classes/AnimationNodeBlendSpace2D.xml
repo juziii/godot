@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<class name="AnimationNodeBlendSpace2D" inherits="AnimationRootNode" api_type="core" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../class.xsd">
+<class xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="AnimationNodeBlendSpace2D" inherits="AnimationRootNode" api_type="core" xsi:noNamespaceSchemaLocation="../class.xsd">
 	<brief_description>
 		A set of [AnimationRootNode]s placed on 2D coordinates, crossfading between the three adjacent ones. Used by [AnimationTree].
 	</brief_description>
@@ -19,6 +19,10 @@
 		observer.ClosestPointChanged += OnClosestPointChanged;
 		[/csharp]
 		[/codeblocks]
+		[b]CZ animation module extensions:[/b] [member sample_weight_interpolation_speed] smooths sample weights with state stored per [AnimationTree] and node path.
+		Two additional per-Tree parameters are available below this node's parameter path. [code]cycle_duration_override[/code] is a writable float defaulting to [code]0.0[/code]; [code]effective_cycle_duration[/code] is a read-only float defaulting to [code]0.0[/code]. For a node named Walk, read/write through [code]parameters/Walk/cycle_duration_override[/code] and read [code]parameters/Walk/effective_cycle_duration[/code]. If this blend space is the Tree root, the paths have no Walk component. These are Tree parameters, not serialized members on the blend-space Resource.
+		In cyclic synchronization modes, effective_cycle_duration reports the natural weighted mean of positive valid sample lengths under current weights. It is independent of the override; it is reset to zero outside those cyclic calculations or when no eligible length contributes. An override greater than the engine comparison epsilon selects the shared playback duration for that evaluation; nonpositive or epsilon-small values leave the normal mutable/fixed cyclic timing in effect. The override does not modify sync_mode or cyclic_length on the shared Resource. Finite compatible values are required.
+		Mutable blend weights and cached lengths belong to the Tree/node path. Resource edits synchronize pending native readers before mutation when the module is enabled.
 	</description>
 	<tutorials>
 		<link title="Using AnimationTree">$DOCS_URL/tutorials/animation/animation_tree.html</link>
@@ -156,6 +160,10 @@
 		</member>
 		<member name="min_space" type="Vector2" setter="set_min_space" getter="get_min_space" default="Vector2(-1, -1)">
 			The blend space's X and Y axes' lower limit for the points' position. See [method add_blend_point].
+		</member>
+		<member name="sample_weight_interpolation_speed" type="float" setter="set_sample_weight_interpolation_speed" getter="get_sample_weight_interpolation_speed" default="0.0">
+			CZ animation module extension. Maximum change of each sample's weight per second before renormalization. Zero applies geometric blend weights immediately; negative values are clamped to zero by the setter. This smooths sample weights, not the blend_position parameter itself.
+			History belongs to each AnimationTree and node path, so Trees sharing this Resource do not share mutable weights. Seeking or changing the sample count resets weight history. With a positive speed and zero evaluation delta, existing weights are retained. The setter/getter are set_sample_weight_interpolation_speed and get_sample_weight_interpolation_speed.
 		</member>
 		<member name="snap" type="Vector2" setter="set_snap" getter="get_snap" default="Vector2(0.1, 0.1)">
 			Position increment to snap to when moving a point.

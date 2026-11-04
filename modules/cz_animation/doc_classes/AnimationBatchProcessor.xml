@@ -1,0 +1,207 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" name="AnimationBatchProcessor" inherits="RefCounted" api_type="core" xsi:noNamespaceSchemaLocation="../../../doc/class.xsd">
+	<brief_description>
+		Prepares, evaluates and publishes animation batches with explicit scene-thread ownership.
+	</brief_description>
+	<description>
+		Owns per-registration [AnimationTree] or [AnimationPlayer] evaluation state and detached [SkeletonAnimationPose] buffers. The original animation graph remains in use; bone tracks are sampled into reusable structure-of-arrays storage.
+		Use registration, input changes, queuing, submission, waiting, publication and public statistics on the main scene thread. Worker jobs operate on captured state. [method complete] only joins jobs: it does not apply scene properties, deliver method/audio events or emit deferred animation signals. Use [method complete_and_publish] for the complete frame boundary.
+		Publication follows registration/dependency order and is idempotent for each submitted entry. Scene callbacks can unregister or delete targets; invalidated results are rejected or recomputed as appropriate. Keep the controller until a frame is finished, and unregister before deliberately handing control back to the original mixer. Pending frames retain the controller until main-thread draining completes. Off-thread RefCounted finalization defers scene cleanup to the main-thread drain; deterministic ownership handoff uses explicit unregistration on the main thread.
+		The processor retains poses, but identifies scene nodes by their instance IDs rather than owning those nodes. A mutable pose or Skeleton3D cannot belong to multiple independent registrations. Express dependencies through an earlier pose in the same registration or a registered parent player; unrelated parallel entries cannot read one another's mutable poses.
+		Unsupported captures/track behavior use the original synchronous mixer path and report a fallback reason. Check [method get_statistics], [method was_evaluated] and [method get_fallback_reason] rather than treating submission as proof of a native worker evaluation.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="complete">
+			<return type="void" />
+			<description>
+				Waits for all worker jobs in the current submitted frame. Does not publish scene changes, emit animation signals or execute method/audio tracks. The frame remains pending until publication/draining. Calling it again after the jobs have completed is safe. Main thread only.
+			</description>
+		</method>
+		<method name="complete_and_publish">
+			<return type="void" />
+			<description>
+				Joins outstanding jobs, then publishes all not-yet-published entries in registration/dependency order. Delivers queued methods, audio and animation signals on the main thread, finalizes the pending frame and releases deferred removals. Already published/discarded entries do not publish twice. Main thread only.
+			</description>
+		</method>
+		<method name="complete_batch">
+			<return type="void" />
+			<param index="0" name="handle" type="int" />
+			<description>
+				Waits for the frame containing [param handle] if it is registered and pending. Currently jobs are joined as a group, so this can wait for other entries too. Does not publish any entry or its events. An absent handle has no effect. Main thread only.
+			</description>
+		</method>
+		<method name="discard">
+			<return type="void" />
+			<param index="0" name="handle" type="int" />
+			<description>
+				Joins current jobs and marks the not-yet-published [param handle] as consumed without publishing its result/events. This does not unregister the mixer and does not finish other pending entries; drain the frame with [method complete_and_publish]. Main thread only.
+			</description>
+		</method>
+		<method name="finish_all">
+			<return type="void" />
+			<description>
+				Alias for [method complete_and_publish]. Main thread only.
+			</description>
+		</method>
+		<method name="get_fallback_reason" qualifiers="const">
+			<return type="String" />
+			<param index="0" name="handle" type="int" />
+			<description>
+				Returns the most recent fallback diagnostic for [param handle], or [code]Invalid registration[/code] when the handle is absent. An empty string indicates no recorded fallback reason, not proof that every future input is supported.
+			</description>
+		</method>
+		<method name="get_skeleton_buffer_statistics" qualifiers="static">
+			<return type="Dictionary" />
+			<param index="0" name="reset" type="bool" default="false" />
+			<description>
+				Returns backend skin-buffer counters. With [param reset] true, counters are atomically consumed/reset; the default false is a non-resetting read. An unsupported backend returns an empty Dictionary.
+				RD keys include [code]apply_calls[/code], [code]apply_bytes[/code], [code]upload_passes[/code], [code]dirty_skeletons[/code], [code]upload_calls[/code], [code]upload_bytes[/code], [code]skin_dispatches[/code], [code]skin_vertices[/code] and [code]reshape_dispatches[/code]. These describe work already consumed by the rendering backend, not queued submissions or GPU completion. A read does not implicitly flush the render queue. Use a separately controlled rendering boundary when comparing uploads.
+			</description>
+		</method>
+		<method name="get_statistics" qualifiers="const">
+			<return type="Dictionary" />
+			<description>
+				Returns a main-thread snapshot for the latest submitted frame; it does not implicitly wait or publish. [code]frame[/code] is a monotonically increasing submission ID. [code]work_units[/code], [code]batches[/code], [code]workers[/code], [code]fallbacks[/code], [code]failed[/code], [code]early_waits[/code], [code]recomputed[/code] and [code]publish_entries[/code] describe that submission.
+				[code]pawns[/code], [code]animals[/code] and [code]weapons[/code] count tree, unparented-player and parented-player entries respectively; corresponding [code]_fallbacks[/code] and [code]_evaluated[/code] fields report their outcomes. [code]samples[/code], [code]displays[/code] and [code]exact[/code] report effective entry requests. [code]active_bones[/code], [code]total_bones[/code] and [code]full_bones[/code] are bone-count gauges.
+				[code]prepare_us[/code], [code]wait_us[/code] and [code]publish_us[/code] are main-thread elapsed microseconds. After joining jobs, [code]sample_blend_us[/code], [code]interpolate_us[/code], [code]matrix_us[/code] and [code]skin_pack_us[/code] are per-pose elapsed-work sums that may overlap across workers; matrix work can also include main-thread capture. Do not sum these as frame wall time or CPU-core execution time. These pose fields are omitted while a worker group is outstanding.
+				[code]method_validation_cache_hits[/code] and [code]method_validation_scans[/code] count reused and rebuilt method-name safety certificates. [code]method_validation_animations[/code], [code]method_validation_tracks[/code] and [code]method_validation_keys[/code] count actual validation work, including partial scans that reject an unsafe method. These main-thread counts reset per submission and include preparation repeated during publication. They do not measure graph evaluation or prove method arguments immutable.
+				Joined pose fields also include [code]captured_bones[/code] (actual native component recaptures this frame), [code]skin_buffer_copies[/code] (observed cumulative pose COW-buffer replacements) and [code]pose_memory_bytes[/code] (reported pose structure/array capacities, excluding other animation graphs, dictionaries, topology allocations and process memory).
+				[code]pose_simd_enabled[/code] is the requested global setting; [code]pose_simd_available[/code] states whether the compiled real-number/platform kernel is available. [code]bone_lod_enabled[/code] reports the global bone-LOD setting. An enabled SIMD setting can still execute the scalar fallback on an unsupported kernel.
+			</description>
+		</method>
+		<method name="is_bone_lod_enabled" qualifiers="static">
+			<return type="bool" />
+			<description>
+				Returns the global bone-LOD setting. This does not change a pose's configured [method SkeletonAnimationPose.get_bone_lod] level.
+			</description>
+		</method>
+		<method name="is_pending" qualifiers="const">
+			<return type="bool" />
+			<description>
+				Returns whether a submitted frame still awaits final draining. It can remain true after [method complete] or after individually publishing entries.
+			</description>
+		</method>
+		<method name="is_pose_simd_enabled" qualifiers="static">
+			<return type="bool" />
+			<description>
+				Returns the requested global SoA SIMD setting. Check [code]pose_simd_available[/code] in [method get_statistics] to distinguish an available kernel from scalar fallback.
+			</description>
+		</method>
+		<method name="publish">
+			<return type="void" />
+			<param index="0" name="handle" type="int" />
+			<description>
+				Joins current jobs, then publishes [param handle] once if it belongs to this frame. Queued signals/methods/audio and Skeleton3D/attachment/skin publication happen here. It does not by itself drain all other entries or end the frame. Use [method complete_and_publish] after individual publication. Main thread only.
+			</description>
+		</method>
+		<method name="queue_update">
+			<return type="bool" />
+			<param index="0" name="handle" type="int" />
+			<param index="1" name="delta" type="float" />
+			<description>
+				Queues [param handle] with finite [param delta] seconds using sample=true, display=true, exact=true, time=0 and interval=0. It bypasses temporal display delay but does not override the configured bone LOD. Returns false for an invalid/removed/already-queued handle or when queuing is not allowed. Main thread only.
+			</description>
+		</method>
+		<method name="queue_update_with_options">
+			<return type="bool" />
+			<param index="0" name="handle" type="int" />
+			<param index="1" name="delta" type="float" />
+			<param index="2" name="sample" type="bool" />
+			<param index="3" name="display" type="bool" />
+			<param index="4" name="exact" type="bool" />
+			<param index="5" name="time" type="float" />
+			<param index="6" name="interval" type="float" />
+			<param index="7" name="force_full_bones" type="bool" default="false" />
+			<description>
+				Queues one request for [param handle]. [param delta] advances the original graph/player even when [param sample] is false. [param sample] requests new bone sampling; [param display] requests display-pose interpolation, matrices, sockets and skin packing. [param exact] forces sample/display and discards delayed interpolation history for this request.
+				[param time] is the caller's monotonic presentation time in seconds, independent of clip playback time. [param interval] is the nonnegative sampling interval/display delay. Compatible requests retain two samples and interpolate for the delayed presentation time. interval=0, incompatible observers, missing/invalid history or changed inputs can force sampling/display despite a false request.
+				[param force_full_bones] uses the full bone set for this request without changing the configured distance/bone LOD level. It is independent of [param exact]. All numeric values must be finite; interval must be nonnegative. Queuing is main-thread only and cannot occur while the processor is pending/preparing/publishing; a handle may be queued once per submission.
+			</description>
+		</method>
+		<method name="register_player">
+			<return type="int" />
+			<param index="0" name="player" type="AnimationPlayer" />
+			<param index="1" name="poses" type="SkeletonAnimationPose[]" />
+			<param index="2" name="safe_methods" type="PackedStringArray" />
+			<param index="3" name="parent" type="int" default="0" />
+			<description>
+				Registers [param player] with its ordered [param poses] and method-name whitelist [param safe_methods]. Returns a positive handle, or 0 on rejection. Re-registering the same mixer in this controller returns its existing handle.
+				A nonzero [param parent] must be a valid non-parented registration in this processor. It creates an ordered parent/child work unit, allowing a weapon/player to consume an earlier parent pose without racing an independent entry. Cross-pose sources must follow the accepted dependency order.
+				Registration finishes the controller's previous frame, takes manual callback control without restarting playback, and retains poses. Restoring automatic processing requires [method unregister_animation] or destruction/draining. Main thread only.
+			</description>
+		</method>
+		<method name="register_tree">
+			<return type="int" />
+			<param index="0" name="tree" type="AnimationTree" />
+			<param index="1" name="poses" type="SkeletonAnimationPose[]" />
+			<param index="2" name="safe_methods" type="PackedStringArray" />
+			<description>
+				Registers [param tree] with ordered [param poses] and method-name whitelist [param safe_methods], returning a positive handle or 0 on rejection. Re-registering this controller's same mixer returns its existing handle. A mutable pose/skeleton already owned by an independent registration is rejected.
+				Method tracks must use explicitly allowed method names to use the native captured path. Unsupported inputs can still cause a synchronous fallback after registration. Registration completes the previous controller frame and switches callback ownership to manual without resetting the active graph/playback. Main thread only.
+			</description>
+		</method>
+		<method name="set_bone_lod_enabled" qualifiers="static">
+			<return type="void" />
+			<param index="0" name="enabled" type="bool" />
+			<description>
+				Finishes outstanding animation frames before changing the global setting. Disabling selects full topology while preserving each pose's requested level/profile; enabling makes those configurations effective again. Repeating the same value returns immediately. Main thread only.
+			</description>
+		</method>
+		<method name="set_parameter_group" qualifiers="static">
+			<return type="bool" />
+			<param index="0" name="tree" type="AnimationTree" />
+			<param index="1" name="names" type="StringName[]" />
+			<param index="2" name="value" type="Variant" />
+			<description>
+				Atomically validates and writes the same [param value] to all parameter paths in [param names] on [param tree]. This is the replacement owner of the old custom AnimationTree.set_parameter_group API; there is no corresponding Tree method in this module architecture.
+				All paths and compatible Variant types are checked before any value is written; conversions accepted by animation type matching are applied on write. Unknown paths, incompatible types, or read-only live Tree parameters fail with false and no partial group update. Read-only enforcement follows the Tree's inside-scene behavior. An empty group succeeds. Finishes pending readers before accessing the Tree, and revalidates its instance after callbacks. Main thread only.
+			</description>
+		</method>
+		<method name="set_pose_simd_enabled" qualifiers="static">
+			<return type="void" />
+			<param index="0" name="enabled" type="bool" />
+			<description>
+				Finishes outstanding animation frames before changing the requested global SoA sampling/interpolation kernel. Repeating the same value returns immediately. This selects a SIMD implementation only when the compiled platform/real-number mode supports it; otherwise the scalar implementation remains in use. Main thread only.
+			</description>
+		</method>
+		<method name="set_skeleton_buffer" qualifiers="static">
+			<return type="void" />
+			<param index="0" name="skeleton" type="RID" />
+			<param index="1" name="buffer" type="PackedFloat32Array" />
+			<description>
+				Queues an owned [param buffer] for [param skeleton] on the rendering thread through the backend's internal skin-buffer upload interface. The 3D palette contains 12 float32 values per bind, three row-major 3x4 matrix rows including translation. The RID must refer to an allocated compatible skeleton and the buffer length must match its palette. The callable retains the COW data until consumption; this method does not flush or wait for rendering/GPU completion. Main thread only.
+			</description>
+		</method>
+		<method name="submit">
+			<return type="int" />
+			<param index="0" name="batch_size" type="int" default="8" />
+			<param index="1" name="max_workers" type="int" default="8" />
+			<description>
+				Prepares queued registrations, forms ordered parent/child units and starts evaluation, returning a monotonically increasing frame ID. [param batch_size] and [param max_workers] must be at least 1. Effective workers are bounded by batch count and the worker pool. Fewer than 16 units or one effective worker run inline, so a nonempty submission is not proof of parallel execution. Even inline work needs publication. No new frame can be submitted while one remains pending. Main thread only.
+			</description>
+		</method>
+		<method name="unregister_animation">
+			<return type="void" />
+			<param index="0" name="handle" type="int" />
+			<description>
+				Joins outstanding readers, marks [param handle] and its direct registered children removed, and discards their unpublished results/events. Removal restores saved mixer callback ownership and releases pose capture leases once it is safe to remove the entry. During publication/reentry cleanup can be deferred until the frame drain. An absent handle has no effect. Main thread only.
+			</description>
+		</method>
+		<method name="unregister_tree">
+			<return type="void" />
+			<param index="0" name="handle" type="int" />
+			<description>
+				Alias for [method unregister_animation], retained for existing Tree callers. Main thread only.
+			</description>
+		</method>
+		<method name="was_evaluated" qualifiers="const">
+			<return type="bool" />
+			<param index="0" name="handle" type="int" />
+			<description>
+				Reports whether the current/latest work result for [param handle] was successfully evaluated through its prepared native pose path. Use together with fallback/failed counters; a synchronous fallback is not reported as native evaluation.
+			</description>
+		</method>
+	</methods>
+</class>
