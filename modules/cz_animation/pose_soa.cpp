@@ -443,6 +443,8 @@ void CZPoseTrackBinding::reset(const Ref<Animation> &p_animation, int p_compact_
 	position_tracks.clear();
 	rotation_tracks.clear();
 	scale_tracks.clear();
+	maximum_blend_index = -1;
+	blend_indices_valid = true;
 	const int padded = (p_compact_bone_count + 3) & ~3;
 	position_weights.resize(padded);
 	rotation_weights.resize(padded);
@@ -471,14 +473,33 @@ void CZPoseTrackBinding::add_track(Animation::TrackType p_type, int p_animation_
 		default:
 			ERR_FAIL_MSG("Only bone transform tracks belong in a pose binding.");
 	}
+	blend_indices_valid &= p_blend_index >= 0;
+	maximum_blend_index = MAX(maximum_blend_index, p_blend_index);
 }
 
 void CZPoseTrackBinding::sample_and_blend(double p_time, real_t p_weight, const LocalVector<real_t> *p_track_weights,
 		real_t p_motion_scale, const CZPoseSoA &p_rest, CZPoseSoA &r_sample, CZPoseSoA &r_blended, bool p_simd,
-		bool p_fastpaths, SamplingStatistics *r_statistics) {
+		bool p_fastpaths, SamplingStatistics *r_statistics, bool p_zero_weights_certified) {
 	ERR_FAIL_COND(animation.is_null());
 	ERR_FAIL_COND(p_rest.size() != compact_bone_count || r_blended.size() != compact_bone_count);
 	ERR_FAIL_COND(&r_sample == &p_rest || &r_sample == &r_blended || &r_blended == &p_rest);
+	const auto record_statistics = [&](bool p_nonzero_weight, bool p_written, bool p_certified) {
+		if (r_statistics) {
+			r_statistics->calls++;
+			r_statistics->zero_weight_calls += !p_nonzero_weight;
+			r_statistics->no_written_calls += !p_written;
+			r_statistics->empty_binding_calls += position_tracks.is_empty() && rotation_tracks.is_empty() && scale_tracks.is_empty();
+			r_statistics->certified_zero_weight_calls += p_certified;
+		}
+	};
+	// Only the bridge may supply this hint, after checking the exact-zero union
+	// of every prepared Pose's bone indices while copying the owned snapshot.
+	// Invalid index fallbacks and non-finite scalar weights retain the old path.
+	if (p_fastpaths && p_zero_weights_certified && Math::is_finite(p_weight) && p_track_weights &&
+			blend_indices_valid && maximum_blend_index < int(p_track_weights->size())) {
+		record_statistics(false, false, true);
+		return;
+	}
 	const auto initialize_sample = [&]() {
 		r_sample.copy_from(p_rest);
 		for (uint32_t i = 0; i < position_weights.size(); i++) {
@@ -556,10 +577,5 @@ void CZPoseTrackBinding::sample_and_blend(double p_time, real_t p_weight, const 
 	if (!p_fastpaths || written) {
 		r_blended.blend(r_sample, p_rest, position_weights.ptr(), rotation_weights.ptr(), scale_weights.ptr(), p_simd);
 	}
-	if (r_statistics) {
-		r_statistics->calls++;
-		r_statistics->zero_weight_calls += !nonzero_weight;
-		r_statistics->no_written_calls += !written;
-		r_statistics->empty_binding_calls += position_tracks.is_empty() && rotation_tracks.is_empty() && scale_tracks.is_empty();
-	}
+	record_statistics(nonzero_weight, written, false);
 }

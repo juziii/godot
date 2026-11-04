@@ -140,6 +140,26 @@ int AnimationLibrary::get_animation_list_size() const {
 }
 
 void AnimationLibrary::_set_data(const Dictionary &p_data) {
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	Ref<AnimationLibrary> keep_alive(this);
+	// A pending event or removal callback can mutate the caller's dictionary.
+	// Copy its entries while retaining the Animation resources before publishing.
+	const Dictionary data = p_data.duplicate(false);
+	CZ_ANIMATION_SYNC_RESOURCE();
+
+	// Emit normal removals even for empty replacement data so mixers invalidate
+	// their animation sets. A fixed list also bounds reentrant callback changes.
+	LocalVector<StringName> old_names;
+	get_animation_list(&old_names);
+	for (const StringName &name : old_names) {
+		if (animations.has(name)) {
+			remove_animation(name);
+		}
+	}
+	for (const KeyValue<Variant, Variant> &kv : data) {
+		add_animation(kv.key, kv.value);
+	}
+#else
 	for (KeyValue<StringName, Ref<Animation>> &K : animations) {
 		K.value->disconnect_changed(callable_mp(this, &AnimationLibrary::_animation_changed));
 	}
@@ -147,6 +167,7 @@ void AnimationLibrary::_set_data(const Dictionary &p_data) {
 	for (const KeyValue<Variant, Variant> &kv : p_data) {
 		add_animation(kv.key, kv.value);
 	}
+#endif
 }
 
 Dictionary AnimationLibrary::_get_data() const {

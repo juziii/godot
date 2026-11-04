@@ -1240,4 +1240,303 @@ TEST_CASE("[SceneTree][CZAnimation] Independent worker library construction does
 }
 #endif
 
+TEST_CASE("[SceneTree][CZAnimation] Empty library data replacement publishes readers and expires old content") {
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	Rig rig(Ref<AnimationBatchProcessor>(), { "rotate_y" });
+	rig.tree->set_callback_mode_method(AnimationMixer::ANIMATION_CALLBACK_MODE_METHOD_IMMEDIATE);
+	const Ref<AnimationLibrary> library = rig.tree->get_animation_library(StringName());
+	const Ref<Animation> still = library->get_animation("Still");
+	const int method = rig.animation->add_track(Animation::TYPE_METHOD);
+	rig.animation->track_set_path(method, NodePath("."));
+	Dictionary key;
+	key["method"] = StringName("rotate_y");
+	key["args"] = Array{ 0.125 };
+	rig.animation->track_insert_key(method, 0.05, key);
+	Ref<LibraryBeforeApply> check;
+	check.instantiate();
+	check->watch_animation(library, "Move", rig.animation);
+	rig.tree->connect(SNAME("mixer_applied"), callable_mp(check.ptr(), &LibraryBeforeApply::applied));
+	rig.submit();
+	library->set("_data", Dictionary());
+	CHECK_FALSE(rig.processor->is_pending());
+	CHECK(check->calls == 1);
+	CHECK(check->matches);
+	CHECK(Math::is_equal_approx(rig.root->get_rotation().y, real_t(0.125)));
+	CHECK(library->get_animation_list_size() == 0);
+	CHECK_FALSE(rig.tree->has_animation("Move"));
+	CHECK_FALSE(rig.tree->has_animation("Still"));
+	rig.processor->complete_and_publish();
+	CHECK(check->calls == 1);
+	CHECK(Math::is_equal_approx(rig.root->get_rotation().y, real_t(0.125)));
+
+	const Ref<Animation> replacement = rig.animation->duplicate(true);
+	key["method"] = StringName("rotate_x");
+	replacement->track_set_key_value(method, 0, key);
+	replacement->position_track_insert_key(0, 1, Vector3(20, 0, 0));
+	Dictionary data;
+	data["Move"] = replacement;
+	data["Still"] = still;
+	library->set("_data", data);
+	CHECK(rig.tree->has_animation("Move"));
+	CHECK(rig.tree->get_animation("Move") == replacement);
+	rig.submit();
+	rig.processor->complete_and_publish();
+	CHECK_FALSE(rig.processor->was_evaluated(rig.handle));
+	CHECK(rig.processor->get_fallback_reason(rig.handle) == "Immediate method track requires synchronous evaluation.");
+	CHECK(method_statistic(rig.processor, "method_validation_scans") == 1);
+	CHECK(rig.skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(4, 0, 0)));
+}
+
+class LibraryDataReentry : public RefCounted {
+	GDCLASS(LibraryDataReentry, RefCounted);
+
+protected:
+	static void _bind_methods() {}
+
+public:
+	Dictionary *input = nullptr;
+	Ref<AnimationLibrary> *external_library = nullptr;
+	ObjectID library_id;
+	Ref<Animation> inserted;
+	int published = 0;
+	int removed = 0;
+	int incoming_added = 0;
+	bool entered_removal = false;
+	bool retained_inserted = true;
+
+	void on_applied() {
+		published++;
+		input->clear();
+		external_library->unref();
+	}
+	void on_removed(const StringName &p_name) {
+		removed++;
+		if (entered_removal) {
+			return;
+		}
+		entered_removal = true;
+		AnimationLibrary *library = Object::cast_to<AnimationLibrary>(ObjectDB::get_instance(library_id));
+		REQUIRE(library);
+		// Delete a future old entry and insert a name absent from the fixed list.
+		for (const StringName &name : { StringName("A"), StringName("B") }) {
+			if (library->has_animation(name)) {
+				library->remove_animation(name);
+			}
+		}
+		REQUIRE(library->add_animation("DuringRemoval", inserted) == OK);
+		input->clear();
+		external_library->unref();
+	}
+	void on_added(const StringName &p_name) {
+		if (p_name == SNAME("IncomingA") || p_name == SNAME("IncomingB")) {
+			incoming_added++;
+			AnimationLibrary *library = Object::cast_to<AnimationLibrary>(ObjectDB::get_instance(library_id));
+			REQUIRE(library);
+			retained_inserted &= library->has_animation("DuringRemoval") && library->get_animation(p_name).is_valid();
+		}
+	}
+};
+
+TEST_CASE("[SceneTree][CZAnimation] Library data snapshots survive pending input mutation and bounded removal reentry") {
+	Rig rig;
+	Ref<AnimationLibrary> library;
+	library.instantiate();
+	REQUIRE(library->add_animation("A", rig.animation) == OK);
+	REQUIRE(library->add_animation("B", rig.animation) == OK);
+	Dictionary data;
+	data["IncomingA"] = rig.animation;
+	data["IncomingB"] = rig.animation->duplicate(true);
+	Ref<LibraryDataReentry> callback;
+	callback.instantiate();
+	callback->input = &data;
+	callback->external_library = &library;
+	callback->library_id = library->get_instance_id();
+	callback->inserted = rig.animation;
+	library->connect(SNAME("animation_removed"), callable_mp(callback.ptr(), &LibraryDataReentry::on_removed));
+	library->connect(SNAME("animation_added"), callable_mp(callback.ptr(), &LibraryDataReentry::on_added));
+	rig.tree->connect(SNAME("mixer_applied"), callable_mp(callback.ptr(), &LibraryDataReentry::on_applied), Object::CONNECT_ONE_SHOT);
+	rig.submit();
+	library->set("_data", data);
+	CHECK(data.is_empty());
+	CHECK(library.is_null());
+	CHECK(callback->published == 1);
+	CHECK(callback->removed == 2);
+	CHECK(callback->incoming_added == 2);
+	CHECK(callback->retained_inserted);
+	CHECK(ObjectDB::get_instance(callback->library_id) == nullptr);
+	CHECK_FALSE(rig.processor->is_pending());
+	rig.processor->complete_and_publish();
+	CHECK(callback->published == 1);
+}
+
+static void install_zero_certificate_graph(Rig &p_rig) {
+	Ref<AnimationNodeBlendTree> graph;
+	graph.instantiate();
+	Ref<AnimationNodeAnimation> still;
+	still.instantiate();
+	still->set_animation("Still");
+	Ref<AnimationNodeBlend2> blend;
+	blend.instantiate();
+	blend->set_filter_enabled(true);
+	blend->set_filter_path(NodePath("Skeleton3D:Root"), true);
+	graph->add_node("Move", p_rig.animation_node);
+	graph->add_node("Still", still);
+	graph->add_node("Masked", blend);
+	graph->connect_node("Masked", 0, "Move");
+	graph->connect_node("Masked", 1, "Still");
+	graph->connect_node("output", 0, "Masked");
+	p_rig.tree->set_root_animation_node(graph);
+	p_rig.tree->set("parameters/Masked/blend_amount", 1.0);
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Zero bone certificates preserve filtered auxiliary events mutation and root motion") {
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	for (bool deterministic : { true, false }) {
+		PoseFastpathsEnvironment environment(false);
+		Rig legacy(Ref<AnimationBatchProcessor>(), { "rotate_y" });
+		environment.set_enabled(true);
+		Rig fast(Ref<AnimationBatchProcessor>(), { "rotate_y" });
+		Rig original;
+		original.processor->unregister_tree(original.handle);
+		AuxiliaryTracks original_aux(original);
+		AuxiliaryTracks legacy_aux(legacy);
+		AuxiliaryTracks fast_aux(fast);
+		for (Rig *rig : { &original, &legacy, &fast }) {
+			rig->tree->set_deterministic(deterministic);
+			install_zero_certificate_graph(*rig);
+		}
+		for (int step = 0; step < 7; step++) {
+			for (Rig *rig : { &original, &legacy, &fast }) {
+				rig->tree->set("parameters/Masked/blend_amount", step == 1 ? 0.35 : 1.0);
+				if (step == 2) {
+					rig->animation->track_set_enabled(0, false);
+				} else if (step == 3) {
+					rig->animation->track_set_enabled(0, true);
+					rig->animation->position_track_insert_key(0, 0.6, Vector3(7, 0, 0));
+				} else if (step == 4) {
+					rig->tree->set_root_motion_track(NodePath("Skeleton3D:Root"));
+				} else if (step == 5) {
+					rig->tree->set_root_motion_track(NodePath());
+				}
+			}
+			original.tree->advance(0.1);
+			for (int variant = 0; variant < 2; variant++) {
+				Rig *rig = variant == 0 ? &legacy : &fast;
+				AuxiliaryTracks *aux = variant == 0 ? &legacy_aux : &fast_aux;
+				const Vector3 prior_position = aux->target->get_position();
+				const Vector3 prior_rotation = aux->target->get_rotation();
+				const float prior_shape = aux->mesh_instance->get_blend_shape_value(0);
+				const int prior_events = rig->observer->count;
+				rig->submit();
+				rig->processor->complete();
+				CHECK(aux->target->get_position().is_equal_approx(prior_position));
+				CHECK(aux->target->get_rotation().is_equal_approx(prior_rotation));
+				CHECK(Math::is_equal_approx(aux->mesh_instance->get_blend_shape_value(0), prior_shape));
+				CHECK(rig->observer->count == prior_events);
+				rig->processor->publish(rig->handle);
+				rig->processor->publish(rig->handle);
+				rig->processor->complete_and_publish();
+				CHECK(rig->processor->was_evaluated(rig->handle));
+				CHECK(rig->observer->count == prior_events + 1);
+				CHECK(rig->skeleton->get_bone_pose(0).is_equal_approx(original.skeleton->get_bone_pose(0)));
+				CHECK(rig->tree->get_root_motion_position().is_equal_approx(original.tree->get_root_motion_position()));
+				CHECK(rig->tree->get_root_motion_position_accumulator().is_equal_approx(original.tree->get_root_motion_position_accumulator()));
+				CHECK(aux->target->get_position().is_equal_approx(original_aux.target->get_position()));
+				CHECK(aux->target->get_rotation().is_equal_approx(original_aux.target->get_rotation()));
+				CHECK(Math::is_equal_approx(aux->mesh_instance->get_blend_shape_value(0), original_aux.mesh_instance->get_blend_shape_value(0)));
+				const int64_t skips = method_statistic(rig->processor, "sample_certified_zero_weight_calls");
+				if (variant == 0 || !deterministic || step == 1) {
+					CHECK(skips == 0);
+				} else {
+					CHECK(skips > 0);
+				}
+				CHECK(skips <= method_statistic(rig->processor, "sample_zero_bone_weight_calls"));
+			}
+			for (const char *key : { "sample_pose_instance_calls", "sample_zero_bone_weight_calls", "sample_no_written_bone_calls", "sample_empty_binding_calls", "evaluate_animation_instances", "evaluate_raw_weight_elements" }) {
+				CHECK(method_statistic(legacy.processor, key) == method_statistic(fast.processor, key));
+			}
+			if (deterministic) {
+				const int64_t rebuilds = method_statistic(fast.processor, "zero_weight_mask_rebuilds");
+				CHECK(rebuilds == int64_t(step != 1 && step != 6));
+			} else {
+				CHECK(method_statistic(fast.processor, "zero_weight_mask_rebuilds") == 0);
+			}
+		}
+	}
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Zero weight masks include every registered Pose and rebuild for bone LOD") {
+	struct BoneLodRestore {
+		bool enabled = SkeletonAnimationPose::is_bone_lod_enabled();
+		BoneLodRestore() { SkeletonAnimationPose::set_bone_lod_enabled(true); }
+		~BoneLodRestore() { SkeletonAnimationPose::set_bone_lod_enabled(enabled); }
+	} bone_lod_restore;
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	PoseFastpathsEnvironment environment(false);
+	Rig legacy;
+	environment.set_enabled(true);
+	Rig fast;
+	Rig original;
+	Rig *rigs[] = { &original, &legacy, &fast };
+	Skeleton3D *secondary[3] = {};
+	Ref<SkeletonAnimationPose> secondary_poses[2];
+	for (int index = 0; index < 3; index++) {
+		Rig &rig = *rigs[index];
+		rig.processor->unregister_tree(rig.handle);
+		secondary[index] = memnew(Skeleton3D);
+		secondary[index]->set_name("Secondary");
+		secondary[index]->add_bone("Root");
+		secondary[index]->add_bone("Finger");
+		secondary[index]->set_bone_parent(1, 0);
+		rig.root->add_child(secondary[index]);
+		const int track = rig.animation->add_track(Animation::TYPE_POSITION_3D);
+		rig.animation->track_set_path(track, NodePath("Secondary:Finger"));
+		rig.animation->position_track_insert_key(track, 0, Vector3());
+		rig.animation->position_track_insert_key(track, 1, Vector3(0, 5, 0));
+		install_zero_certificate_graph(rig);
+		if (index > 0) {
+			Ref<SkeletonAnimationPose> &second_pose = secondary_poses[index - 1];
+			second_pose.instantiate();
+			second_pose->configure_bone_lod({ "Finger" }, { 1 });
+			REQUIRE(second_pose->capture(secondary[index]));
+			REQUIRE(rig.pose->capture(rig.skeleton));
+			rig.handle = rig.processor->register_tree(rig.tree, { rig.pose, second_pose }, {});
+			REQUIRE(rig.handle != 0);
+		}
+	}
+	for (int step = 0; step < 4; step++) {
+		if (step >= 2) {
+			for (const Ref<SkeletonAnimationPose> &pose : secondary_poses) {
+				pose->set_bone_lod(step == 2 ? 1 : 0);
+			}
+		}
+		original.tree->advance(0.1);
+		for (int variant = 0; variant < 2; variant++) {
+			Rig &rig = *rigs[variant + 1];
+			rig.submit();
+			rig.processor->complete_and_publish();
+			CHECK(rig.processor->was_evaluated(rig.handle));
+			CHECK(rig.skeleton->get_bone_pose(0).is_equal_approx(original.skeleton->get_bone_pose(0)));
+			if (step == 2) {
+				CHECK(secondary_poses[variant]->get_active_bone_count() == 1);
+				CHECK(secondary_poses[variant]->get_local_pose(1).origin.is_zero_approx());
+			} else {
+				CHECK(secondary[variant + 1]->get_bone_pose(1).is_equal_approx(secondary[0]->get_bone_pose(1)));
+				CHECK_FALSE(secondary[variant + 1]->get_bone_pose_position(1).is_zero_approx());
+			}
+		}
+		const int64_t skips = method_statistic(fast.processor, "sample_certified_zero_weight_calls");
+		if (step == 2) {
+			CHECK(skips > 0);
+		} else {
+			CHECK(skips == 0);
+		}
+		CHECK(method_statistic(legacy.processor, "sample_certified_zero_weight_calls") == 0);
+		CHECK(method_statistic(fast.processor, "zero_weight_mask_rebuilds") == int64_t(step != 1));
+		for (const char *key : { "sample_pose_instance_calls", "sample_zero_bone_weight_calls", "sample_no_written_bone_calls", "sample_empty_binding_calls" }) {
+			CHECK(method_statistic(legacy.processor, key) == method_statistic(fast.processor, key));
+		}
+	}
+}
+
 } // namespace TestCZAnimationRuntime

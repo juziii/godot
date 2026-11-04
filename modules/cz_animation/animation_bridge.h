@@ -71,6 +71,8 @@ public:
 		uint64_t sample_zero_weight_calls = 0;
 		uint64_t sample_no_written_calls = 0;
 		uint64_t sample_empty_binding_calls = 0;
+		uint64_t sample_certified_zero_weight_calls = 0;
+		uint64_t zero_weight_mask_rebuilds = 0;
 	};
 	struct BlendSpaceState {
 		LocalVector<float> weights;

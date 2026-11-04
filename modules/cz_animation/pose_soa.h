@@ -90,6 +90,7 @@ public:
 		uint64_t zero_weight_calls = 0;
 		uint64_t no_written_calls = 0;
 		uint64_t empty_binding_calls = 0;
+		uint64_t certified_zero_weight_calls = 0;
 	};
 	struct Track {
 		int animation_track = -1;
@@ -106,6 +107,8 @@ private:
 	LocalVector<real_t> position_weights;
 	LocalVector<real_t> rotation_weights;
 	LocalVector<real_t> scale_weights;
+	int maximum_blend_index = -1;
+	bool blend_indices_valid = true;
 
 	static real_t _weight(const Track &p_track, real_t p_weight, const LocalVector<real_t> *p_track_weights);
 
@@ -114,5 +117,5 @@ public:
 	void add_track(Animation::TrackType p_type, int p_animation_track, int p_compact_bone, int p_blend_index);
 	void sample_and_blend(double p_time, real_t p_weight, const LocalVector<real_t> *p_track_weights,
 			real_t p_motion_scale, const CZPoseSoA &p_rest, CZPoseSoA &r_sample, CZPoseSoA &r_blended, bool p_simd,
-			bool p_fastpaths = true, SamplingStatistics *r_statistics = nullptr);
+			bool p_fastpaths = true, SamplingStatistics *r_statistics = nullptr, bool p_zero_weights_certified = false);
 };

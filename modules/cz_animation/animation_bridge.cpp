@@ -46,6 +46,7 @@ struct CZAnimationBridge::State {
 		AnimationMixer::AnimationInstance value;
 		LocalVector<real_t> weights;
 		LocalVector<real_t> normalized_weights;
+		bool zero_bone_weights_certified = false;
 	};
 	struct PoseBinding {
 		Ref<SkeletonAnimationPose> pose;
@@ -54,6 +55,8 @@ struct CZAnimationBridge::State {
 		bool tracks_valid = false;
 		HashMap<Ref<Animation>, CZPoseTrackBinding> tracks;
 		LocalVector<AnimationMixer::TrackCacheTransform *> transform_caches;
+		LocalVector<uint8_t> bone_blend_mask;
+		bool bone_blend_mask_eligible = false;
 	};
 	struct Signal {
 		Ref<Resource> resource;
@@ -77,6 +80,10 @@ struct CZAnimationBridge::State {
 	CZPoseTrackBinding::SamplingStatistics sampling_statistics;
 	bool phase_diagnostics_enabled = false;
 	bool pose_fastpaths_enabled = true;
+	LocalVector<uint8_t> bone_blend_mask;
+	bool bone_blend_mask_dirty = true;
+	bool bone_blend_mask_eligible = false;
+	bool bone_blend_mask_prepared = false;
 	uint64_t method_track_version = 0;
 	uint64_t method_animation_set_pass = 0;
 	bool methods_checked = false;
@@ -202,6 +209,7 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 	const ObjectID mixer_id = p_state->id;
 	p_state->reason = String();
 	p_state->success = false;
+	p_state->bone_blend_mask_prepared = false;
 	p_state->signals.clear();
 	p_state->delta = p_delta;
 	for (uint32_t index = 0; index < p_poses.size(); index++) {
@@ -377,6 +385,7 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 		}
 	}
 	if (p_state->poses.size() != p_poses.size()) {
+		p_state->bone_blend_mask_dirty = true;
 		p_state->poses.clear();
 		p_state->poses.resize(p_poses.size());
 	}
@@ -384,11 +393,19 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 		State::PoseBinding &binding = p_state->poses[index];
 		const Ref<SkeletonAnimationPose> &pose = p_poses[index];
 		if (!binding.tracks_valid || binding.pose != pose || binding.layout != pose->layout_version || binding.track_version != mixer->track_map_version) {
+			p_state->bone_blend_mask_dirty = true;
 			binding.tracks_valid = false;
 			binding.pose = pose;
 			binding.layout = pose->layout_version;
 			binding.tracks.clear();
 			binding.transform_caches.clear();
+			binding.bone_blend_mask_eligible = p_state->pose_fastpaths_enabled && mixer->deterministic;
+			if (binding.bone_blend_mask_eligible) {
+				binding.bone_blend_mask.resize(mixer->track_count);
+				for (uint8_t &mask : binding.bone_blend_mask) {
+					mask = 0;
+				}
+			}
 			for (const KeyValue<Animation::TrackCacheID, AnimationMixer::TrackCache *> &entry : mixer->track_cache) {
 				if (entry.value->type == Animation::TYPE_POSITION_3D && entry.value->path != mixer->root_motion_track) {
 					auto *transform = static_cast<AnimationMixer::TrackCacheTransform *>(entry.value);
@@ -454,6 +471,13 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 					}
 					channels.insert(channel);
 					tracks.add_track(animation->track_get_type(track), track, compact, cache->blend_idx);
+					if (p_state->pose_fastpaths_enabled && mixer->deterministic) {
+						if (cache->blend_idx >= 0 && cache->blend_idx < mixer->track_count) {
+							binding.bone_blend_mask[cache->blend_idx] = 1;
+						} else {
+							binding.bone_blend_mask_eligible = false;
+						}
+					}
 					switch (animation->track_get_type(track)) {
 						case Animation::TYPE_POSITION_3D:
 							pose->reference_pose.set_position(compact, transform->init_loc);
@@ -476,7 +500,30 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 			binding.tracks_valid = true;
 		}
 	}
-	return certificate_current();
+	if (p_state->pose_fastpaths_enabled && mixer->deterministic &&
+			(p_state->bone_blend_mask_dirty || p_state->bone_blend_mask.size() != uint32_t(mixer->track_count))) {
+		p_state->bone_blend_mask.resize(mixer->track_count);
+		for (uint8_t &mask : p_state->bone_blend_mask) {
+			mask = 0;
+		}
+		p_state->bone_blend_mask_eligible = true;
+		for (const State::PoseBinding &binding : p_state->poses) {
+			if (!binding.tracks_valid || !binding.bone_blend_mask_eligible || binding.bone_blend_mask.size() != p_state->bone_blend_mask.size()) {
+				p_state->bone_blend_mask_eligible = false;
+				break;
+			}
+			for (uint32_t index = 0; index < binding.bone_blend_mask.size(); index++) {
+				p_state->bone_blend_mask[index] |= binding.bone_blend_mask[index];
+			}
+		}
+		p_state->bone_blend_mask_dirty = false;
+		if (p_state->phase_diagnostics_enabled) {
+			p_state->evaluation_statistics.zero_weight_mask_rebuilds++;
+		}
+	}
+	const bool current = certificate_current();
+	p_state->bone_blend_mask_prepared = current;
+	return current;
 }
 
 void CZAnimationBridge::reset_evaluation_statistics(State *p_state, bool p_enabled) {
@@ -491,6 +538,7 @@ CZAnimationBridge::EvaluationStatistics CZAnimationBridge::get_evaluation_statis
 	statistics.sample_zero_weight_calls = p_state->sampling_statistics.zero_weight_calls;
 	statistics.sample_no_written_calls = p_state->sampling_statistics.no_written_calls;
 	statistics.sample_empty_binding_calls = p_state->sampling_statistics.empty_binding_calls;
+	statistics.sample_certified_zero_weight_calls = p_state->sampling_statistics.certified_zero_weight_calls;
 	return statistics;
 }
 
@@ -515,11 +563,29 @@ void CZAnimationBridge::evaluate(State *p_state) {
 	CZAnimationEvaluationScope scope(p_state, false);
 	p_state->initial_instance_count = 0;
 	p_state->instance_count = 0;
+	const bool certify_zero_weights = p_state->pose_fastpaths_enabled && mixer->deterministic &&
+			p_state->bone_blend_mask_prepared && !p_state->bone_blend_mask_dirty && p_state->bone_blend_mask_eligible && p_state->bone_blend_mask.size() == uint32_t(mixer->track_count);
 	const auto snapshot_weights = [&](State::Instance &r_snapshot, const AnimationMixer::AnimationInstance &p_instance) {
 		r_snapshot.value = p_instance;
 		r_snapshot.weights.resize(mixer->track_count);
 		const LocalVector<real_t> *source = p_instance.playback_info.track_weights;
-		for (int track = 0; track < mixer->track_count; track++) {
+		r_snapshot.zero_bone_weights_certified = certify_zero_weights && Math::is_finite(p_instance.playback_info.weight);
+		int track = 0;
+		if (r_snapshot.zero_bone_weights_certified) {
+			for (; track < mixer->track_count; track++) {
+				r_snapshot.weights[track] = source && track < int(source->size()) ? (*source)[track] : 1;
+				if (p_state->bone_blend_mask[track] && r_snapshot.weights[track] != real_t(0)) {
+					// Exact +/-0 only. Near-zero, NaN and infinity retain sampling's
+					// original multiplication/threshold/interpolation order.
+					r_snapshot.zero_bone_weights_certified = false;
+					track++;
+					break;
+				}
+			}
+		}
+		// Disabled/non-deterministic paths, or the remainder after one failed
+		// certificate element, use the original copy without per-element tests.
+		for (; track < mixer->track_count; track++) {
 			r_snapshot.weights[track] = source && track < int(source->size()) ? (*source)[track] : 1;
 		}
 		r_snapshot.value.playback_info.track_weights = &r_snapshot.weights;
@@ -608,7 +674,7 @@ void CZAnimationBridge::evaluate(State *p_state) {
 							const LocalVector<real_t> *sample_weights = p_state->pose_fastpaths_enabled && mixer->deterministic ? &snapshot.weights : &snapshot.normalized_weights;
 							tracks->sample_and_blend(snapshot.value.playback_info.time, snapshot.value.playback_info.weight,
 									sample_weights, pose->motion_scale, pose->reference_pose, pose->sampled, pose->blended, pose->simd_enabled,
-									p_state->pose_fastpaths_enabled, diagnostics ? &p_state->sampling_statistics : nullptr);
+									p_state->pose_fastpaths_enabled, diagnostics ? &p_state->sampling_statistics : nullptr, snapshot.zero_bone_weights_certified);
 						}
 					}
 					if (!mixer->deterministic) {
@@ -981,6 +1047,9 @@ void CZAnimationBridge::invalidate_binding_cache(AnimationMixer *p_mixer) {
 	State **state = mixer_states.getptr(p_mixer->get_instance_id());
 	if (state) {
 		(*state)->methods_checked = false;
+		(*state)->bone_blend_mask_dirty = true;
+		(*state)->bone_blend_mask_eligible = false;
+		(*state)->bone_blend_mask_prepared = false;
 		for (State::PoseBinding &binding : (*state)->poses) {
 			binding.track_version = 0;
 			binding.tracks_valid = false;

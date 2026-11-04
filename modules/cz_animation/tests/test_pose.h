@@ -526,4 +526,91 @@ TEST_CASE("[CZAnimation] Lazy sampling preserves near-zero negative over-one and
 	}
 }
 
+TEST_CASE("[CZAnimation] Certified exact zero sampling preserves accumulated poses and padded tails") {
+	const real_t tolerance = sizeof(real_t) == sizeof(double) ? 1e-12 : 1e-6;
+	for (int count : { 0, 1, 3, 5, 17, 257 }) {
+		Ref<Animation> animation;
+		animation.instantiate();
+		for (int bone = 0; bone < count; bone++) {
+			const int track = animation->add_track(Animation::TYPE_POSITION_3D);
+			animation->position_track_insert_key(track, 0, Vector3(10 + bone, 20, 30));
+		}
+		for (bool simd : { false, true }) {
+			for (bool fastpaths : { false, true }) {
+				for (real_t scalar_weight : { real_t(0), real_t(-0.0), real_t(-0.5), real_t(2) }) {
+					CZPoseTrackBinding binding, legacy_binding;
+					binding.reset(animation, count);
+					legacy_binding.reset(animation, count);
+					LocalVector<real_t> weights;
+					weights.resize(count);
+					CZPoseSoA rest, sample, legacy_sample, result, legacy;
+					rest.resize(count);
+					for (int bone = 0; bone < count; bone++) {
+						binding.add_track(Animation::TYPE_POSITION_3D, bone, bone, bone);
+						legacy_binding.add_track(Animation::TYPE_POSITION_3D, bone, bone, bone);
+						weights[bone] = bone % 2 ? real_t(-0.0) : real_t(0);
+						rest.set_position(bone, Vector3(bone, 2, 3));
+						rest.set_scale(bone, Vector3(-1, 2, 3));
+					}
+					result.copy_from(rest);
+					for (int bone = 0; bone < count; bone++) {
+						result.set_position(bone, Vector3(31 + bone, 41, 59));
+					}
+					legacy.copy_from(result);
+					sample.copy_from(result);
+					CZPoseTrackBinding::SamplingStatistics statistics;
+					binding.sample_and_blend(0, scalar_weight, &weights, 1, rest, sample, result, simd, fastpaths, &statistics, true);
+					legacy_binding.sample_and_blend(0, scalar_weight, &weights, 1, rest, legacy_sample, legacy, simd, false);
+					for (int component = 0; component < CZPoseSoA::COMPONENT_COUNT; component++) {
+						for (int bone = 0; bone < result.padded_size(); bone++) {
+							CHECK(Math::abs(result.data(CZPoseSoA::Component(component))[bone] - legacy.data(CZPoseSoA::Component(component))[bone]) <= tolerance);
+						}
+					}
+					CHECK(statistics.calls == 1);
+					CHECK(statistics.zero_weight_calls == 1);
+					CHECK(statistics.no_written_calls == 1);
+					CHECK(statistics.empty_binding_calls == uint64_t(count == 0));
+					CHECK(statistics.certified_zero_weight_calls == uint64_t(fastpaths));
+				}
+			}
+		}
+	}
+}
+
+TEST_CASE("[CZAnimation] Zero certificates retain nonfinite scalar and invalid index fallback semantics") {
+	Ref<Animation> animation;
+	animation.instantiate();
+	const int track = animation->add_track(Animation::TYPE_POSITION_3D);
+	animation->position_track_insert_key(track, 0, Vector3(10, 20, 30));
+	for (bool simd : { false, true }) {
+		for (int blend_index : { -1, 0, 2 }) {
+			for (real_t scalar_weight : { real_t(1), real_t(Math::NaN), real_t(Math::INF), real_t(-Math::INF) }) {
+				CZPoseTrackBinding binding, legacy_binding;
+				binding.reset(animation, 1);
+				legacy_binding.reset(animation, 1);
+				binding.add_track(Animation::TYPE_POSITION_3D, track, 0, blend_index);
+				legacy_binding.add_track(Animation::TYPE_POSITION_3D, track, 0, blend_index);
+				CZPoseSoA rest, sample, result, legacy_sample, legacy;
+				rest.resize(1);
+				result.copy_from(rest);
+				legacy.copy_from(rest);
+				LocalVector<real_t> weights = { real_t(0) };
+				CZPoseTrackBinding::SamplingStatistics statistics;
+				binding.sample_and_blend(0, scalar_weight, &weights, 1, rest, sample, result, simd, true, &statistics, true);
+				legacy_binding.sample_and_blend(0, scalar_weight, &weights, 1, rest, legacy_sample, legacy, simd, false);
+				for (int axis = 0; axis < 3; axis++) {
+					const real_t expected = legacy.get_position(0)[axis];
+					const real_t actual = result.get_position(0)[axis];
+					if (Math::is_nan(expected)) {
+						CHECK(Math::is_nan(actual));
+					} else {
+						CHECK(actual == expected);
+					}
+				}
+				CHECK(statistics.certified_zero_weight_calls == uint64_t(blend_index == 0 && Math::is_finite(scalar_weight)));
+			}
+		}
+	}
+}
+
 } // namespace TestCZAnimation

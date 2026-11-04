@@ -538,6 +538,8 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
 			evaluation_statistics.sample_zero_weight_calls += statistics.sample_zero_weight_calls;
 			evaluation_statistics.sample_no_written_calls += statistics.sample_no_written_calls;
 			evaluation_statistics.sample_empty_binding_calls += statistics.sample_empty_binding_calls;
+			evaluation_statistics.sample_certified_zero_weight_calls += statistics.sample_certified_zero_weight_calls;
+			evaluation_statistics.zero_weight_mask_rebuilds += statistics.zero_weight_mask_rebuilds;
 		}
 		fallback_counts[kind] += !entry->prepared;
 		evaluated_counts[kind] += was_evaluated(entry->handle);
@@ -609,6 +611,8 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
 		result["sample_zero_bone_weight_calls"] = evaluation_statistics.sample_zero_weight_calls;
 		result["sample_no_written_bone_calls"] = evaluation_statistics.sample_no_written_calls;
 		result["sample_empty_binding_calls"] = evaluation_statistics.sample_empty_binding_calls;
+		result["sample_certified_zero_weight_calls"] = evaluation_statistics.sample_certified_zero_weight_calls;
+		result["zero_weight_mask_rebuilds"] = evaluation_statistics.zero_weight_mask_rebuilds;
 	}
 	return result;
 }
