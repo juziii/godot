@@ -55,6 +55,15 @@ public:
 		uint64_t tracks = 0;
 		uint64_t keys = 0;
 	};
+	struct EvaluationStatistics {
+		uint64_t total_us = 0;
+		uint64_t graph_us = 0;
+		uint64_t weights_us = 0;
+		uint64_t pose_us = 0;
+		uint64_t aux_blend_us = 0;
+		uint64_t calls = 0;
+		uint64_t first_key_calls = 0;
+	};
 	struct BlendSpaceState {
 		LocalVector<float> weights;
 		LocalVector<float> target_weights;
@@ -69,6 +78,8 @@ public:
 	static void detach_owner(State *p_state);
 	static void reset_method_validation_statistics(State *p_state);
 	static MethodValidationStatistics get_method_validation_statistics(const State *p_state);
+	static void reset_evaluation_statistics(State *p_state, bool p_enabled);
+	static EvaluationStatistics get_evaluation_statistics(const State *p_state);
 	static bool prepare(State *p_state, double p_delta, const LocalVector<Ref<SkeletonAnimationPose>> &p_poses);
 	static void evaluate(State *p_state);
 	static bool publish(State *p_state);

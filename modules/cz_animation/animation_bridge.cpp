@@ -73,6 +73,8 @@ struct CZAnimationBridge::State {
 	HashMap<StringName, BlendSpaceState> blend_spaces;
 	HashSet<StringName> safe_methods;
 	MethodValidationStatistics method_statistics;
+	EvaluationStatistics evaluation_statistics;
+	bool phase_diagnostics_enabled = false;
 	uint64_t method_track_version = 0;
 	uint64_t method_animation_set_pass = 0;
 	bool methods_checked = false;
@@ -473,7 +475,31 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 	return certificate_current();
 }
 
+void CZAnimationBridge::reset_evaluation_statistics(State *p_state, bool p_enabled) {
+	p_state->phase_diagnostics_enabled = p_enabled;
+	p_state->evaluation_statistics = EvaluationStatistics();
+}
+
+CZAnimationBridge::EvaluationStatistics CZAnimationBridge::get_evaluation_statistics(const State *p_state) {
+	return p_state->evaluation_statistics;
+}
+
 void CZAnimationBridge::evaluate(State *p_state) {
+	// Construct before the TLS scope so its destruction is included in total_us.
+	struct Measurement {
+		State *state;
+		uint64_t start;
+		explicit Measurement(State *p_state) :
+				state(p_state->phase_diagnostics_enabled ? p_state : nullptr),
+				start(state ? OS::get_singleton()->get_ticks_usec() : 0) {}
+		~Measurement() {
+			if (state) {
+				state->evaluation_statistics.total_us += OS::get_singleton()->get_ticks_usec() - start;
+				state->evaluation_statistics.calls++;
+			}
+		}
+	} measurement(p_state);
+	const bool diagnostics = p_state->phase_diagnostics_enabled;
 	AnimationMixer *mixer = p_state->mixer;
 	AnimationPlayer *player = Object::cast_to<AnimationPlayer>(mixer);
 	CZAnimationEvaluationScope scope(p_state, false);
@@ -494,6 +520,9 @@ void CZAnimationBridge::evaluate(State *p_state) {
 		// The first key has its own zero-delta event pass. The actual frame still
 		// advances by delta, matching AnimationPlayer's synchronous start behavior.
 		if (player->playback.started) {
+			if (diagnostics) {
+				p_state->evaluation_statistics.first_key_calls++;
+			}
 			mixer->_blend_init();
 			player->_blend_pre_process(0, mixer->track_count, mixer->track_map);
 			p_state->initial_instance_count = mixer->animation_instances.size();
@@ -506,10 +535,16 @@ void CZAnimationBridge::evaluate(State *p_state) {
 			mixer->clear_animation_instances();
 		}
 	}
+	uint64_t phase_start = diagnostics ? OS::get_singleton()->get_ticks_usec() : 0;
 	mixer->_blend_init();
 	const bool processed = mixer->cache_valid && mixer->_blend_pre_process(p_state->delta, mixer->track_count, mixer->track_map);
 	if (processed) {
 		mixer->_blend_calc_total_weight();
+		if (diagnostics) {
+			const uint64_t now = OS::get_singleton()->get_ticks_usec();
+			p_state->evaluation_statistics.graph_us += now - phase_start;
+			phase_start = now;
+		}
 		p_state->instance_count = mixer->animation_instances.size();
 		if (p_state->instances.size() < p_state->instance_count) {
 			p_state->instances.resize(p_state->instance_count);
@@ -531,6 +566,11 @@ void CZAnimationBridge::evaluate(State *p_state) {
 			}
 			snapshot.value.playback_info.track_weights = &snapshot.weights;
 			mixer->animation_instances[i].playback_info.track_weights = &snapshot.weights;
+		}
+		if (diagnostics) {
+			const uint64_t now = OS::get_singleton()->get_ticks_usec();
+			p_state->evaluation_statistics.weights_us += now - phase_start;
+			phase_start = now;
 		}
 		for (State::PoseBinding &binding : p_state->poses) {
 			SkeletonAnimationPose *pose = binding.pose.ptr();
@@ -567,10 +607,20 @@ void CZAnimationBridge::evaluate(State *p_state) {
 				pose->interpolate_frame();
 			}
 		}
+		if (diagnostics) {
+			const uint64_t now = OS::get_singleton()->get_ticks_usec();
+			p_state->evaluation_statistics.pose_us += now - phase_start;
+			phase_start = now;
+		}
 		// Bone tracks were sampled directly into SoA. Official root motion and
 		// BlendShape caches still use their original resource sampling semantics.
 		mixer->_blend_process(p_state->delta);
+		if (diagnostics) {
+			p_state->evaluation_statistics.aux_blend_us += OS::get_singleton()->get_ticks_usec() - phase_start;
+		}
 		p_state->success = true;
+	} else if (diagnostics) {
+		p_state->evaluation_statistics.graph_us += OS::get_singleton()->get_ticks_usec() - phase_start;
 	}
 	if (player) {
 		p_state->playback = player->playback;

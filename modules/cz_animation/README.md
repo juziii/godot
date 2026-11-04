@@ -62,6 +62,29 @@ method_validation_cache_hits / method_validation_scans 记录方法名安全证�
 
 Prepare/Wait/Publish 是主线程 elapsed μs；SampleBlend/Interpolate/Matrix/SkinPack 是各 Pose 的 elapsed work sum，可以在 worker 上重叠，Matrix 也可能含主线程 capture；不能加总成帧 wall time 或 CPU core time。worker尚未join时 Pose 阶段字段不提供。captured_bones 来自实际 native 分量重抓；稳定动画帧应为0。pose_memory_bytes 是模块记录的 Pose/SoA/骨/skin容量子集，不是 total animation/process resident memory。skin_buffer_copies 是实际 COW pointer replacement 累积次数。
 
+### 可选原生阶段诊断
+
+`AnimationBatchProcessor` 构造时只读取一次环境变量 `CZ_ANIM_PHASE_DIAGNOSTICS`，仅值为 `1` 时开启；构造后的环境变化不会切换既有实例。默认关闭，不执行新增阶段时钟读取。`get_statistics()` 始终提供 bool `phase_diagnostics_enabled`；关闭时下列新增耗时/次数键缺失，不伪造为实测0。没有新增ClassDB或托管ABI入口。
+
+开启后，主线程在当前提交已完成发布（frame>0、!pending、!preparing、!publishing、group==-1）时提供：
+
+|键|单位和范围|
+|---|---|
+|submit_total_us|通过guard后的C++ Submit主线程wall，含准备/unit组织/inline执行或任务提交，不含C#封送和调用方工作|
+|submit_inline_us|Submit内整个inline batch循环；实际走异步提交时为0|
+|evaluate_total_us|当前提交各entry的完整Bridge.evaluate elapsed work总和，含TLS scope收尾和Player状态保存/恢复|
+|evaluate_graph_us|常规帧的_blend_init、_blend_pre_process与processed时的_blend_calc_total_weight|
+|evaluate_weights_us|常规实例容量、owned raw/normalized权重快照与指针重绑定|
+|evaluate_pose_us|完整Pose循环，包含采样、modifier/pawn求解、历史、显示展开及pack等|
+|evaluate_aux_blend_us|evaluate侧官方_blend_process，含track公共前缀/skip及root-motion/BlendShape/value等；不含publish事件侧第二遍|
+|evaluate_calls / evaluate_first_key_calls|当前提交的evaluate调用次数 / Player started零delta特殊分支次数|
+
+两个Submit计时与每个State累计在每次有效Submit重置，State不在每次evaluate或prepare_frame重置。dirty输出在Publish重算时继续累计evaluate计时/次数，并由既有recomputed标记；这部分不属于Submit。Player首键零delta分支及其快照属于evaluate_total的未单列部分，不混入常规graph/weights阶段。
+
+graph/weights/pose/aux是evaluate_total的互斥子区间；旧SampleBlend/Interpolate/Matrix/SkinPack是其部分子工作，Matrix还可能来自prepare/capture，不能重复相加。四人inline、recomputed=0、无fallback/failed、evaluate_calls符合预期且first_key_calls=0时，才可分别用 `submit_total - prepare - submit_inline`、`submit_inline - evaluate_total` 和 `evaluate_total - graph - weights - pose - aux` 分析未单列开销。多worker的evaluate值是可重叠work sum，不能反减主线程Submit wall或称为CPU-core time。负残差须保留排查，不归零掩盖边界错误。
+
+这是独立诊断模式，有新增时钟观测成本；正式timing-only/P95应关闭它。GetStatistics不隐式等待/发布，未到上述完成点时新增阶段键缺失。新增三项native回归覆盖开关锁定/关闭缺失、完成后可见、逐Submit重置、真实Player dirty重算、空提交及worker汇总；在本次统一构建实际运行前，只能称测试已准备。
+
 ## 配置字典与空间
 
 SkeletonAnimationPose 的 configure_aim / configure_ik 是兼容现有 Game pure-value solver 的字典接口，所有 *_bone 键是原始骨架0基索引，默认-1；配置实际被使用的链时必须给合法索引。这些配置骨会加入 LOD required closure。world位置与normal使用调用者与 Skeleton3D 一致的世界单位；hand_to_* 是手骨相对量；ObjectID键用非负整数，0不发布对应节点目标。

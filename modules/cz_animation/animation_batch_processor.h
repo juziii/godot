@@ -82,6 +82,9 @@ class AnimationBatchProcessor : public RefCounted {
 	uint64_t prepare_us = 0;
 	uint64_t wait_us = 0;
 	uint64_t publish_us = 0;
+	uint64_t submit_total_us = 0;
+	uint64_t submit_inline_us = 0;
+	bool phase_diagnostics_enabled = false;
 	uint64_t submission_generation = 0;
 	bool pending = false;
 	bool publishing = false;
@@ -105,6 +108,7 @@ protected:
 	static void _bind_methods();
 
 public:
+	AnimationBatchProcessor();
 	int64_t register_tree(AnimationTree *p_tree, const TypedArray<SkeletonAnimationPose> &p_poses, const PackedStringArray &p_safe_methods);
 	int64_t register_player(AnimationPlayer *p_player, const TypedArray<SkeletonAnimationPose> &p_poses, const PackedStringArray &p_safe_methods, int64_t p_parent = 0);
 	void unregister_animation(int64_t p_handle);

@@ -31,6 +31,7 @@
 #pragma once
 
 #include "core/object/callable_mp.h"
+#include "core/os/os.h"
 #include "core/os/thread.h"
 #include "scene/animation/animation_blend_tree.h"
 #include "scene/main/scene_tree.h"
@@ -147,6 +148,134 @@ static Ref<Animation> make_method_animation(const StringName &p_method) {
 
 static int64_t method_statistic(const Ref<AnimationBatchProcessor> &p_processor, const StringName &p_name) {
 	return int64_t(p_processor->get_statistics().get(p_name, int64_t(-1)));
+}
+
+struct PhaseDiagnosticsEnvironment {
+	bool existed = OS::get_singleton()->has_environment("CZ_ANIM_PHASE_DIAGNOSTICS");
+	String previous = OS::get_singleton()->get_environment("CZ_ANIM_PHASE_DIAGNOSTICS");
+
+	explicit PhaseDiagnosticsEnvironment(bool p_enabled) { set_enabled(p_enabled); }
+	void set_enabled(bool p_enabled) { OS::get_singleton()->set_environment("CZ_ANIM_PHASE_DIAGNOSTICS", p_enabled ? "1" : "0"); }
+	~PhaseDiagnosticsEnvironment() {
+		if (existed) {
+			OS::get_singleton()->set_environment("CZ_ANIM_PHASE_DIAGNOSTICS", previous);
+		} else {
+			OS::get_singleton()->unset_environment("CZ_ANIM_PHASE_DIAGNOSTICS");
+		}
+	}
+};
+
+static void check_phase_diagnostics(const Dictionary &p_statistics) {
+	for (const char *key : { "submit_total_us", "submit_inline_us", "evaluate_total_us", "evaluate_graph_us", "evaluate_weights_us", "evaluate_pose_us", "evaluate_aux_blend_us", "evaluate_calls", "evaluate_first_key_calls" }) {
+		REQUIRE(p_statistics.has(key));
+		CHECK(int64_t(p_statistics[key]) >= 0);
+	}
+	const int64_t total = p_statistics["evaluate_total_us"];
+	const int64_t children = int64_t(p_statistics["evaluate_graph_us"]) + int64_t(p_statistics["evaluate_weights_us"]) + int64_t(p_statistics["evaluate_pose_us"]) + int64_t(p_statistics["evaluate_aux_blend_us"]);
+	CHECK(total >= children);
+	CHECK(int64_t(p_statistics["submit_total_us"]) >= int64_t(p_statistics["prepare_us"]) + int64_t(p_statistics["submit_inline_us"]));
+	if (int64_t(p_statistics["workers"]) == 1 && int64_t(p_statistics["recomputed"]) == 0) {
+		CHECK(int64_t(p_statistics["submit_inline_us"]) >= total);
+	}
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Phase diagnostics latch at construction and omit disabled timings") {
+	PhaseDiagnosticsEnvironment environment(false);
+	Ref<AnimationBatchProcessor> disabled;
+	disabled.instantiate();
+	environment.set_enabled(true);
+	Ref<AnimationBatchProcessor> enabled;
+	enabled.instantiate();
+	environment.set_enabled(false);
+	CHECK_FALSE(bool(disabled->get_statistics()["phase_diagnostics_enabled"]));
+	CHECK(bool(enabled->get_statistics()["phase_diagnostics_enabled"]));
+	CHECK_FALSE(enabled->get_statistics().has("evaluate_total_us"));
+	Rig disabled_rig(disabled);
+	Rig enabled_rig(enabled);
+	disabled_rig.submit();
+	disabled->complete_and_publish();
+	const Dictionary disabled_statistics = disabled->get_statistics();
+	CHECK_FALSE(bool(disabled_statistics["phase_diagnostics_enabled"]));
+	for (const char *key : { "submit_total_us", "submit_inline_us", "evaluate_total_us", "evaluate_graph_us", "evaluate_weights_us", "evaluate_pose_us", "evaluate_aux_blend_us", "evaluate_calls", "evaluate_first_key_calls" }) {
+		CHECK_FALSE(disabled_statistics.has(key));
+	}
+	enabled_rig.submit();
+	CHECK_FALSE(enabled->get_statistics().has("evaluate_total_us"));
+	enabled->complete();
+	CHECK_FALSE(enabled->get_statistics().has("evaluate_total_us"));
+	CHECK(enabled_rig.observer->count == 0);
+	enabled->complete_and_publish();
+	const Dictionary statistics = enabled->get_statistics();
+	check_phase_diagnostics(statistics);
+	CHECK(int64_t(statistics["evaluate_calls"]) == 1);
+	CHECK(int64_t(statistics["evaluate_first_key_calls"]) == 0);
+	CHECK(enabled_rig.observer->count == 1);
+	CHECK(enabled_rig.skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(1, 0, 0)));
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Phase diagnostics reset per submit and retain publication recomputation") {
+	PhaseDiagnosticsEnvironment environment(true);
+	Rig rig;
+	rig.processor->unregister_tree(rig.handle);
+	rig.player->set_callback_mode_process(AnimationMixer::ANIMATION_CALLBACK_MODE_PROCESS_MANUAL);
+	rig.player->play("Move");
+	REQUIRE(rig.pose->capture(rig.skeleton));
+	rig.handle = rig.processor->register_player(rig.player, { rig.pose }, PackedStringArray());
+	REQUIRE(rig.handle != 0);
+	rig.submit();
+	// The real Player dependency path marks the pending output dirty for publish.
+	rig.processor->finish_for_dependency(rig.player);
+	rig.processor->complete_and_publish();
+	const Dictionary recomputed_statistics = rig.processor->get_statistics();
+	check_phase_diagnostics(recomputed_statistics);
+	CHECK(int64_t(recomputed_statistics["recomputed"]) == 1);
+	CHECK(int64_t(recomputed_statistics["evaluate_calls"]) == 2);
+	CHECK(int64_t(recomputed_statistics["evaluate_first_key_calls"]) == 2);
+	rig.submit();
+	rig.processor->complete_and_publish();
+	const Dictionary next_statistics = rig.processor->get_statistics();
+	check_phase_diagnostics(next_statistics);
+	CHECK(int64_t(next_statistics["recomputed"]) == 0);
+	CHECK(int64_t(next_statistics["evaluate_calls"]) == 1);
+	CHECK(int64_t(next_statistics["evaluate_first_key_calls"]) == 0);
+	CHECK(int64_t(next_statistics["frame"]) == int64_t(recomputed_statistics["frame"]) + 1);
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Phase diagnostics cover empty submissions and completed worker entries") {
+	PhaseDiagnosticsEnvironment environment(true);
+	Ref<AnimationBatchProcessor> processor;
+	processor.instantiate();
+	CHECK(processor->submit(1, 2) != 0);
+	const Dictionary empty_statistics = processor->get_statistics();
+	check_phase_diagnostics(empty_statistics);
+	CHECK(int64_t(empty_statistics["evaluate_calls"]) == 0);
+	CHECK(int64_t(empty_statistics["evaluate_total_us"]) == 0);
+	struct Rigs {
+		LocalVector<Rig *> items;
+		~Rigs() {
+			for (Rig *rig : items) {
+				memdelete(rig);
+			}
+		}
+	} rigs;
+	for (int i = 0; i < 16; i++) {
+		Rig *rig = memnew(Rig(processor));
+		rigs.items.push_back(rig);
+		REQUIRE(processor->queue_update(rig->handle, 0.1));
+	}
+	CHECK(processor->submit(1, 2) != 0);
+	processor->complete();
+	CHECK_FALSE(processor->get_statistics().has("evaluate_total_us"));
+	processor->complete_and_publish();
+	const Dictionary statistics = processor->get_statistics();
+	check_phase_diagnostics(statistics);
+	CHECK(int64_t(statistics["evaluate_calls"]) == 16);
+	CHECK(int64_t(statistics["pawns_evaluated"]) == 16);
+	CHECK(int64_t(statistics["workers"]) == MIN(2, MAX(1, WorkerThreadPool::get_singleton()->get_thread_count())));
+	for (const Rig *rig : rigs.items) {
+		CHECK(rig->observer->count == 1);
+		CHECK(rig->skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(1, 0, 0)));
+	}
 }
 
 class LibraryBeforeApply : public RefCounted {

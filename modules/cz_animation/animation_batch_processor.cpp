@@ -46,6 +46,10 @@ bool AnimationBatchProcessor::shutting_down = false;
 static thread_local int drain_depth = 0;
 static thread_local uint64_t drain_cutoff = 0;
 
+AnimationBatchProcessor::AnimationBatchProcessor() {
+	phase_diagnostics_enabled = OS::get_singleton()->get_environment("CZ_ANIM_PHASE_DIAGNOSTICS") == "1";
+}
+
 int64_t AnimationBatchProcessor::_register(AnimationMixer *p_mixer, const TypedArray<SkeletonAnimationPose> &p_poses, const PackedStringArray &p_safe_methods, int64_t p_parent) {
 	ERR_FAIL_COND_V(!Thread::is_main_thread() || publishing || preparing, 0);
 	Ref<AnimationBatchProcessor> keep_alive(this);
@@ -181,16 +185,21 @@ void AnimationBatchProcessor::_prepare(Entry *p_entry) {
 
 int64_t AnimationBatchProcessor::submit(int p_batch_size, int p_max_workers) {
 	ERR_FAIL_COND_V(!Thread::is_main_thread() || pending || publishing || preparing || shutting_down || p_batch_size < 1 || p_max_workers < 1, 0);
+	const uint64_t submit_start = phase_diagnostics_enabled ? OS::get_singleton()->get_ticks_usec() : 0;
 	Ref<AnimationBatchProcessor> keep_alive(this);
 	work.clear();
 	units.clear();
 	fallbacks = failures = early_waits = recomputed = publish_entries = 0;
 	prepare_us = wait_us = publish_us = 0;
+	submit_total_us = submit_inline_us = 0;
 	const uint64_t prepare_start = OS::get_singleton()->get_ticks_usec();
 	batch_size = p_batch_size;
 	preparing = true;
 	for (Entry *entry : entries) {
 		CZAnimationBridge::reset_method_validation_statistics(entry->state);
+		if (phase_diagnostics_enabled) {
+			CZAnimationBridge::reset_evaluation_statistics(entry->state, true);
+		}
 		if (!entry->queued || entry->removed || !CZAnimationBridge::mixer(entry->state)) {
 			continue;
 		}
@@ -226,17 +235,27 @@ int64_t AnimationBatchProcessor::submit(int p_batch_size, int p_max_workers) {
 	batch_count = (units.size() + batch_size - 1) / batch_size;
 	workers = pending ? MIN(MIN(batch_count, p_max_workers), MAX(1, WorkerThreadPool::get_singleton()->get_thread_count())) : 0;
 	if (!pending) {
+		if (phase_diagnostics_enabled) {
+			submit_total_us = OS::get_singleton()->get_ticks_usec() - submit_start;
+		}
 		return frame;
 	}
 	active.push_back(Ref<AnimationBatchProcessor>(this));
 	submission_generation = ++next_submission_generation;
 	if (units.size() < 16 || workers <= 1) {
 		workers = 1;
+		const uint64_t inline_start = phase_diagnostics_enabled ? OS::get_singleton()->get_ticks_usec() : 0;
 		for (int batch = 0; batch < batch_count; batch++) {
 			_execute(batch, false);
 		}
+		if (phase_diagnostics_enabled) {
+			submit_inline_us = OS::get_singleton()->get_ticks_usec() - inline_start;
+		}
 	} else {
 		group = WorkerThreadPool::get_singleton()->add_template_group_task(this, &AnimationBatchProcessor::_execute, false, batch_count, workers, true, "CZ animation");
+	}
+	if (phase_diagnostics_enabled) {
+		submit_total_us = OS::get_singleton()->get_ticks_usec() - submit_start;
 	}
 	return frame;
 }
@@ -465,6 +484,9 @@ String AnimationBatchProcessor::get_fallback_reason(int64_t p_handle) const {
 
 Dictionary AnimationBatchProcessor::get_statistics() const {
 	Dictionary result;
+	result["phase_diagnostics_enabled"] = phase_diagnostics_enabled;
+	const bool diagnostics_ready = phase_diagnostics_enabled && Thread::is_main_thread() && frame > 0 && group == -1 && !pending && !preparing && !publishing;
+	CZAnimationBridge::EvaluationStatistics evaluation_statistics;
 	result["frame"] = frame;
 	result["work_units"] = units.size();
 	result["batches"] = batch_count;
@@ -497,6 +519,16 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
 		method_statistics.animations += validation.animations;
 		method_statistics.tracks += validation.tracks;
 		method_statistics.keys += validation.keys;
+		if (diagnostics_ready) {
+			const CZAnimationBridge::EvaluationStatistics statistics = CZAnimationBridge::get_evaluation_statistics(entry->state);
+			evaluation_statistics.total_us += statistics.total_us;
+			evaluation_statistics.graph_us += statistics.graph_us;
+			evaluation_statistics.weights_us += statistics.weights_us;
+			evaluation_statistics.pose_us += statistics.pose_us;
+			evaluation_statistics.aux_blend_us += statistics.aux_blend_us;
+			evaluation_statistics.calls += statistics.calls;
+			evaluation_statistics.first_key_calls += statistics.first_key_calls;
+		}
 		fallback_counts[kind] += !entry->prepared;
 		evaluated_counts[kind] += was_evaluated(entry->handle);
 		bool sampled = entry->sample;
@@ -548,6 +580,17 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
 		result["pose_memory_bytes"] = pose_memory_bytes;
 		result["skin_buffer_copies"] = copies;
 		result["captured_bones"] = captured_bones;
+	}
+	if (diagnostics_ready) {
+		result["submit_total_us"] = submit_total_us;
+		result["submit_inline_us"] = submit_inline_us;
+		result["evaluate_total_us"] = evaluation_statistics.total_us;
+		result["evaluate_graph_us"] = evaluation_statistics.graph_us;
+		result["evaluate_weights_us"] = evaluation_statistics.weights_us;
+		result["evaluate_pose_us"] = evaluation_statistics.pose_us;
+		result["evaluate_aux_blend_us"] = evaluation_statistics.aux_blend_us;
+		result["evaluate_calls"] = evaluation_statistics.calls;
+		result["evaluate_first_key_calls"] = evaluation_statistics.first_key_calls;
 	}
 	return result;
 }
