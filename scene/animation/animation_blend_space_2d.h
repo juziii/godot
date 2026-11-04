@@ -32,8 +32,11 @@
 
 #include "scene/animation/animation_tree.h"
 
+#include "modules/modules_enabled.gen.h"
+
 class AnimationNodeBlendSpace2D : public AnimationRootNode {
 	GDCLASS(AnimationNodeBlendSpace2D, AnimationRootNode);
+	friend class CZAnimationBridge;
 
 	const String ERR_NO_TRIANGLE = "No triangles exist, so blending cannot take place.";
 	const String ERR_INVALID_POINT = "Cyclic sync modes require that all blend points in BlendSpace use non-nested Animation nodes with a finite, immutable length.";
@@ -80,6 +83,11 @@ protected:
 
 	StringName blend_position = "blend_position";
 	StringName closest = "closest";
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	StringName cycle_duration_override = "cycle_duration_override";
+	StringName effective_cycle_duration = "effective_cycle_duration";
+	float sample_weight_interpolation_speed = 0;
+#endif
 	Vector2 max_space = Vector2(1, 1);
 	Vector2 min_space = Vector2(-1, -1);
 	Vector2 snap = Vector2(0.1, 0.1);
@@ -132,6 +140,11 @@ public:
 
 	virtual void get_parameter_list(LocalVector<PropertyInfo> *r_list) const override;
 	virtual Variant get_parameter_default_value(const StringName &p_parameter) const override;
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	virtual bool is_parameter_read_only(const StringName &p_parameter) const override;
+	void set_sample_weight_interpolation_speed(float p_speed);
+	float get_sample_weight_interpolation_speed() const;
+#endif
 
 	virtual void get_child_nodes(LocalVector<ChildNode> *r_child_nodes) override;
 

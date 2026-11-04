@@ -457,6 +457,7 @@ struct AnimationNodeInstance {
 
 class AnimationTree : public AnimationMixer {
 	GDCLASS(AnimationTree, AnimationMixer);
+	friend class CZAnimationBridge;
 
 #ifndef DISABLE_DEPRECATED
 public:

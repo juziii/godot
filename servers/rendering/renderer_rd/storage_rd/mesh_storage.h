@@ -33,11 +33,14 @@
 #include "core/templates/local_vector.h"
 #include "core/templates/rid_owner.h"
 #include "core/templates/self_list.h"
+#include "core/variant/dictionary.h"
 #include "servers/rendering/renderer_compositor.h"
 #include "servers/rendering/renderer_rd/shaders/skeleton.glsl.gen.h"
 #include "servers/rendering/rendering_server_globals.h"
 #include "servers/rendering/storage/mesh_storage.h"
 #include "servers/rendering/storage/utilities.h"
+
+#include <atomic>
 
 namespace RendererRD {
 
@@ -348,6 +351,22 @@ private:
 	_FORCE_INLINE_ void _skeleton_make_dirty(Skeleton *skeleton);
 
 	Skeleton *skeleton_dirty_list = nullptr;
+
+	// The render thread updates these at actual apply, upload, and dispatch sites.
+	// Atomic exchange allows another thread to reset a sampling window without
+	// losing increments that arrive while the snapshot is being read.
+	struct SkinBufferStats {
+		std::atomic<uint64_t> apply_calls{ 0 };
+		std::atomic<uint64_t> apply_bytes{ 0 };
+		std::atomic<uint64_t> upload_passes{ 0 };
+		std::atomic<uint64_t> dirty_skeletons{ 0 };
+		std::atomic<uint64_t> upload_calls{ 0 };
+		std::atomic<uint64_t> upload_bytes{ 0 };
+		std::atomic<uint64_t> skin_dispatches{ 0 };
+		std::atomic<uint64_t> skin_vertices{ 0 };
+		std::atomic<uint64_t> reshape_dispatches{ 0 };
+		static uint64_t read(std::atomic<uint64_t> &p_counter, bool p_reset);
+	} skin_buffer_stats;
 
 	enum AttributeLocation {
 		ATTRIBUTE_LOCATION_PREV_VERTEX = 12,
@@ -788,6 +807,8 @@ public:
 	virtual void skeleton_allocate_data(RID p_skeleton, int p_bones, bool p_2d_skeleton = false) override;
 	virtual void skeleton_set_base_transform_2d(RID p_skeleton, const Transform2D &p_base_transform) override;
 	virtual int skeleton_get_bone_count(RID p_skeleton) const override;
+	virtual void skeleton_set_buffer(RID p_skeleton, const Vector<float> &p_buffer) override;
+	virtual Dictionary skeleton_get_buffer_statistics(bool p_reset = true) override;
 	virtual void skeleton_bone_set_transform(RID p_skeleton, int p_bone, const Transform3D &p_transform) override;
 	virtual Transform3D skeleton_bone_get_transform(RID p_skeleton, int p_bone) const override;
 	virtual void skeleton_bone_set_transform_2d(RID p_skeleton, int p_bone, const Transform2D &p_transform) override;

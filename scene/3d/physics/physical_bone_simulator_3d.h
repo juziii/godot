@@ -38,8 +38,12 @@ class PhysicalBoneSimulator3D : public SkeletonModifier3D {
 	GDCLASS(PhysicalBoneSimulator3D, SkeletonModifier3D);
 
 	bool simulating = false;
+	int physical_bone_count = 0;
+	bool rebuilding_bone_list = false;
+	void _update_pose_subscription();
 
 	struct SimulatedBone {
+		StringName name;
 		int parent;
 		Vector<int> child_bones;
 
@@ -60,7 +64,7 @@ class PhysicalBoneSimulator3D : public SkeletonModifier3D {
 
 	/// This is a slow API, so it's cached
 	PhysicalBone3D *_get_physical_bone_parent(int p_bone);
-	void _rebuild_physical_bones_cache();
+	void _rebuild_physical_bones_cache(bool p_force = false);
 	void _reset_physical_bones_state();
 
 protected:

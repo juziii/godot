@@ -37,6 +37,8 @@
 #include "core/os/os.h"
 #include "scene/main/scene_tree.h"
 
+#include "modules/cz_animation/animation_hooks.h"
+
 bool AnimationPlayer::_set(const StringName &p_name, const Variant &p_value) {
 	String name = p_name;
 	if (name.begins_with("playback/play")) { // For backward compatibility.
@@ -337,12 +339,16 @@ void AnimationPlayer::_blend_capture(double p_delta) {
 }
 
 void AnimationPlayer::_blend_post_process() {
+	const ObjectID owner_id = get_instance_id();
 	if (end_reached) {
 		// If the method track changes current animation, the animation is not finished.
 		if (tmp_from == animation_set[playback.current.animation_name].animation->get_instance_id()) {
 			if (!playback_queue.is_empty()) {
 				if (!finished_anim.is_empty()) {
 					emit_signal(SceneStringName(animation_finished), finished_anim);
+					if (ObjectDB::get_instance(owner_id) != this) {
+						return;
+					}
 					// Abort if playback_queue is cleared by animation_finished signal.
 					if (playback_queue.is_empty()) {
 						end_reached = false;
@@ -353,20 +359,35 @@ void AnimationPlayer::_blend_post_process() {
 				}
 				const StringName old = playback.assigned;
 				play(playback_queue.front()->get());
+				if (ObjectDB::get_instance(owner_id) != this) {
+					return;
+				}
 				const StringName &new_name = playback.assigned;
 				playback_queue.pop_front();
 				if (end_notify) {
 					emit_signal(SceneStringName(animation_changed), old, new_name);
+					if (ObjectDB::get_instance(owner_id) != this) {
+						return;
+					}
 				}
 			} else {
 				_clear_caches(clear_cache_on_stop);
+				if (ObjectDB::get_instance(owner_id) != this) {
+					return;
+				}
 				playing = false;
 				_set_process(false);
 				if (end_notify) {
 					if (!finished_anim.is_empty()) {
 						emit_signal(SceneStringName(animation_finished), finished_anim);
+						if (ObjectDB::get_instance(owner_id) != this) {
+							return;
+						}
 					}
 					emit_signal(SNAME("current_animation_changed"), "");
+					if (ObjectDB::get_instance(owner_id) != this) {
+						return;
+					}
 					if (movie_quit_on_finish && OS::get_singleton()->has_feature("movie")) {
 						print_line(vformat("Movie Maker mode is enabled. Quitting on animation finish as requested by: %s", get_path()));
 						get_tree()->quit();
@@ -381,6 +402,7 @@ void AnimationPlayer::_blend_post_process() {
 }
 
 void AnimationPlayer::queue(const StringName &p_name) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	if (!is_playing()) {
 		play(p_name);
 	} else {
@@ -398,6 +420,7 @@ TypedArray<StringName> AnimationPlayer::get_queue() {
 }
 
 void AnimationPlayer::clear_queue() {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	playback_queue.clear();
 }
 
@@ -414,6 +437,7 @@ void AnimationPlayer::play_section_backwards(const StringName &p_name, double p_
 }
 
 void AnimationPlayer::play(const StringName &p_name, double p_custom_blend, float p_custom_scale, bool p_from_end) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	if (auto_capture) {
 		play_with_capture(p_name, auto_capture_duration, p_custom_blend, p_custom_scale, p_from_end, auto_capture_transition_type, auto_capture_ease_type);
 	} else {
@@ -426,6 +450,7 @@ void AnimationPlayer::_play(const StringName &p_name, double p_custom_blend, flo
 }
 
 void AnimationPlayer::play_section_with_markers(const StringName &p_name, const StringName &p_start_marker, const StringName &p_end_marker, double p_custom_blend, float p_custom_scale, bool p_from_end) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	StringName name = p_name;
 
 	if (name == StringName()) {
@@ -457,6 +482,7 @@ void AnimationPlayer::play_section_with_markers(const StringName &p_name, const 
 }
 
 void AnimationPlayer::play_section(const StringName &p_name, double p_start_time, double p_end_time, double p_custom_blend, float p_custom_scale, bool p_from_end) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	StringName name = p_name;
 
 	if (name == StringName()) {
@@ -597,6 +623,7 @@ void AnimationPlayer::_capture(const StringName &p_name, bool p_from_end, double
 }
 
 void AnimationPlayer::play_with_capture(const StringName &p_name, double p_duration, double p_custom_blend, float p_custom_scale, bool p_from_end, Tween::TransitionType p_trans_type, Tween::EaseType p_ease_type) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	_capture(p_name, p_from_end, p_duration, p_trans_type, p_ease_type);
 	_play(p_name, p_custom_blend, p_custom_scale, p_from_end);
 }
@@ -606,6 +633,7 @@ bool AnimationPlayer::is_playing() const {
 }
 
 void AnimationPlayer::set_current_animation(const StringName &p_animation) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	if (p_animation == SNAME("[stop]") || p_animation.is_empty()) {
 		// It should be call deferred and handled only when is_playing() == true to prevent infinite loops caused by seeking within stop().
 		// Especially when the key current_animation = "[stop]" is placed at the beginning of an animation,
@@ -628,6 +656,7 @@ StringName AnimationPlayer::get_current_animation() const {
 }
 
 void AnimationPlayer::set_assigned_animation(const StringName &p_animation) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	if (is_playing()) {
 		float speed = playback.current.speed_scale;
 		play(p_animation, -1.0, speed, std::signbit(speed));
@@ -649,14 +678,17 @@ StringName AnimationPlayer::get_assigned_animation() const {
 }
 
 void AnimationPlayer::pause() {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	_stop_internal(false, false);
 }
 
 void AnimationPlayer::stop(bool p_keep_state) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	_stop_internal(true, p_keep_state);
 }
 
 void AnimationPlayer::set_speed_scale(float p_speed) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	speed_scale = p_speed;
 }
 
@@ -672,6 +704,7 @@ float AnimationPlayer::get_playing_speed() const {
 }
 
 void AnimationPlayer::seek_internal(double p_time, bool p_update, bool p_update_only, bool p_is_internal_seek) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	if (!active) {
 		return;
 	}
@@ -714,6 +747,7 @@ void AnimationPlayer::seek(double p_time, bool p_update, bool p_update_only) {
 }
 
 void AnimationPlayer::advance(double p_time) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	_check_immediately_after_start();
 	AnimationMixer::advance(p_time);
 }
@@ -755,6 +789,7 @@ void AnimationPlayer::set_section_with_markers(const StringName &p_start_marker,
 }
 
 void AnimationPlayer::set_section(double p_start_time, double p_end_time) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	ERR_FAIL_COND_MSG(!playback.current.is_enabled, "AnimationPlayer has no current animation.");
 	ERR_FAIL_COND_MSG(Animation::is_greater_or_equal_approx(p_start_time, 0) && Animation::is_greater_or_equal_approx(p_end_time, 0) && Animation::is_greater_or_equal_approx(p_start_time, p_end_time), vformat("Start time %f is greater than end time %f.", p_start_time, p_end_time));
 	playback.current.start_time = p_start_time;
@@ -763,6 +798,7 @@ void AnimationPlayer::set_section(double p_start_time, double p_end_time) {
 }
 
 void AnimationPlayer::reset_section() {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	playback.current.start_time = -1;
 	playback.current.end_time = -1;
 }
@@ -810,6 +846,7 @@ bool AnimationPlayer::is_clear_cache_on_stop_enabled() const {
 }
 
 void AnimationPlayer::_animation_changed(const StringName &p_name) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	AnimationMixer::_animation_changed(p_name);
 	if (playback.current.is_enabled && playback.current.animation_name == p_name && animation_set.has(p_name)) {
 		playback.current.animation_length = animation_set[p_name].animation->get_length();
@@ -817,6 +854,7 @@ void AnimationPlayer::_animation_changed(const StringName &p_name) {
 }
 
 void AnimationPlayer::_stop_internal(bool p_reset, bool p_keep_state) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	_clear_caches(clear_cache_on_stop);
 	Playback &c = playback;
 	double start = c.current.is_enabled ? playback.current.get_start_time() : 0;
@@ -838,6 +876,7 @@ void AnimationPlayer::_stop_internal(bool p_reset, bool p_keep_state) {
 }
 
 void AnimationPlayer::animation_set_next(const StringName &p_animation, const StringName &p_next) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	ERR_FAIL_COND_MSG(!animation_set.has(p_animation), vformat("Animation not found: %s.", p_animation));
 	animation_next_set[p_animation] = p_next;
 }
@@ -851,6 +890,7 @@ StringName AnimationPlayer::animation_get_next(const StringName &p_animation) co
 }
 
 void AnimationPlayer::set_default_blend_time(double p_default) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	default_blend_time = p_default;
 }
 
@@ -859,6 +899,7 @@ double AnimationPlayer::get_default_blend_time() const {
 }
 
 void AnimationPlayer::set_blend_time(const StringName &p_animation1, const StringName &p_animation2, double p_time) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	ERR_FAIL_COND_MSG(!animation_set.has(p_animation1), vformat("Animation not found: %s.", p_animation1));
 	ERR_FAIL_COND_MSG(!animation_set.has(p_animation2), vformat("Animation not found: %s.", p_animation2));
 	ERR_FAIL_COND_MSG(p_time < 0, "Blend time cannot be smaller than 0.");
@@ -931,6 +972,7 @@ void AnimationPlayer::get_argument_options(const StringName &p_function, int p_i
 #endif
 
 void AnimationPlayer::_animation_removed(const StringName &p_name, const StringName &p_library) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	AnimationMixer::_animation_removed(p_name, p_library);
 
 	const StringName &name = p_library == StringName() ? p_name : StringName(String(p_library) + "/" + String(p_name));
@@ -956,6 +998,7 @@ void AnimationPlayer::_animation_removed(const StringName &p_name, const StringN
 }
 
 void AnimationPlayer::_rename_animation(const StringName &p_from_name, const StringName &p_to_name) {
+	CZ_ANIMATION_PLAYER_MUTATION();
 	AnimationMixer::_rename_animation(p_from_name, p_to_name);
 
 	// Rename autoplay or blends if needed.
@@ -1084,4 +1127,5 @@ AnimationPlayer::AnimationPlayer() {
 }
 
 AnimationPlayer::~AnimationPlayer() {
+	CZ_ANIMATION_SYNC(this);
 }

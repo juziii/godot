@@ -30,6 +30,8 @@
 
 #include "scene_tree.h"
 
+#include "modules/cz_animation/animation_hooks.h"
+
 STATIC_ASSERT_INCOMPLETE_TYPE(class, RenderingServer);
 
 #include "core/config/engine.h"
@@ -654,6 +656,7 @@ bool SceneTree::physics_process(double p_time) {
 #endif // !defined(PHYSICS_2D_DISABLED) || !defined(PHYSICS_3D_DISABLED)
 
 	_process(true);
+	CZ_ANIMATION_SYNC(nullptr);
 
 	_flush_ugc();
 	MessageQueue::get_singleton()->flush(); //small little hack
@@ -718,6 +721,7 @@ bool SceneTree::process(double p_time) {
 	flush_transform_notifications();
 
 	_process(false);
+	CZ_ANIMATION_SYNC(nullptr);
 
 	_flush_ugc();
 	MessageQueue::get_singleton()->flush(); //small little hack

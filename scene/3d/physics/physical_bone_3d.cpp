@@ -1183,10 +1183,12 @@ bool PhysicalBone3D::is_simulating_physics() {
 
 void PhysicalBone3D::set_bone_name(const String &p_name) {
 	bone_name = p_name;
-	bone_id = -1;
 
 	update_bone_id();
 	reset_to_rest_position();
+	if (bone_id != -1) {
+		_reload_joint();
+	}
 }
 
 const String &PhysicalBone3D::get_bone_name() const {
@@ -1296,25 +1298,41 @@ PhysicalBone3D::~PhysicalBone3D() {
 }
 
 void PhysicalBone3D::update_bone_id() {
+	if (!is_inside_tree()) {
+		return;
+	}
 	PhysicalBoneSimulator3D *simulator = get_simulator();
 	if (!simulator) {
 		return;
 	}
 
-	const int new_bone_id = simulator->find_bone(bone_name);
+	int new_bone_id = simulator->find_bone(bone_name);
+	if (new_bone_id >= 0 && new_bone_id < simulator->get_bone_count()) {
+		PhysicalBone3D *existing = simulator->get_physical_bone(new_bone_id);
+		if (existing && existing != this) {
+			ERR_PRINT("Bone is already bound to another PhysicalBone3D.");
+			new_bone_id = -1;
+		}
+	}
 
-	if (new_bone_id != bone_id) {
-		if (bone_id != -1) {
-			// Assert the unbind from old node
+	const bool bound = new_bone_id >= 0 && new_bone_id < simulator->get_bone_count() && simulator->get_physical_bone(new_bone_id) == this;
+	if (new_bone_id != bone_id || (new_bone_id >= 0 && !bound)) {
+		// A structural rebuild may already have replaced the old index. Only
+		// remove a binding that still belongs to this node.
+		if (bone_id >= 0 && bone_id < simulator->get_bone_count() && simulator->get_physical_bone(bone_id) == this) {
 			simulator->unbind_physical_bone_from_bone(bone_id);
 		}
 
 		bone_id = new_bone_id;
 
-		simulator->bind_physical_bone_to_bone(bone_id, this);
-
-		_fix_joint_offset();
-		reset_physics_simulation_state();
+		if (bone_id != -1) {
+			simulator->bind_physical_bone_to_bone(bone_id, this);
+			_fix_joint_offset();
+			reset_physics_simulation_state();
+		} else {
+			PhysicsServer3D::get_singleton()->joint_clear(joint);
+			_stop_physics_simulation();
+		}
 	}
 }
 

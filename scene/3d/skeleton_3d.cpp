@@ -34,6 +34,8 @@
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "scene/3d/skeleton_modifier_3d.h"
+
+#include "modules/cz_animation/animation_hooks.h"
 #if !defined(DISABLE_DEPRECATED) && !defined(PHYSICS_3D_DISABLED)
 #include "scene/3d/physics/physical_bone_simulator_3d.h"
 #endif // _DISABLE_DEPRECATED && PHYSICS_3D_DISABLED
@@ -41,6 +43,7 @@
 
 void SkinReference::_skin_changed() {
 	if (skeleton_node) {
+		CZ_ANIMATION_INVALIDATE_SKELETON(skeleton_node);
 		skeleton_node->_make_dirty();
 	}
 	skeleton_version = 0;
@@ -60,8 +63,10 @@ Ref<Skin> SkinReference::get_skin() const {
 }
 
 SkinReference::~SkinReference() {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_NULL(RenderingServer::get_singleton());
 	if (skeleton_node) {
+		CZ_ANIMATION_INVALIDATE_SKELETON(skeleton_node);
 		skeleton_node->skin_bindings.erase(this);
 	}
 	RS::get_singleton()->free_rid(skeleton);
@@ -364,7 +369,7 @@ void Skeleton3D::_notification(int p_what) {
 
 			LocalVector<BonePoseBackup> bones_backup;
 			_find_modifiers();
-			if (!modifiers.is_empty()) {
+			if (are_modifiers_enabled() && !modifiers.is_empty()) {
 				bones_backup.resize(bones.size());
 				// Store unmodified bone poses.
 				for (uint32_t i = 0; i < bones.size(); i++) {
@@ -448,7 +453,7 @@ void Skeleton3D::_notification(int p_what) {
 				}
 			}
 
-			if (!modifiers.is_empty()) {
+			if (are_modifiers_enabled() && !modifiers.is_empty()) {
 				// Restore unmodified bone poses.
 				for (uint32_t i = 0; i < bones.size(); i++) {
 					bones_backup[i].restore(bones[i]);
@@ -470,8 +475,11 @@ void Skeleton3D::_notification(int p_what) {
 }
 
 void Skeleton3D::advance(double p_delta) {
+	if (!are_modifiers_enabled()) {
+		return;
+	}
 	_find_modifiers();
-	if (!modifiers.is_empty()) {
+	if (are_modifiers_enabled() && !modifiers.is_empty()) {
 		update_delta += p_delta; // Accumulate delta for manual advance as it needs to process in deferred update.
 		_update_deferred(UPDATE_FLAG_MODIFIER);
 	}
@@ -616,6 +624,7 @@ Transform3D Skeleton3D::get_bone_global_pose(int p_bone) const {
 }
 
 void Skeleton3D::set_bone_global_pose(int p_bone, const Transform3D &p_pose) {
+	CZ_ANIMATION_INVALIDATE_POSE(this);
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 
@@ -628,6 +637,7 @@ void Skeleton3D::set_bone_global_pose(int p_bone, const Transform3D &p_pose) {
 }
 
 void Skeleton3D::set_motion_scale(float p_motion_scale) {
+	CZ_ANIMATION_INVALIDATE_POSE(this);
 	if (p_motion_scale <= 0) {
 		motion_scale = 1;
 		ERR_FAIL_MSG("Motion scale must be larger than 0.");
@@ -646,7 +656,24 @@ uint64_t Skeleton3D::get_version() const {
 	return version;
 }
 
+void Skeleton3D::set_modifiers_enabled(bool p_enabled) {
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	if (are_modifiers_enabled() != p_enabled) {
+		CZAnimationBridge::set_modifiers_enabled(this, p_enabled);
+	}
+#endif
+}
+
+bool Skeleton3D::are_modifiers_enabled() const {
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	return CZAnimationBridge::modifiers_enabled(this);
+#else
+	return true;
+#endif
+}
+
 int Skeleton3D::add_bone(const String &p_name) {
+	CZ_ANIMATION_INVALIDATE_SKELETON(this);
 	ERR_FAIL_COND_V_MSG(p_name.is_empty() || p_name.contains_char(':') || p_name.contains_char('/'), -1, vformat("Bone name cannot be empty or contain ':' or '/'.", p_name));
 	ERR_FAIL_COND_V_MSG(name_to_bone_index.has(p_name), -1, vformat("Skeleton3D \"%s\" already has a bone with name \"%s\".", to_string(), p_name));
 
@@ -675,6 +702,7 @@ String Skeleton3D::get_bone_name(int p_bone) const {
 }
 
 void Skeleton3D::set_bone_name(int p_bone, const String &p_name) {
+	CZ_ANIMATION_INVALIDATE_SKELETON(this);
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 
@@ -761,6 +789,7 @@ int Skeleton3D::get_bone_count() const {
 }
 
 void Skeleton3D::set_bone_parent(int p_bone, int p_parent) {
+	CZ_ANIMATION_INVALIDATE_SKELETON(this);
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 	ERR_FAIL_COND(p_parent != -1 && (p_parent < 0));
@@ -773,6 +802,7 @@ void Skeleton3D::set_bone_parent(int p_bone, int p_parent) {
 }
 
 void Skeleton3D::unparent_bone_and_rest(int p_bone) {
+	CZ_ANIMATION_INVALIDATE_SKELETON(this);
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 
@@ -817,6 +847,7 @@ Vector<int> Skeleton3D::get_parentless_bones() const {
 }
 
 void Skeleton3D::set_bone_rest(int p_bone, const Transform3D &p_rest) {
+	CZ_ANIMATION_INVALIDATE_SKELETON(this);
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 
@@ -841,6 +872,7 @@ Transform3D Skeleton3D::get_bone_global_rest(int p_bone) const {
 }
 
 void Skeleton3D::set_bone_enabled(int p_bone, bool p_enabled) {
+	CZ_ANIMATION_INVALIDATE_SKELETON(this);
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 
@@ -857,6 +889,7 @@ bool Skeleton3D::is_bone_enabled(int p_bone) const {
 }
 
 void Skeleton3D::set_show_rest_only(bool p_enabled) {
+	CZ_ANIMATION_INVALIDATE_SKELETON(this);
 	show_rest_only = p_enabled;
 	emit_signal(SceneStringName(show_rest_only_changed));
 	_make_dirty();
@@ -868,6 +901,7 @@ bool Skeleton3D::is_show_rest_only() const {
 }
 
 void Skeleton3D::clear_bones() {
+	CZ_ANIMATION_INVALIDATE_SKELETON(this);
 	bones.clear();
 	name_to_bone_index.clear();
 
@@ -885,6 +919,7 @@ void Skeleton3D::clear_bones() {
 // Posing api
 
 void Skeleton3D::set_bone_pose(int p_bone, const Transform3D &p_pose) {
+	CZ_ANIMATION_INVALIDATE_POSE(this);
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 	if (modifier_updating) {
@@ -901,6 +936,7 @@ void Skeleton3D::set_bone_pose(int p_bone, const Transform3D &p_pose) {
 }
 
 void Skeleton3D::set_bone_pose_position(int p_bone, const Vector3 &p_position) {
+	CZ_ANIMATION_INVALIDATE_POSE(this);
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 	if (modifier_updating) {
@@ -914,6 +950,7 @@ void Skeleton3D::set_bone_pose_position(int p_bone, const Vector3 &p_position) {
 	}
 }
 void Skeleton3D::set_bone_pose_rotation(int p_bone, const Quaternion &p_rotation) {
+	CZ_ANIMATION_INVALIDATE_POSE(this);
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 	if (modifier_updating) {
@@ -927,6 +964,7 @@ void Skeleton3D::set_bone_pose_rotation(int p_bone, const Quaternion &p_rotation
 	}
 }
 void Skeleton3D::set_bone_pose_scale(int p_bone, const Vector3 &p_scale) {
+	CZ_ANIMATION_INVALIDATE_POSE(this);
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 	if (modifier_updating) {
@@ -959,6 +997,7 @@ Vector3 Skeleton3D::get_bone_pose_scale(int p_bone) const {
 }
 
 void Skeleton3D::set_bone_skin_scale(int p_bone, const Vector3 &p_skin_scale) {
+	CZ_ANIMATION_INVALIDATE_SKELETON(this);
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 	bones[p_bone].skin_scale = p_skin_scale;
@@ -1042,6 +1081,7 @@ void Skeleton3D::localize_rests() {
 }
 
 void Skeleton3D::_skin_changed() {
+	CZ_ANIMATION_INVALIDATE_SKELETON(this);
 	_make_dirty();
 }
 
@@ -1087,6 +1127,7 @@ Ref<Skin> Skeleton3D::create_skin_from_rest_transforms() {
 }
 
 Ref<SkinReference> Skeleton3D::register_skin(const Ref<Skin> &p_skin) {
+	CZ_ANIMATION_INVALIDATE_SKELETON(this);
 	ERR_FAIL_COND_V(p_skin.is_null(), Ref<SkinReference>());
 
 	for (const SkinReference *E : skin_bindings) {
@@ -1237,6 +1278,9 @@ void Skeleton3D::_find_modifiers() {
 }
 
 void Skeleton3D::_process_modifiers() {
+	if (!are_modifiers_enabled()) {
+		return;
+	}
 	for (const ObjectID &oid : modifiers) {
 		Object *t_obj = ObjectDB::get_instance(oid);
 		if (!t_obj) {
@@ -1252,7 +1296,11 @@ void Skeleton3D::_process_modifiers() {
 		}
 #endif // TOOLS_ENABLED
 		real_t influence = mod->get_influence();
-		if (influence < 1.0) {
+		if (influence < 1.0
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+				&& !CZAnimationBridge::modifier_applies_influence(mod)
+#endif
+		) {
 			modifier_updating = true;
 			mod->process_modification(update_delta);
 			modifier_updating = false;
@@ -1295,6 +1343,10 @@ void Skeleton3D::remove_child_notify(Node *p_child) {
 }
 
 void Skeleton3D::_bind_methods() {
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	ClassDB::bind_method(D_METHOD("set_modifiers_enabled", "enabled"), &Skeleton3D::set_modifiers_enabled);
+	ClassDB::bind_method(D_METHOD("are_modifiers_enabled"), &Skeleton3D::are_modifiers_enabled);
+#endif
 	ClassDB::bind_method(D_METHOD("add_bone", "name"), &Skeleton3D::add_bone);
 	ClassDB::bind_method(D_METHOD("find_bone", "name"), &Skeleton3D::find_bone);
 	ClassDB::bind_method(D_METHOD("get_bone_name", "bone_idx"), &Skeleton3D::get_bone_name);
@@ -1406,6 +1458,7 @@ void Skeleton3D::_bind_methods() {
 
 #ifndef DISABLE_DEPRECATED
 void Skeleton3D::clear_bones_global_pose_override() {
+	CZ_ANIMATION_INVALIDATE_SKELETON(this);
 	for (uint32_t i = 0; i < bones.size(); i += 1) {
 		bones[i].global_pose_override_amount = 0;
 		bones[i].global_pose_override_reset = true;
@@ -1415,6 +1468,7 @@ void Skeleton3D::clear_bones_global_pose_override() {
 }
 
 void Skeleton3D::set_bone_global_pose_override(int p_bone, const Transform3D &p_pose, real_t p_amount, bool p_persistent) {
+	CZ_ANIMATION_INVALIDATE_SKELETON(this);
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 	bones[p_bone].global_pose_override_amount = p_amount;
@@ -1495,6 +1549,10 @@ Skeleton3D::Skeleton3D() {
 }
 
 Skeleton3D::~Skeleton3D() {
+	CZ_ANIMATION_SYNC(nullptr);
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	CZAnimationBridge::forget_object(get_instance_id());
+#endif
 	// Some skins may remain bound.
 	for (SkinReference *E : skin_bindings) {
 		E->skeleton_node = nullptr;

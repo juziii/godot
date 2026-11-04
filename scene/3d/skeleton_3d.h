@@ -40,6 +40,7 @@ class Skeleton3D;
 
 class SkinReference : public RefCounted {
 	GDCLASS(SkinReference, RefCounted)
+	friend class CZAnimationBridge;
 	friend class Skeleton3D;
 
 	Skeleton3D *skeleton_node = nullptr;
@@ -64,6 +65,7 @@ public:
 
 class Skeleton3D : public Node3D {
 	GDCLASS(Skeleton3D, Node3D);
+	friend class CZAnimationBridge;
 
 	const Vector3 DEFAULT_SKIN_SCALE = Vector3(1, 1, 1);
 
@@ -239,6 +241,8 @@ public:
 
 	// Skeleton creation API
 	uint64_t get_version() const;
+	void set_modifiers_enabled(bool p_enabled);
+	bool are_modifiers_enabled() const;
 	int add_bone(const String &p_name);
 	int find_bone(const String &p_name) const;
 	String get_bone_name(int p_bone) const;

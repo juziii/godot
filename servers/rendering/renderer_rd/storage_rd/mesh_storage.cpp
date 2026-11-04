@@ -30,6 +30,7 @@
 
 #include "mesh_storage.h"
 
+#include "core/profiling/profiling.h"
 #include "servers/rendering/renderer_viewport.h"
 #include "servers/rendering/rendering_server.h"
 #include "servers/rendering/rendering_server_types.h"
@@ -1189,10 +1190,12 @@ void MeshStorage::update_mesh_instances() {
 	if (dirty_mesh_instance_arrays.first() == nullptr) {
 		return; //nothing to do
 	}
+	GodotProfileZone("Animation.SkinComputeSubmit");
 
 	//process skeletons and blend shapes
 	uint64_t frame = RSG::rasterizer->get_frame_number();
 	bool uses_motion_vectors = (RSG::viewport->get_num_viewports_with_motion_vectors() > 0) || (RendererCompositorStorage::get_singleton()->get_num_compositor_effects_with_motion_vectors() > 0);
+	RD::get_singleton()->capture_timestamp("Skinning Compute Begin");
 	RD::ComputeListID compute_list = RD::get_singleton()->compute_list_begin();
 
 	while (dirty_mesh_instance_arrays.first()) {
@@ -1281,6 +1284,12 @@ void MeshStorage::update_mesh_instances() {
 
 			//dispatch without barrier, so all is done at the same time
 			RD::get_singleton()->compute_list_dispatch_threads(compute_list, push_constant.vertex_count, 1, 1);
+			if (push_constant.has_skeleton) {
+				skin_buffer_stats.skin_dispatches.fetch_add(1, std::memory_order_relaxed);
+				skin_buffer_stats.skin_vertices.fetch_add(push_constant.vertex_count, std::memory_order_relaxed);
+			} else {
+				skin_buffer_stats.reshape_dispatches.fetch_add(1, std::memory_order_relaxed);
+			}
 		}
 
 		mi->dirty = false;
@@ -1291,6 +1300,7 @@ void MeshStorage::update_mesh_instances() {
 	}
 
 	RD::get_singleton()->compute_list_end();
+	RD::get_singleton()->capture_timestamp("Skinning Compute End");
 }
 
 RD::VertexFormatID MeshStorage::_mesh_surface_generate_vertex_format(uint64_t p_surface_format, uint64_t p_input_mask, bool p_instanced_surface, bool p_input_motion_vectors, bool p_point_size_emulated, uint32_t &r_position_stride) {
@@ -2434,6 +2444,41 @@ int MeshStorage::skeleton_get_bone_count(RID p_skeleton) const {
 	return skeleton->size;
 }
 
+void MeshStorage::skeleton_set_buffer(RID p_skeleton, const Vector<float> &p_buffer) {
+	GodotProfileZone("Animation.SkinBufferApply");
+	Skeleton *skeleton = skeleton_owner.get_or_null(p_skeleton);
+	ERR_FAIL_NULL(skeleton);
+	ERR_FAIL_COND(skeleton->use_2d);
+	ERR_FAIL_COND(p_buffer.size() != int64_t(skeleton->size) * 12);
+	if (p_buffer.is_empty()) {
+		return;
+	}
+
+	uint64_t byte_count = uint64_t(p_buffer.size()) * sizeof(float);
+	memcpy(skeleton->data.ptr(), p_buffer.ptr(), byte_count);
+	skin_buffer_stats.apply_calls.fetch_add(1, std::memory_order_relaxed);
+	skin_buffer_stats.apply_bytes.fetch_add(byte_count, std::memory_order_relaxed);
+	_skeleton_make_dirty(skeleton);
+}
+
+uint64_t MeshStorage::SkinBufferStats::read(std::atomic<uint64_t> &p_counter, bool p_reset) {
+	return p_reset ? p_counter.exchange(0, std::memory_order_relaxed) : p_counter.load(std::memory_order_relaxed);
+}
+
+Dictionary MeshStorage::skeleton_get_buffer_statistics(bool p_reset) {
+	Dictionary result;
+	result["apply_calls"] = SkinBufferStats::read(skin_buffer_stats.apply_calls, p_reset);
+	result["apply_bytes"] = SkinBufferStats::read(skin_buffer_stats.apply_bytes, p_reset);
+	result["upload_passes"] = SkinBufferStats::read(skin_buffer_stats.upload_passes, p_reset);
+	result["dirty_skeletons"] = SkinBufferStats::read(skin_buffer_stats.dirty_skeletons, p_reset);
+	result["upload_calls"] = SkinBufferStats::read(skin_buffer_stats.upload_calls, p_reset);
+	result["upload_bytes"] = SkinBufferStats::read(skin_buffer_stats.upload_bytes, p_reset);
+	result["skin_dispatches"] = SkinBufferStats::read(skin_buffer_stats.skin_dispatches, p_reset);
+	result["skin_vertices"] = SkinBufferStats::read(skin_buffer_stats.skin_vertices, p_reset);
+	result["reshape_dispatches"] = SkinBufferStats::read(skin_buffer_stats.reshape_dispatches, p_reset);
+	return result;
+}
+
 void MeshStorage::skeleton_bone_set_transform(RID p_skeleton, int p_bone, const Transform3D &p_transform) {
 	Skeleton *skeleton = skeleton_owner.get_or_null(p_skeleton);
 
@@ -2536,10 +2581,15 @@ void MeshStorage::skeleton_set_base_transform_2d(RID p_skeleton, const Transform
 }
 
 void MeshStorage::_update_dirty_skeletons() {
+	skin_buffer_stats.upload_passes.fetch_add(1, std::memory_order_relaxed);
 	while (skeleton_dirty_list) {
 		Skeleton *skeleton = skeleton_dirty_list;
+		skin_buffer_stats.dirty_skeletons.fetch_add(1, std::memory_order_relaxed);
 
 		if (skeleton->size) {
+			GodotProfileZone("Animation.SkinBufferUpload");
+			skin_buffer_stats.upload_calls.fetch_add(1, std::memory_order_relaxed);
+			skin_buffer_stats.upload_bytes.fetch_add(uint64_t(skeleton->data.size()) * sizeof(float), std::memory_order_relaxed);
 			RD::get_singleton()->buffer_update(skeleton->buffer, 0, skeleton->data.size() * sizeof(float), skeleton->data.ptr());
 		}
 

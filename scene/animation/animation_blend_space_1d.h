@@ -32,6 +32,8 @@
 
 #include "scene/animation/animation_tree.h"
 
+#include "modules/modules_enabled.gen.h"
+
 class AnimationNodeBlendSpace1D : public AnimationRootNode {
 	GDCLASS(AnimationNodeBlendSpace1D, AnimationRootNode);
 
@@ -85,6 +87,11 @@ protected:
 
 	StringName blend_position = "blend_position";
 	StringName closest = "closest";
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	StringName cycle_duration_override = "cycle_duration_override";
+	StringName effective_cycle_duration = "effective_cycle_duration";
+	float sample_weight_interpolation_speed = 0;
+#endif
 
 	BlendMode blend_mode = BLEND_MODE_INTERPOLATED;
 
@@ -113,6 +120,11 @@ public:
 
 	virtual void get_parameter_list(LocalVector<PropertyInfo> *r_list) const override;
 	virtual Variant get_parameter_default_value(const StringName &p_parameter) const override;
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	virtual bool is_parameter_read_only(const StringName &p_parameter) const override;
+	void set_sample_weight_interpolation_speed(float p_speed);
+	float get_sample_weight_interpolation_speed() const;
+#endif
 
 	virtual void get_child_nodes(LocalVector<ChildNode> *r_child_nodes) override;
 

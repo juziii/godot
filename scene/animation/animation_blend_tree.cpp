@@ -35,7 +35,10 @@
 #include "core/object/class_db.h"
 #include "scene/resources/animation.h"
 
+#include "modules/cz_animation/animation_hooks.h"
+
 void AnimationNodeAnimation::set_animation(const StringName &p_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	if (animation == p_name) {
 		return;
 	}
@@ -257,12 +260,18 @@ AnimationNode::NodeTimeInfo AnimationNodeAnimation::_process(ProcessState &p_pro
 		if (p_process_state.tree && !p_test_only) {
 			// AnimationTree uses seek to 0 "internally" to process the first key of the animation, which is used as the start detection.
 			if (is_started) {
-				p_process_state.tree->call_deferred(SNAME("emit_signal"), SceneStringName(animation_started), animation);
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+				if (!CZAnimationBridge::queue_animation_signal(p_process_state.tree, SceneStringName(animation_started), animation))
+#endif
+					p_process_state.tree->call_deferred(SNAME("emit_signal"), SceneStringName(animation_started), animation);
 			}
 			// Finished.
 			if (Animation::is_less_approx(prev_playback_time, anim_size) && Animation::is_greater_or_equal_approx(cur_playback_time, anim_size)) {
 				cur_playback_time = anim_size;
-				p_process_state.tree->call_deferred(SNAME("emit_signal"), SceneStringName(animation_finished), animation);
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+				if (!CZAnimationBridge::queue_animation_signal(p_process_state.tree, SceneStringName(animation_finished), animation))
+#endif
+					p_process_state.tree->call_deferred(SNAME("emit_signal"), SceneStringName(animation_finished), animation);
 			}
 		}
 	}
@@ -311,6 +320,7 @@ String AnimationNodeAnimation::get_caption() const {
 }
 
 void AnimationNodeAnimation::set_play_mode(PlayMode p_play_mode) {
+	CZ_ANIMATION_SYNC(nullptr);
 	play_mode = p_play_mode;
 }
 
@@ -319,6 +329,7 @@ AnimationNodeAnimation::PlayMode AnimationNodeAnimation::get_play_mode() const {
 }
 
 void AnimationNodeAnimation::set_backward(AnimationNodeInstance &p_instance, ProcessState &p_process_state, bool p_backward) {
+	CZ_ANIMATION_SYNC(nullptr);
 	p_instance.set_parameter_backward(p_backward, p_process_state.is_testing);
 }
 
@@ -327,6 +338,7 @@ bool AnimationNodeAnimation::is_backward(AnimationNodeInstance &p_instance, Proc
 }
 
 void AnimationNodeAnimation::set_advance_on_start(bool p_advance_on_start) {
+	CZ_ANIMATION_SYNC(nullptr);
 	advance_on_start = p_advance_on_start;
 }
 
@@ -335,6 +347,7 @@ bool AnimationNodeAnimation::is_advance_on_start() const {
 }
 
 void AnimationNodeAnimation::set_use_custom_timeline(bool p_use_custom_timeline) {
+	CZ_ANIMATION_SYNC(nullptr);
 	use_custom_timeline = p_use_custom_timeline;
 	notify_property_list_changed();
 }
@@ -344,6 +357,7 @@ bool AnimationNodeAnimation::is_using_custom_timeline() const {
 }
 
 void AnimationNodeAnimation::set_timeline_length(double p_length) {
+	CZ_ANIMATION_SYNC(nullptr);
 	timeline_length = p_length;
 }
 
@@ -352,6 +366,7 @@ double AnimationNodeAnimation::get_timeline_length() const {
 }
 
 void AnimationNodeAnimation::set_stretch_time_scale(bool p_stretch_time_scale) {
+	CZ_ANIMATION_SYNC(nullptr);
 	stretch_time_scale = p_stretch_time_scale;
 	notify_property_list_changed();
 }
@@ -361,6 +376,7 @@ bool AnimationNodeAnimation::is_stretching_time_scale() const {
 }
 
 void AnimationNodeAnimation::set_start_offset(double p_offset) {
+	CZ_ANIMATION_SYNC(nullptr);
 	start_offset = p_offset;
 }
 
@@ -369,6 +385,7 @@ double AnimationNodeAnimation::get_start_offset() const {
 }
 
 void AnimationNodeAnimation::set_loop_mode(Animation::LoopMode p_loop_mode) {
+	CZ_ANIMATION_SYNC(nullptr);
 	loop_mode = p_loop_mode;
 }
 
@@ -442,6 +459,7 @@ void AnimationNodeSync::_bind_methods() {
 }
 
 void AnimationNodeSync::set_use_sync(bool p_sync) {
+	CZ_ANIMATION_SYNC(nullptr);
 	sync = p_sync;
 }
 
@@ -493,6 +511,7 @@ bool AnimationNodeOneShot::is_parameter_read_only(const StringName &p_parameter)
 }
 
 void AnimationNodeOneShot::set_fade_in_time(double p_time) {
+	CZ_ANIMATION_SYNC(nullptr);
 	fade_in = p_time;
 }
 
@@ -501,6 +520,7 @@ double AnimationNodeOneShot::get_fade_in_time() const {
 }
 
 void AnimationNodeOneShot::set_fade_out_time(double p_time) {
+	CZ_ANIMATION_SYNC(nullptr);
 	fade_out = p_time;
 }
 
@@ -509,6 +529,7 @@ double AnimationNodeOneShot::get_fade_out_time() const {
 }
 
 void AnimationNodeOneShot::set_fade_in_curve(const Ref<Curve> &p_curve) {
+	CZ_ANIMATION_SYNC(nullptr);
 	fade_in_curve = p_curve;
 }
 
@@ -517,6 +538,7 @@ Ref<Curve> AnimationNodeOneShot::get_fade_in_curve() const {
 }
 
 void AnimationNodeOneShot::set_fade_out_curve(const Ref<Curve> &p_curve) {
+	CZ_ANIMATION_SYNC(nullptr);
 	fade_out_curve = p_curve;
 }
 
@@ -525,14 +547,17 @@ Ref<Curve> AnimationNodeOneShot::get_fade_out_curve() const {
 }
 
 void AnimationNodeOneShot::set_auto_restart_enabled(bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	auto_restart = p_enabled;
 }
 
 void AnimationNodeOneShot::set_auto_restart_delay(double p_time) {
+	CZ_ANIMATION_SYNC(nullptr);
 	auto_restart_delay = p_time;
 }
 
 void AnimationNodeOneShot::set_auto_restart_random_delay(double p_time) {
+	CZ_ANIMATION_SYNC(nullptr);
 	auto_restart_random_delay = p_time;
 }
 
@@ -549,6 +574,7 @@ double AnimationNodeOneShot::get_auto_restart_random_delay() const {
 }
 
 void AnimationNodeOneShot::set_mix_mode(MixMode p_mix) {
+	CZ_ANIMATION_SYNC(nullptr);
 	mix = p_mix;
 }
 
@@ -557,6 +583,7 @@ AnimationNodeOneShot::MixMode AnimationNodeOneShot::get_mix_mode() const {
 }
 
 void AnimationNodeOneShot::set_break_loop_at_end(bool p_enable) {
+	CZ_ANIMATION_SYNC(nullptr);
 	break_loop_at_end = p_enable;
 }
 
@@ -565,6 +592,7 @@ bool AnimationNodeOneShot::is_loop_broken_at_end() const {
 }
 
 void AnimationNodeOneShot::set_abort_on_reset(bool p_enable) {
+	CZ_ANIMATION_SYNC(nullptr);
 	abort_on_reset = p_enable;
 }
 
@@ -1097,6 +1125,7 @@ String AnimationNodeTimeSeek::get_caption() const {
 }
 
 void AnimationNodeTimeSeek::set_explicit_elapse(bool p_enable) {
+	CZ_ANIMATION_SYNC(nullptr);
 	explicit_elapse = p_enable;
 }
 
@@ -1132,6 +1161,7 @@ void AnimationNodeTimeSeek::_bind_methods() {
 /////////////////////////////////////////////////
 
 bool AnimationNodeTransition::_set(const StringName &p_path, const Variant &p_value) {
+	CZ_ANIMATION_SYNC(nullptr);
 	String path = p_path;
 
 	if (!path.begins_with("input_")) {
@@ -1241,6 +1271,7 @@ String AnimationNodeTransition::get_caption() const {
 }
 
 void AnimationNodeTransition::set_input_count(int p_inputs) {
+	CZ_ANIMATION_SYNC(nullptr);
 	for (int i = get_input_count(); i < p_inputs; i++) {
 		add_input("state_" + itos(i));
 	}
@@ -1255,6 +1286,7 @@ void AnimationNodeTransition::set_input_count(int p_inputs) {
 }
 
 bool AnimationNodeTransition::add_input(const String &p_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	if (AnimationNode::add_input(p_name)) {
 		input_data.push_back(InputData());
 		return true;
@@ -1263,11 +1295,13 @@ bool AnimationNodeTransition::add_input(const String &p_name) {
 }
 
 void AnimationNodeTransition::remove_input(int p_index) {
+	CZ_ANIMATION_SYNC(nullptr);
 	input_data.remove_at(p_index);
 	AnimationNode::remove_input(p_index);
 }
 
 bool AnimationNodeTransition::set_input_name(int p_input, const String &p_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	pending_update = true;
 	if (!AnimationNode::set_input_name(p_input, p_name)) {
 		return false;
@@ -1277,6 +1311,7 @@ bool AnimationNodeTransition::set_input_name(int p_input, const String &p_name) 
 }
 
 void AnimationNodeTransition::set_input_as_auto_advance(int p_input, bool p_enable) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_input, get_input_count());
 	input_data[p_input].auto_advance = p_enable;
 }
@@ -1287,6 +1322,7 @@ bool AnimationNodeTransition::is_input_set_as_auto_advance(int p_input) const {
 }
 
 void AnimationNodeTransition::set_input_break_loop_at_end(int p_input, bool p_enable) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_input, get_input_count());
 	input_data[p_input].break_loop_at_end = p_enable;
 }
@@ -1297,6 +1333,7 @@ bool AnimationNodeTransition::is_input_loop_broken_at_end(int p_input) const {
 }
 
 void AnimationNodeTransition::set_input_reset(int p_input, bool p_enable) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_input, get_input_count());
 	input_data[p_input].reset = p_enable;
 }
@@ -1307,6 +1344,7 @@ bool AnimationNodeTransition::is_input_reset(int p_input) const {
 }
 
 void AnimationNodeTransition::set_xfade_time(double p_fade) {
+	CZ_ANIMATION_SYNC(nullptr);
 	xfade_time = p_fade;
 }
 
@@ -1315,6 +1353,7 @@ double AnimationNodeTransition::get_xfade_time() const {
 }
 
 void AnimationNodeTransition::set_xfade_curve(const Ref<Curve> &p_curve) {
+	CZ_ANIMATION_SYNC(nullptr);
 	xfade_curve = p_curve;
 }
 
@@ -1323,6 +1362,7 @@ Ref<Curve> AnimationNodeTransition::get_xfade_curve() const {
 }
 
 void AnimationNodeTransition::set_allow_transition_to_self(bool p_enable) {
+	CZ_ANIMATION_SYNC(nullptr);
 	allow_transition_to_self = p_enable;
 }
 
@@ -1547,6 +1587,7 @@ AnimationNodeOutput::AnimationNodeOutput() {
 
 ///////////////////////////////////////////////////////
 void AnimationNodeBlendTree::add_node(const StringName &p_name, const Ref<AnimationNode> &p_node, const Vector2 &p_position) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND(nodes.has(p_name));
 	ERR_FAIL_COND(p_node.is_null());
 	ERR_FAIL_COND(p_name == SceneStringName(output));
@@ -1572,6 +1613,7 @@ Ref<AnimationNode> AnimationNodeBlendTree::get_node(const StringName &p_name) co
 }
 
 void AnimationNodeBlendTree::set_node_position(const StringName &p_node, const Vector2 &p_position) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND(!nodes.has(p_node));
 	nodes[p_node].position = p_position;
 }
@@ -1601,6 +1643,7 @@ const LocalVector<StringName> *AnimationNodeBlendTree::get_node_connection_array
 }
 
 void AnimationNodeBlendTree::remove_node(const StringName &p_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND(!nodes.has(p_name));
 	ERR_FAIL_COND(p_name == SceneStringName(output)); //can't delete output
 
@@ -1627,6 +1670,7 @@ void AnimationNodeBlendTree::remove_node(const StringName &p_name) {
 }
 
 void AnimationNodeBlendTree::rename_node(const StringName &p_name, const StringName &p_new_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND(!nodes.has(p_name));
 	ERR_FAIL_COND(nodes.has(p_new_name));
 	ERR_FAIL_COND(p_name == SceneStringName(output));
@@ -1654,6 +1698,7 @@ void AnimationNodeBlendTree::rename_node(const StringName &p_name, const StringN
 }
 
 void AnimationNodeBlendTree::connect_node(const StringName &p_input_node, int p_input_index, const StringName &p_output_node) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND(!nodes.has(p_output_node));
 	ERR_FAIL_COND(!nodes.has(p_input_node));
 	ERR_FAIL_COND(p_output_node == SceneStringName(output));
@@ -1676,6 +1721,7 @@ void AnimationNodeBlendTree::connect_node(const StringName &p_input_node, int p_
 }
 
 void AnimationNodeBlendTree::disconnect_node(const StringName &p_node, int p_input_index) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND(!nodes.has(p_node));
 
 	Ref<AnimationNode> input = nodes[p_node].node;
@@ -1770,6 +1816,7 @@ TypedArray<StringName> AnimationNodeBlendTree::get_node_list_as_typed_array() co
 }
 
 void AnimationNodeBlendTree::set_graph_offset(const Vector2 &p_graph_offset) {
+	CZ_ANIMATION_SYNC(nullptr);
 	graph_offset = p_graph_offset;
 }
 
@@ -1782,6 +1829,7 @@ Ref<AnimationNode> AnimationNodeBlendTree::get_child_by_name(const StringName &p
 }
 
 bool AnimationNodeBlendTree::_set(const StringName &p_name, const Variant &p_value) {
+	CZ_ANIMATION_SYNC(nullptr);
 	String prop_name = p_name;
 	if (prop_name.begins_with("nodes/")) {
 		String node_name = prop_name.get_slicec('/', 1);

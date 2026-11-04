@@ -34,6 +34,7 @@
 
 class TwoBoneIK3D : public IKModifier3D {
 	GDCLASS(TwoBoneIK3D, IKModifier3D);
+	friend class CZAnimationBridge;
 
 public:
 	struct TwoBoneIK3DSetting : public IKModifier3DSetting {

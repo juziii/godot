@@ -34,6 +34,8 @@
 #include "core/object/class_db.h"
 #include "scene/resources/animation.h"
 
+#include "modules/cz_animation/animation_hooks.h"
+
 void LookAtModifier3D::_validate_property(PropertyInfo &p_property) const {
 	if (Engine::get_singleton()->is_editor_hint() && (p_property.name == "bone_name" || p_property.name == "origin_bone_name")) {
 		Skeleton3D *skeleton = get_skeleton();
@@ -94,6 +96,7 @@ void LookAtModifier3D::_validate_bone_names() {
 }
 
 void LookAtModifier3D::set_bone_name(const String &p_bone_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	bone_name = p_bone_name;
 	Skeleton3D *sk = get_skeleton();
 	if (sk) {
@@ -106,6 +109,7 @@ String LookAtModifier3D::get_bone_name() const {
 }
 
 void LookAtModifier3D::set_bone(int p_bone) {
+	CZ_ANIMATION_SYNC(nullptr);
 	bone = p_bone;
 	Skeleton3D *sk = get_skeleton();
 	if (sk) {
@@ -123,6 +127,7 @@ int LookAtModifier3D::get_bone() const {
 }
 
 void LookAtModifier3D::set_forward_axis(BoneAxis p_axis) {
+	CZ_ANIMATION_SYNC(nullptr);
 	forward_axis = p_axis;
 	update_configuration_warnings();
 }
@@ -132,6 +137,7 @@ SkeletonModifier3D::BoneAxis LookAtModifier3D::get_forward_axis() const {
 }
 
 void LookAtModifier3D::set_primary_rotation_axis(Vector3::Axis p_axis) {
+	CZ_ANIMATION_SYNC(nullptr);
 	primary_rotation_axis = p_axis;
 	update_configuration_warnings();
 }
@@ -141,6 +147,7 @@ Vector3::Axis LookAtModifier3D::get_primary_rotation_axis() const {
 }
 
 void LookAtModifier3D::set_use_secondary_rotation(bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	use_secondary_rotation = p_enabled;
 	notify_property_list_changed();
 }
@@ -150,6 +157,7 @@ bool LookAtModifier3D::is_using_secondary_rotation() const {
 }
 
 void LookAtModifier3D::set_relative(bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	relative = p_enabled;
 }
 
@@ -158,6 +166,7 @@ bool LookAtModifier3D::is_relative() const {
 }
 
 void LookAtModifier3D::set_target_node(const NodePath &p_target_node) {
+	CZ_ANIMATION_SYNC(nullptr);
 	if (target_node != p_target_node) {
 		init_transition();
 	}
@@ -174,6 +183,7 @@ NodePath LookAtModifier3D::get_target_node() const {
 // For origin settings.
 
 void LookAtModifier3D::set_origin_from(OriginFrom p_origin_from) {
+	CZ_ANIMATION_SYNC(nullptr);
 	origin_from = p_origin_from;
 	notify_property_list_changed();
 }
@@ -183,6 +193,7 @@ LookAtModifier3D::OriginFrom LookAtModifier3D::get_origin_from() const {
 }
 
 void LookAtModifier3D::set_origin_bone_name(const String &p_bone_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	origin_bone_name = p_bone_name;
 	Skeleton3D *sk = get_skeleton();
 	if (sk) {
@@ -195,6 +206,7 @@ String LookAtModifier3D::get_origin_bone_name() const {
 }
 
 void LookAtModifier3D::set_origin_bone(int p_bone) {
+	CZ_ANIMATION_SYNC(nullptr);
 	origin_bone = p_bone;
 	Skeleton3D *sk = get_skeleton();
 	if (sk) {
@@ -212,6 +224,7 @@ int LookAtModifier3D::get_origin_bone() const {
 }
 
 void LookAtModifier3D::set_origin_external_node(const NodePath &p_external_node) {
+	CZ_ANIMATION_SYNC(nullptr);
 	if (should_check_node_path() && !p_external_node.is_empty() && !Object::cast_to<Node3D>(get_node_or_null(p_external_node))) {
 		WARN_PRINT_ED("Origin node '" + String(p_external_node) + "' not found.");
 	}
@@ -223,6 +236,7 @@ NodePath LookAtModifier3D::get_origin_external_node() const {
 }
 
 void LookAtModifier3D::set_origin_offset(const Vector3 &p_offset) {
+	CZ_ANIMATION_SYNC(nullptr);
 	origin_offset = p_offset;
 }
 
@@ -231,6 +245,7 @@ Vector3 LookAtModifier3D::get_origin_offset() const {
 }
 
 void LookAtModifier3D::set_origin_safe_margin(float p_margin) {
+	CZ_ANIMATION_SYNC(nullptr);
 	origin_safe_margin = p_margin;
 }
 
@@ -241,6 +256,7 @@ float LookAtModifier3D::get_origin_safe_margin() const {
 // For time-based interpolation.
 
 void LookAtModifier3D::set_duration(float p_duration) {
+	CZ_ANIMATION_SYNC(nullptr);
 	duration = p_duration;
 	if (Math::is_zero_approx(p_duration)) {
 		time_step = 0;
@@ -255,6 +271,7 @@ float LookAtModifier3D::get_duration() const {
 }
 
 void LookAtModifier3D::set_transition_type(Tween::TransitionType p_transition_type) {
+	CZ_ANIMATION_SYNC(nullptr);
 	transition_type = p_transition_type;
 }
 
@@ -263,6 +280,7 @@ Tween::TransitionType LookAtModifier3D::get_transition_type() const {
 }
 
 void LookAtModifier3D::set_ease_type(Tween::EaseType p_ease_type) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ease_type = p_ease_type;
 }
 
@@ -273,6 +291,7 @@ Tween::EaseType LookAtModifier3D::get_ease_type() const {
 // For angle limitation.
 
 void LookAtModifier3D::set_use_angle_limitation(bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	use_angle_limitation = p_enabled;
 	notify_property_list_changed();
 }
@@ -282,6 +301,7 @@ bool LookAtModifier3D::is_using_angle_limitation() const {
 }
 
 void LookAtModifier3D::set_symmetry_limitation(bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	symmetry_limitation = p_enabled;
 	notify_property_list_changed();
 }
@@ -291,6 +311,7 @@ bool LookAtModifier3D::is_limitation_symmetry() const {
 }
 
 void LookAtModifier3D::set_use_rest_for_limitation(bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	use_rest_for_limitation = p_enabled;
 }
 
@@ -299,6 +320,7 @@ bool LookAtModifier3D::is_using_rest_for_limitation() const {
 }
 
 void LookAtModifier3D::set_primary_limit_angle(float p_angle) {
+	CZ_ANIMATION_SYNC(nullptr);
 	primary_limit_angle = p_angle;
 }
 
@@ -307,6 +329,7 @@ float LookAtModifier3D::get_primary_limit_angle() const {
 }
 
 void LookAtModifier3D::set_primary_damp_threshold(float p_power) {
+	CZ_ANIMATION_SYNC(nullptr);
 	primary_damp_threshold = p_power;
 }
 
@@ -315,6 +338,7 @@ float LookAtModifier3D::get_primary_damp_threshold() const {
 }
 
 void LookAtModifier3D::set_primary_positive_limit_angle(float p_angle) {
+	CZ_ANIMATION_SYNC(nullptr);
 	primary_positive_limit_angle = p_angle;
 }
 
@@ -323,6 +347,7 @@ float LookAtModifier3D::get_primary_positive_limit_angle() const {
 }
 
 void LookAtModifier3D::set_primary_positive_damp_threshold(float p_power) {
+	CZ_ANIMATION_SYNC(nullptr);
 	primary_positive_damp_threshold = p_power;
 }
 
@@ -331,6 +356,7 @@ float LookAtModifier3D::get_primary_positive_damp_threshold() const {
 }
 
 void LookAtModifier3D::set_primary_negative_limit_angle(float p_angle) {
+	CZ_ANIMATION_SYNC(nullptr);
 	primary_negative_limit_angle = p_angle;
 }
 
@@ -339,6 +365,7 @@ float LookAtModifier3D::get_primary_negative_limit_angle() const {
 }
 
 void LookAtModifier3D::set_primary_negative_damp_threshold(float p_power) {
+	CZ_ANIMATION_SYNC(nullptr);
 	primary_negative_damp_threshold = p_power;
 }
 
@@ -347,6 +374,7 @@ float LookAtModifier3D::get_primary_negative_damp_threshold() const {
 }
 
 void LookAtModifier3D::set_secondary_limit_angle(float p_angle) {
+	CZ_ANIMATION_SYNC(nullptr);
 	secondary_limit_angle = p_angle;
 }
 
@@ -355,6 +383,7 @@ float LookAtModifier3D::get_secondary_limit_angle() const {
 }
 
 void LookAtModifier3D::set_secondary_damp_threshold(float p_power) {
+	CZ_ANIMATION_SYNC(nullptr);
 	secondary_damp_threshold = p_power;
 }
 
@@ -363,6 +392,7 @@ float LookAtModifier3D::get_secondary_damp_threshold() const {
 }
 
 void LookAtModifier3D::set_secondary_positive_limit_angle(float p_angle) {
+	CZ_ANIMATION_SYNC(nullptr);
 	secondary_positive_limit_angle = p_angle;
 }
 
@@ -371,6 +401,7 @@ float LookAtModifier3D::get_secondary_positive_limit_angle() const {
 }
 
 void LookAtModifier3D::set_secondary_positive_damp_threshold(float p_power) {
+	CZ_ANIMATION_SYNC(nullptr);
 	secondary_positive_damp_threshold = p_power;
 }
 
@@ -379,6 +410,7 @@ float LookAtModifier3D::get_secondary_positive_damp_threshold() const {
 }
 
 void LookAtModifier3D::set_secondary_negative_limit_angle(float p_angle) {
+	CZ_ANIMATION_SYNC(nullptr);
 	secondary_negative_limit_angle = p_angle;
 }
 
@@ -387,6 +419,7 @@ float LookAtModifier3D::get_secondary_negative_limit_angle() const {
 }
 
 void LookAtModifier3D::set_secondary_negative_damp_threshold(float p_power) {
+	CZ_ANIMATION_SYNC(nullptr);
 	secondary_negative_damp_threshold = p_power;
 }
 
@@ -538,6 +571,11 @@ void LookAtModifier3D::_process_modification(double p_delta) {
 	if (!skeleton || bone < 0 || bone >= skeleton->get_bone_count()) {
 		return;
 	}
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	if (CZAnimationBridge::process_look_at(this, skeleton)) {
+		return;
+	}
+#endif
 
 	// Calculate bone rest space in the world.
 	Transform3D bone_rest = relative ? skeleton->get_bone_pose(bone) : skeleton->get_bone_rest(bone);

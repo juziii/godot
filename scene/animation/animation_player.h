@@ -35,6 +35,7 @@
 
 class AnimationPlayer : public AnimationMixer {
 	GDCLASS(AnimationPlayer, AnimationMixer);
+	friend class CZAnimationBridge;
 
 #ifndef DISABLE_DEPRECATED
 public:

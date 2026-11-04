@@ -34,7 +34,10 @@
 #include "core/io/marshalls.h"
 #include "core/object/class_db.h"
 
+#include "modules/cz_animation/animation_hooks.h"
+
 bool Animation::_set(const StringName &p_name, const Variant &p_value) {
+	CZ_ANIMATION_SYNC(nullptr);
 	String prop_name = p_name;
 
 	if (p_name == SNAME("_compression")) {
@@ -890,10 +893,12 @@ void Animation::_get_property_list(List<PropertyInfo> *p_list) const {
 }
 
 void Animation::reset_state() {
+	CZ_ANIMATION_SYNC(nullptr);
 	clear();
 }
 
 int Animation::add_track(TrackType p_type, int p_at_pos) {
+	CZ_ANIMATION_SYNC(nullptr);
 	if ((uint32_t)p_at_pos >= tracks.size()) {
 		p_at_pos = tracks.size();
 	}
@@ -944,6 +949,7 @@ int Animation::add_track(TrackType p_type, int p_at_pos) {
 }
 
 void Animation::remove_track(int p_track) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	Track *t = tracks[p_track];
 
@@ -1032,6 +1038,7 @@ Animation::TrackType Animation::track_get_type(int p_track) const {
 }
 
 void Animation::track_set_path(int p_track, const NodePath &p_path) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	tracks[p_track]->path = p_path;
 	tracks[p_track]->concatenated_path = StringName(String(tracks[p_track]->path));
@@ -1068,6 +1075,7 @@ Animation::TrackCacheID Animation::track_get_unique_id(int p_track) const {
 }
 
 void Animation::track_set_interpolation_type(int p_track, InterpolationType p_interp) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	tracks[p_track]->interpolation = p_interp;
 	emit_changed();
@@ -1079,6 +1087,7 @@ Animation::InterpolationType Animation::track_get_interpolation_type(int p_track
 }
 
 void Animation::track_set_interpolation_loop_wrap(int p_track, bool p_enable) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	tracks[p_track]->loop_wrap = p_enable;
 	emit_changed();
@@ -1137,6 +1146,7 @@ int Animation::_marker_insert(double p_time, LocalVector<MarkerKey> &p_keys, con
 ////
 
 int Animation::position_track_insert_key(int p_track, double p_time, const Vector3 &p_position) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX_V((uint32_t)p_track, tracks.size(), -1);
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND_V(t->type != TYPE_POSITION_3D, -1);
@@ -1217,6 +1227,7 @@ Vector3 Animation::position_track_interpolate(int p_track, double p_time, bool p
 ////
 
 int Animation::rotation_track_insert_key(int p_track, double p_time, const Quaternion &p_rotation) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX_V((uint32_t)p_track, tracks.size(), -1);
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND_V(t->type != TYPE_ROTATION_3D, -1);
@@ -1297,6 +1308,7 @@ Quaternion Animation::rotation_track_interpolate(int p_track, double p_time, boo
 ////
 
 int Animation::scale_track_insert_key(int p_track, double p_time, const Vector3 &p_scale) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX_V((uint32_t)p_track, tracks.size(), -1);
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND_V(t->type != TYPE_SCALE_3D, -1);
@@ -1377,6 +1389,7 @@ Vector3 Animation::scale_track_interpolate(int p_track, double p_time, bool p_ba
 ////
 
 int Animation::blend_shape_track_insert_key(int p_track, double p_time, float p_blend_shape) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX_V((uint32_t)p_track, tracks.size(), -1);
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND_V(t->type != TYPE_BLEND_SHAPE, -1);
@@ -1457,12 +1470,14 @@ float Animation::blend_shape_track_interpolate(int p_track, double p_time, bool 
 ////
 
 void Animation::track_remove_key_at_time(int p_track, double p_time) {
+	CZ_ANIMATION_SYNC(nullptr);
 	int idx = track_find_key(p_track, p_time, FIND_MODE_APPROX);
 	ERR_FAIL_COND(idx < 0);
 	track_remove_key(p_track, idx);
 }
 
 void Animation::track_remove_key(int p_track, int p_idx) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	Track *t = tracks[p_track];
 
@@ -1717,6 +1732,7 @@ int Animation::track_find_key(int p_track, double p_time, FindMode p_find_mode, 
 }
 
 int Animation::track_insert_key(int p_track, double p_time, const Variant &p_key, real_t p_transition) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX_V((uint32_t)p_track, tracks.size(), -1);
 	Track *t = tracks[p_track];
 
@@ -2058,6 +2074,7 @@ double Animation::track_get_key_time(int p_track, int p_key_idx) const {
 }
 
 void Animation::track_set_key_time(int p_track, int p_key_idx, double p_time) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	Track *t = tracks[p_track];
 
@@ -2243,6 +2260,7 @@ bool Animation::track_is_compressed(int p_track) const {
 }
 
 void Animation::track_set_key_value(int p_track, int p_key_idx, const Variant &p_value) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	Track *t = tracks[p_track];
 
@@ -2345,6 +2363,7 @@ void Animation::track_set_key_value(int p_track, int p_key_idx, const Variant &p
 }
 
 void Animation::track_set_key_transition(int p_track, int p_key_idx, real_t p_transition) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	Track *t = tracks[p_track];
 
@@ -2873,6 +2892,7 @@ Variant Animation::value_track_interpolate(int p_track, double p_time, bool p_ba
 }
 
 void Animation::value_track_set_update_mode(int p_track, UpdateMode p_mode) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND(t->type != TYPE_VALUE);
@@ -3349,6 +3369,7 @@ void Animation::track_get_key_indices_in_range(int p_track, double p_time, doubl
 }
 
 void Animation::add_marker(const StringName &p_name, double p_time) {
+	CZ_ANIMATION_SYNC(nullptr);
 	int idx = _find(marker_names, p_time);
 
 	if ((uint32_t)idx < marker_names.size() && Math::is_equal_approx(p_time, marker_names[idx].time)) {
@@ -3365,6 +3386,7 @@ void Animation::add_marker(const StringName &p_name, double p_time) {
 }
 
 void Animation::remove_marker(const StringName &p_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	HashMap<StringName, double>::Iterator E = marker_times.find(p_name);
 	ERR_FAIL_COND(!E);
 	int idx = _find(marker_names, E->value);
@@ -3430,6 +3452,7 @@ Color Animation::get_marker_color(const StringName &p_name) const {
 }
 
 void Animation::set_marker_color(const StringName &p_name, const Color &p_color) {
+	CZ_ANIMATION_SYNC(nullptr);
 	marker_colors[p_name] = p_color;
 }
 
@@ -3474,6 +3497,7 @@ Array Animation::make_default_bezier_key(float p_value) {
 }
 
 int Animation::bezier_track_insert_key(int p_track, double p_time, real_t p_value, const Vector2 &p_in_handle, const Vector2 &p_out_handle) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX_V((uint32_t)p_track, tracks.size(), -1);
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND_V(t->type != TYPE_BEZIER, -1);
@@ -3500,6 +3524,7 @@ int Animation::bezier_track_insert_key(int p_track, double p_time, real_t p_valu
 }
 
 void Animation::bezier_track_set_key_value(int p_track, int p_index, real_t p_value) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND(t->type != TYPE_BEZIER);
@@ -3514,6 +3539,7 @@ void Animation::bezier_track_set_key_value(int p_track, int p_index, real_t p_va
 }
 
 void Animation::bezier_track_set_key_in_handle(int p_track, int p_index, const Vector2 &p_handle, real_t p_balanced_value_time_ratio) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND(t->type != TYPE_BEZIER);
@@ -3549,6 +3575,7 @@ void Animation::bezier_track_set_key_in_handle(int p_track, int p_index, const V
 }
 
 void Animation::bezier_track_set_key_out_handle(int p_track, int p_index, const Vector2 &p_handle, real_t p_balanced_value_time_ratio) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND(t->type != TYPE_BEZIER);
@@ -3621,6 +3648,7 @@ Vector2 Animation::bezier_track_get_key_out_handle(int p_track, int p_index) con
 
 #ifdef TOOLS_ENABLED
 void Animation::bezier_track_set_key_handle_mode(int p_track, int p_index, HandleMode p_mode, HandleSetMode p_set_mode) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND(t->type != TYPE_BEZIER);
@@ -3805,6 +3833,7 @@ real_t Animation::bezier_track_interpolate(int p_track, double p_time) const {
 }
 
 int Animation::audio_track_insert_key(int p_track, double p_time, const Ref<Resource> &p_stream, real_t p_start_offset, real_t p_end_offset) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX_V((uint32_t)p_track, tracks.size(), -1);
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND_V(t->type != TYPE_AUDIO, -1);
@@ -3831,6 +3860,7 @@ int Animation::audio_track_insert_key(int p_track, double p_time, const Ref<Reso
 }
 
 void Animation::audio_track_set_key_stream(int p_track, int p_key, const Ref<Resource> &p_stream) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND(t->type != TYPE_AUDIO);
@@ -3845,6 +3875,7 @@ void Animation::audio_track_set_key_stream(int p_track, int p_key, const Ref<Res
 }
 
 void Animation::audio_track_set_key_start_offset(int p_track, int p_key, real_t p_offset) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND(t->type != TYPE_AUDIO);
@@ -3863,6 +3894,7 @@ void Animation::audio_track_set_key_start_offset(int p_track, int p_key, real_t 
 }
 
 void Animation::audio_track_set_key_end_offset(int p_track, int p_key, real_t p_offset) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND(t->type != TYPE_AUDIO);
@@ -3917,6 +3949,7 @@ real_t Animation::audio_track_get_key_end_offset(int p_track, int p_key) const {
 }
 
 void Animation::audio_track_set_use_blend(int p_track, bool p_enable) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND(t->type != TYPE_AUDIO);
@@ -3940,6 +3973,7 @@ bool Animation::audio_track_is_use_blend(int p_track) const {
 //
 
 int Animation::animation_track_insert_key(int p_track, double p_time, const StringName &p_animation) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX_V((uint32_t)p_track, tracks.size(), -1);
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND_V(t->type != TYPE_ANIMATION, -1);
@@ -3958,6 +3992,7 @@ int Animation::animation_track_insert_key(int p_track, double p_time, const Stri
 }
 
 void Animation::animation_track_set_key_animation(int p_track, int p_key, const StringName &p_animation) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	Track *t = tracks[p_track];
 	ERR_FAIL_COND(t->type != TYPE_ANIMATION);
@@ -3984,6 +4019,7 @@ StringName Animation::animation_track_get_key_animation(int p_track, int p_key) 
 }
 
 void Animation::set_length(double p_length) {
+	CZ_ANIMATION_SYNC(nullptr);
 	if (p_length < ANIM_MIN_LENGTH) {
 		p_length = ANIM_MIN_LENGTH;
 	}
@@ -3992,11 +4028,13 @@ void Animation::set_length(double p_length) {
 }
 
 void Animation::set_loop_mode(Animation::LoopMode p_loop_mode) {
+	CZ_ANIMATION_SYNC(nullptr);
 	loop_mode = p_loop_mode;
 	emit_changed();
 }
 
 void Animation::track_set_imported(int p_track, bool p_imported) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	tracks[p_track]->imported = p_imported;
 }
@@ -4007,6 +4045,7 @@ bool Animation::track_is_imported(int p_track) const {
 }
 
 void Animation::track_set_enabled(int p_track, bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	tracks[p_track]->enabled = p_enabled;
 	emit_changed();
@@ -4018,6 +4057,7 @@ bool Animation::track_is_enabled(int p_track) const {
 }
 
 void Animation::track_move_up(int p_track) {
+	CZ_ANIMATION_SYNC(nullptr);
 	if (p_track >= 0 && p_track < ((int)tracks.size() - 1)) {
 		SWAP(tracks[p_track], tracks[p_track + 1]);
 	}
@@ -4026,6 +4066,7 @@ void Animation::track_move_up(int p_track) {
 }
 
 void Animation::track_move_down(int p_track) {
+	CZ_ANIMATION_SYNC(nullptr);
 	if (p_track > 0 && (uint32_t)p_track < tracks.size()) {
 		SWAP(tracks[p_track], tracks[p_track - 1]);
 	}
@@ -4034,6 +4075,7 @@ void Animation::track_move_down(int p_track) {
 }
 
 void Animation::track_move_to(int p_track, int p_to_index) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_track, tracks.size());
 	ERR_FAIL_UNSIGNED_INDEX((uint32_t)p_to_index, tracks.size() + 1);
 	if (p_track == p_to_index || p_track == p_to_index - 1) {
@@ -4060,6 +4102,7 @@ void Animation::track_swap(int p_track, int p_with_track) {
 }
 
 void Animation::set_step(real_t p_step) {
+	CZ_ANIMATION_SYNC(nullptr);
 	step = p_step;
 	emit_changed();
 }
@@ -4069,6 +4112,7 @@ real_t Animation::get_step() const {
 }
 
 void Animation::copy_track(int p_track, Ref<Animation> p_to_animation) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND(p_to_animation.is_null());
 	ERR_FAIL_INDEX(p_track, get_track_count());
 	int dst_track = p_to_animation->get_track_count();
@@ -4246,6 +4290,7 @@ void Animation::_bind_methods() {
 }
 
 void Animation::clear() {
+	CZ_ANIMATION_SYNC(nullptr);
 	for (uint32_t i = 0; i < tracks.size(); i++) {
 		memdelete(tracks[i]);
 	}
@@ -4643,6 +4688,7 @@ void Animation::_value_track_optimize(int p_idx, real_t p_allowed_velocity_err, 
 }
 
 void Animation::optimize(real_t p_allowed_velocity_err, real_t p_allowed_angular_err, int p_precision) {
+	CZ_ANIMATION_SYNC(nullptr);
 	real_t precision = Math::pow(0.1, p_precision);
 	for (uint32_t i = 0; i < tracks.size(); i++) {
 		if (track_is_compressed(i)) {
@@ -5011,6 +5057,7 @@ struct AnimationCompressionBufferBitsRead {
 };
 
 void Animation::compress(uint32_t p_page_size, uint32_t p_fps, float p_split_tolerance) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND_MSG(compression.enabled, "This animation is already compressed");
 
 	p_split_tolerance = CLAMP(p_split_tolerance, 1.1, 8.0);

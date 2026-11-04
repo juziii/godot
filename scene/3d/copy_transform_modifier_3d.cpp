@@ -30,6 +30,11 @@
 
 #include "copy_transform_modifier_3d.h"
 
+#include "modules/cz_animation/animation_hooks.h"
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+#include "modules/cz_animation/modifier_solvers.h"
+#endif
+
 #include "core/object/class_db.h"
 
 bool CopyTransformModifier3D::_set(const StringName &p_path, const Variant &p_value) {
@@ -124,6 +129,7 @@ void CopyTransformModifier3D::_validate_setting(int p_index) {
 }
 
 void CopyTransformModifier3D::set_copy_flags(int p_index, BitField<TransformFlag> p_copy_flags) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
 	setting->copy_flags = p_copy_flags;
@@ -137,6 +143,7 @@ BitField<CopyTransformModifier3D::TransformFlag> CopyTransformModifier3D::get_co
 }
 
 void CopyTransformModifier3D::set_axis_flags(int p_index, BitField<AxisFlag> p_axis_flags) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
 	setting->axis_flags = p_axis_flags;
@@ -150,6 +157,7 @@ BitField<CopyTransformModifier3D::AxisFlag> CopyTransformModifier3D::get_axis_fl
 }
 
 void CopyTransformModifier3D::set_invert_flags(int p_index, BitField<AxisFlag> p_axis_flags) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
 	setting->invert_flags = p_axis_flags;
@@ -163,6 +171,7 @@ BitField<CopyTransformModifier3D::AxisFlag> CopyTransformModifier3D::get_invert_
 }
 
 void CopyTransformModifier3D::set_copy_position(int p_index, bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
 	if (p_enabled) {
@@ -179,6 +188,7 @@ bool CopyTransformModifier3D::is_position_copying(int p_index) const {
 }
 
 void CopyTransformModifier3D::set_copy_rotation(int p_index, bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
 	if (p_enabled) {
@@ -195,6 +205,7 @@ bool CopyTransformModifier3D::is_rotation_copying(int p_index) const {
 }
 
 void CopyTransformModifier3D::set_copy_scale(int p_index, bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
 	if (p_enabled) {
@@ -211,6 +222,7 @@ bool CopyTransformModifier3D::is_scale_copying(int p_index) const {
 }
 
 void CopyTransformModifier3D::set_axis_x_enabled(int p_index, bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
 	if (p_enabled) {
@@ -227,6 +239,7 @@ bool CopyTransformModifier3D::is_axis_x_enabled(int p_index) const {
 }
 
 void CopyTransformModifier3D::set_axis_y_enabled(int p_index, bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
 	if (p_enabled) {
@@ -243,6 +256,7 @@ bool CopyTransformModifier3D::is_axis_y_enabled(int p_index) const {
 }
 
 void CopyTransformModifier3D::set_axis_z_enabled(int p_index, bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
 	if (p_enabled) {
@@ -259,6 +273,7 @@ bool CopyTransformModifier3D::is_axis_z_enabled(int p_index) const {
 }
 
 void CopyTransformModifier3D::set_axis_x_inverted(int p_index, bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
 	if (p_enabled) {
@@ -275,6 +290,7 @@ bool CopyTransformModifier3D::is_axis_x_inverted(int p_index) const {
 }
 
 void CopyTransformModifier3D::set_axis_y_inverted(int p_index, bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
 	if (p_enabled) {
@@ -291,6 +307,7 @@ bool CopyTransformModifier3D::is_axis_y_inverted(int p_index) const {
 }
 
 void CopyTransformModifier3D::set_axis_z_inverted(int p_index, bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
 	if (p_enabled) {
@@ -307,6 +324,7 @@ bool CopyTransformModifier3D::is_axis_z_inverted(int p_index) const {
 }
 
 void CopyTransformModifier3D::set_global(int p_index, bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
 	setting->global = p_enabled;
@@ -319,6 +337,7 @@ bool CopyTransformModifier3D::is_global(int p_index) const {
 }
 
 void CopyTransformModifier3D::set_relative(int p_index, bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
 	setting->relative = p_enabled;
@@ -331,6 +350,7 @@ bool CopyTransformModifier3D::is_relative(int p_index) const {
 }
 
 void CopyTransformModifier3D::set_additive(int p_index, bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
 	setting->additive = p_enabled;
@@ -439,6 +459,9 @@ void CopyTransformModifier3D::_process_constraint_by_node(int p_index, Skeleton3
 
 void CopyTransformModifier3D::_process_copy(int p_index, Skeleton3D *p_skeleton, int p_apply_bone, const Transform3D &p_destination, float p_amount) {
 	CopyTransform3DSetting *setting = static_cast<CopyTransform3DSetting *>(settings[p_index]);
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	CZModifierSolvers::copy_pose(p_skeleton, setting, p_apply_bone, p_destination, p_amount);
+#else
 
 	Transform3D destination = p_destination;
 	Vector3 dest_pos = destination.origin;
@@ -525,6 +548,7 @@ void CopyTransformModifier3D::_process_copy(int p_index, Skeleton3D *p_skeleton,
 	if (setting->copy_flags.has_flag(TRANSFORM_FLAG_SCALE)) {
 		p_skeleton->set_bone_pose_scale(p_apply_bone, destination.basis.get_scale());
 	}
+#endif
 }
 
 CopyTransformModifier3D::~CopyTransformModifier3D() {

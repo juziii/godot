@@ -31,6 +31,8 @@
 #include "node.h"
 #include "node.compat.inc"
 
+#include "modules/cz_animation/animation_hooks.h"
+
 STATIC_ASSERT_INCOMPLETE_TYPE(class, Mesh);
 STATIC_ASSERT_INCOMPLETE_TYPE(class, RenderingServer);
 STATIC_ASSERT_INCOMPLETE_TYPE(class, DisplayServer);
@@ -501,6 +503,7 @@ void Node::_propagate_physics_interpolation_reset_requested(bool p_requested) {
 }
 
 void Node::move_child(RequiredParam<Node> p_child, int p_index) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND_MSG(data.tree && !Thread::is_main_thread(), "Moving child node positions inside the SceneTree is only allowed from the main thread. Use call_deferred(\"move_child\",child,index).");
 	EXTRACT_PARAM_OR_FAIL(child, p_child);
 	ERR_FAIL_COND_MSG(child->data.parent != this, "Child is not a child of this node.");
@@ -1709,6 +1712,7 @@ void Node::_add_child_nocheck(Node *p_child, const StringName &p_name, InternalM
 }
 
 void Node::add_child(RequiredParam<Node> p_child, bool p_force_readable_name, InternalMode p_internal) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND_MSG(data.tree && !Thread::is_main_thread(), "Adding children to a node inside the SceneTree is only allowed from the main thread. Use call_deferred(\"add_child\",node).");
 
 	ERR_THREAD_GUARD
@@ -1745,6 +1749,7 @@ void Node::add_sibling(RequiredParam<Node> p_sibling, bool p_force_readable_name
 }
 
 void Node::remove_child(RequiredParam<Node> p_child) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND_MSG(data.tree && !Thread::is_main_thread(), "Removing children from a node inside the SceneTree is only allowed from the main thread. Use call_deferred(\"remove_child\",node).");
 	EXTRACT_PARAM_OR_FAIL(child, p_child);
 	ERR_FAIL_COND_MSG(data.blocked > 0, "Parent node is busy adding/removing children, `remove_child()` can't be called at this time. Consider using `remove_child.call_deferred(child)` instead.");
@@ -4174,6 +4179,7 @@ Node::Node() {
 }
 
 Node::~Node() {
+	CZ_ANIMATION_SYNC(nullptr);
 	data.grouped.clear();
 	data.owned.clear();
 	data.children.clear();

@@ -43,6 +43,8 @@
 #include "scene/resources/audio/audio_stream.h"
 #include "servers/audio/audio_server.h"
 
+#include "modules/cz_animation/animation_hooks.h"
+
 #ifndef _3D_DISABLED
 #include "scene/3d/audio_stream_player_3d.h"
 #include "scene/3d/mesh_instance_3d.h"
@@ -466,6 +468,7 @@ void AnimationMixer::_set_process(bool p_process, bool p_force) {
 }
 
 void AnimationMixer::set_active(bool p_active) {
+	CZ_ANIMATION_SYNC(this);
 	if (active == p_active) {
 		return;
 	}
@@ -484,6 +487,7 @@ bool AnimationMixer::is_active() const {
 }
 
 void AnimationMixer::set_root_node(const NodePath &p_path) {
+	CZ_ANIMATION_SYNC(this);
 	root_node = p_path;
 	_clear_caches();
 }
@@ -493,6 +497,7 @@ NodePath AnimationMixer::get_root_node() const {
 }
 
 void AnimationMixer::set_deterministic(bool p_deterministic) {
+	CZ_ANIMATION_SYNC(this);
 	deterministic = p_deterministic;
 	_clear_caches();
 }
@@ -584,6 +589,10 @@ bool AnimationMixer::is_dummy() const {
 /* -------------------------------------------- */
 
 void AnimationMixer::_clear_caches(bool p_clear_track_cache) {
+	CZ_ANIMATION_SYNC(this);
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	CZAnimationBridge::invalidate_binding_cache(this);
+#endif
 	_init_root_motion_cache();
 	_clear_audio_streams();
 	_clear_playing_caches();
@@ -1232,6 +1241,7 @@ void AnimationMixer::_blend_calc_total_weight() {
 }
 
 void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
+	const ObjectID mixer_instance_id = get_instance_id();
 	// Apply value/transform/blend/bezier blends to track caches and execute method/audio/animation tracks.
 #ifdef TOOLS_ENABLED
 	bool can_call = is_inside_tree() && !Engine::get_singleton()->is_editor_hint();
@@ -1288,6 +1298,11 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 			}
 			Animation::TrackType ttype = animation_track->type;
 			track->root_motion = root_motion_track == animation_track->path;
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+			if (CZAnimationBridge::skip_track(this, ttype, track->root_motion)) {
+				continue;
+			}
+#endif
 			switch (ttype) {
 				case Animation::TYPE_POSITION_3D: {
 #ifndef _3D_DISABLED
@@ -1721,6 +1736,9 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 						StringName method = a->method_track_get_name(i, idx);
 						Vector<Variant> params = a->method_track_get_params(i, idx);
 						_call_object(t->object_id, method, params, callback_mode_method == ANIMATION_CALLBACK_MODE_METHOD_DEFERRED);
+						if (ObjectDB::get_instance(mixer_instance_id) != this || !cache_valid) {
+							return;
+						}
 					} else {
 						LocalVector<int> indices;
 						a->track_get_key_indices_in_range(i, time, delta, start, end, &indices, looped_flag);
@@ -1728,6 +1746,9 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 							StringName method = a->method_track_get_name(i, F);
 							Vector<Variant> params = a->method_track_get_params(i, F);
 							_call_object(t->object_id, method, params, callback_mode_method == ANIMATION_CALLBACK_MODE_METHOD_DEFERRED);
+							if (ObjectDB::get_instance(mixer_instance_id) != this || !cache_valid) {
+								return;
+							}
 						}
 					}
 				} break;
@@ -1914,6 +1935,11 @@ void AnimationMixer::_blend_apply() {
 	// Finally, set the tracks.
 	for (const KeyValue<Animation::TrackCacheID, TrackCache *> &K : track_cache) {
 		TrackCache *track = K.value;
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+		if (CZAnimationBridge::skip_apply(this, track->type, track->root_motion)) {
+			continue;
+		}
+#endif
 		bool is_zero_amount = Math::is_zero_approx(track->total_weight);
 		if (!deterministic && is_zero_amount) {
 			continue;
@@ -2125,6 +2151,7 @@ void AnimationMixer::advance(double p_time) {
 }
 
 void AnimationMixer::clear_caches() {
+	CZ_ANIMATION_SYNC(this);
 	_clear_caches();
 }
 
@@ -2138,6 +2165,7 @@ void AnimationMixer::set_root_motion_track(const NodePath &p_track) {
 }
 
 NodePath AnimationMixer::get_root_motion_track() const {
+	CZ_ANIMATION_SYNC(const_cast<AnimationMixer *>(this));
 	return root_motion_track;
 }
 
@@ -2150,26 +2178,32 @@ bool AnimationMixer::is_root_motion_local() const {
 }
 
 Vector3 AnimationMixer::get_root_motion_position() const {
+	CZ_ANIMATION_SYNC(const_cast<AnimationMixer *>(this));
 	return root_motion_position;
 }
 
 Quaternion AnimationMixer::get_root_motion_rotation() const {
+	CZ_ANIMATION_SYNC(const_cast<AnimationMixer *>(this));
 	return root_motion_rotation;
 }
 
 Vector3 AnimationMixer::get_root_motion_scale() const {
+	CZ_ANIMATION_SYNC(const_cast<AnimationMixer *>(this));
 	return root_motion_scale;
 }
 
 Vector3 AnimationMixer::get_root_motion_position_accumulator() const {
+	CZ_ANIMATION_SYNC(const_cast<AnimationMixer *>(this));
 	return root_motion_position_accumulator;
 }
 
 Quaternion AnimationMixer::get_root_motion_rotation_accumulator() const {
+	CZ_ANIMATION_SYNC(const_cast<AnimationMixer *>(this));
 	return root_motion_rotation_accumulator;
 }
 
 Vector3 AnimationMixer::get_root_motion_scale_accumulator() const {
+	CZ_ANIMATION_SYNC(const_cast<AnimationMixer *>(this));
 	return root_motion_scale_accumulator;
 }
 
@@ -2565,6 +2599,7 @@ AnimationMixer::AnimationMixer() {
 }
 
 AnimationMixer::~AnimationMixer() {
+	CZ_ANIMATION_SYNC(this);
 }
 
 void AnimatedValuesBackup::set_data(const AHashMap<Animation::TrackCacheID, AnimationMixer::TrackCache *, HashHasher> &p_data) {

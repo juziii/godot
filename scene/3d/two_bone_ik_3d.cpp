@@ -30,6 +30,11 @@
 
 #include "two_bone_ik_3d.h"
 
+#include "modules/cz_animation/animation_hooks.h"
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+#include "modules/cz_animation/modifier_solvers.h"
+#endif
+
 #include "core/object/class_db.h"
 
 bool TwoBoneIK3D::_set(const StringName &p_path, const Variant &p_value) {
@@ -211,6 +216,7 @@ PackedStringArray TwoBoneIK3D::get_configuration_warnings() const {
 // Setting.
 
 void TwoBoneIK3D::set_root_bone_name(int p_index, const String &p_bone_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	tb_settings[p_index]->root_bone.name = p_bone_name;
 	Skeleton3D *sk = get_skeleton();
@@ -225,6 +231,7 @@ String TwoBoneIK3D::get_root_bone_name(int p_index) const {
 }
 
 void TwoBoneIK3D::set_root_bone(int p_index, int p_bone) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	bool changed = tb_settings[p_index]->root_bone.bone != p_bone;
 	tb_settings[p_index]->root_bone.bone = p_bone;
@@ -248,6 +255,7 @@ int TwoBoneIK3D::get_root_bone(int p_index) const {
 }
 
 void TwoBoneIK3D::set_middle_bone_name(int p_index, const String &p_bone_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	tb_settings[p_index]->middle_bone.name = p_bone_name;
 	Skeleton3D *sk = get_skeleton();
@@ -262,6 +270,7 @@ String TwoBoneIK3D::get_middle_bone_name(int p_index) const {
 }
 
 void TwoBoneIK3D::set_middle_bone(int p_index, int p_bone) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	bool changed = tb_settings[p_index]->middle_bone.bone != p_bone;
 	tb_settings[p_index]->middle_bone.bone = p_bone;
@@ -287,6 +296,7 @@ int TwoBoneIK3D::get_middle_bone(int p_index) const {
 }
 
 void TwoBoneIK3D::set_end_bone_name(int p_index, const String &p_bone_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	tb_settings[p_index]->end_bone.name = p_bone_name;
 	Skeleton3D *sk = get_skeleton();
@@ -301,6 +311,7 @@ String TwoBoneIK3D::get_end_bone_name(int p_index) const {
 }
 
 void TwoBoneIK3D::set_end_bone(int p_index, int p_bone) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	bool changed = tb_settings[p_index]->end_bone.bone != p_bone;
 	tb_settings[p_index]->end_bone.bone = p_bone;
@@ -325,6 +336,7 @@ int TwoBoneIK3D::get_end_bone(int p_index) const {
 }
 
 void TwoBoneIK3D::set_use_virtual_end(int p_index, bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	bool changed = tb_settings[p_index]->use_virtual_end != p_enabled;
 	tb_settings[p_index]->use_virtual_end = p_enabled;
@@ -345,6 +357,7 @@ bool TwoBoneIK3D::is_using_virtual_end(int p_index) const {
 }
 
 void TwoBoneIK3D::set_extend_end_bone(int p_index, bool p_enabled) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	tb_settings[p_index]->extend_end_bone = p_enabled;
 	tb_settings[p_index]->simulation_dirty = true;
@@ -364,6 +377,7 @@ bool TwoBoneIK3D::is_end_bone_extended(int p_index) const {
 }
 
 void TwoBoneIK3D::set_end_bone_direction(int p_index, BoneDirection p_bone_direction) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	tb_settings[p_index]->end_bone_direction = p_bone_direction;
 	Skeleton3D *sk = get_skeleton();
@@ -385,6 +399,7 @@ SkeletonModifier3D::BoneDirection TwoBoneIK3D::get_end_bone_direction(int p_inde
 }
 
 void TwoBoneIK3D::set_end_bone_length(int p_index, float p_length) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	float old = tb_settings[p_index]->end_bone_length;
 	tb_settings[p_index]->end_bone_length = p_length;
@@ -403,6 +418,7 @@ float TwoBoneIK3D::get_end_bone_length(int p_index) const {
 }
 
 void TwoBoneIK3D::set_target_node(int p_index, const NodePath &p_node_path) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	tb_settings[p_index]->target_node = p_node_path;
 	if (should_check_node_path() && !p_node_path.is_empty() && !Object::cast_to<Node3D>(get_node_or_null(p_node_path))) {
@@ -417,6 +433,7 @@ NodePath TwoBoneIK3D::get_target_node(int p_index) const {
 }
 
 void TwoBoneIK3D::set_pole_node(int p_index, const NodePath &p_node_path) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	tb_settings[p_index]->pole_node = p_node_path;
 	if (should_check_node_path() && !p_node_path.is_empty() && !Object::cast_to<Node3D>(get_node_or_null(p_node_path))) {
@@ -431,6 +448,7 @@ NodePath TwoBoneIK3D::get_pole_node(int p_index) const {
 }
 
 void TwoBoneIK3D::set_pole_direction(int p_index, SecondaryDirection p_direction) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	tb_settings[p_index]->pole_direction = p_direction;
 	tb_settings[p_index]->simulation_dirty = true;
@@ -450,6 +468,7 @@ SkeletonModifier3D::SecondaryDirection TwoBoneIK3D::get_pole_direction(int p_ind
 }
 
 void TwoBoneIK3D::set_pole_direction_vector(int p_index, const Vector3 &p_vector) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int)settings.size());
 	if (tb_settings[p_index]->pole_direction != SECONDARY_DIRECTION_CUSTOM) {
 		return;
@@ -778,6 +797,9 @@ void TwoBoneIK3D::_process_ik(Skeleton3D *p_skeleton, double p_delta) {
 }
 
 void TwoBoneIK3D::_process_joints(double p_delta, Skeleton3D *p_skeleton, TwoBoneIK3DSetting *p_setting, const Vector3 &p_destination, const Vector3 &p_pole_destination) {
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	CZModifierSolvers::solve_two_bone(p_skeleton, p_setting, p_destination, p_pole_destination);
+#else
 	Vector3 destination = p_destination;
 
 	// Make vector from root to destination.
@@ -840,6 +862,8 @@ void TwoBoneIK3D::_process_joints(double p_delta, Skeleton3D *p_skeleton, TwoBon
 	p_skeleton->set_bone_pose_rotation(p_setting->root_bone.bone, p_setting->root_joint_solver_info->current_lpose);
 	// Mid joint pose is relative to the root joint pose for the case root-mid or mid-end have more than 1 joints.
 	p_skeleton->set_bone_pose_rotation(p_setting->middle_bone.bone, get_local_pose_rotation(p_skeleton, p_setting->middle_bone.bone, p_setting->mid_joint_solver_info->current_gpose));
+
+#endif
 }
 
 #ifdef TOOLS_ENABLED

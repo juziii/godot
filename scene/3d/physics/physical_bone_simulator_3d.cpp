@@ -48,32 +48,100 @@ void PhysicalBoneSimulator3D::_skeleton_changed(Skeleton3D *p_old, Skeleton3D *p
 		if (!p_new->is_connected(SNAME("bone_list_changed"), callable_mp(this, &PhysicalBoneSimulator3D::_bone_list_changed))) {
 			p_new->connect(SNAME("bone_list_changed"), callable_mp(this, &PhysicalBoneSimulator3D::_bone_list_changed));
 		}
-		if (!p_new->is_connected(SceneStringName(pose_updated), callable_mp(this, &PhysicalBoneSimulator3D::_pose_updated))) {
-			p_new->connect(SceneStringName(pose_updated), callable_mp(this, &PhysicalBoneSimulator3D::_pose_updated));
-		}
 	}
+	bones.clear();
+	physical_bone_count = 0;
 	_bone_list_changed();
 }
 
 void PhysicalBoneSimulator3D::_bone_list_changed() {
-	bones.clear();
+	// get_bone_children() can finish Skeleton's process order and emit this
+	// signal again. Rebuild once, after the owner has produced the new order.
+	if (rebuilding_bone_list) {
+		return;
+	}
+	Skeleton3D *skeleton = get_skeleton();
+	if (!skeleton) {
+		bones.clear();
+		physical_bone_count = 0;
+		return;
+	}
+	rebuilding_bone_list = true;
+
+	LocalVector<SimulatedBone> previous(std::move(bones));
+	bones.resize(skeleton->get_bone_count());
+	for (uint32_t i = 0; i < bones.size(); i++) {
+		bones[i].name = skeleton->get_bone_name(i);
+		bones[i].parent = skeleton->get_bone_parent(i);
+		bones[i].child_bones = skeleton->get_bone_children(i);
+		if (i < previous.size() && previous[i].name == bones[i].name) {
+			bones[i].global_pose = previous[i].global_pose;
+		}
+	}
+
+	// PhysicalBone3D caches an index until it enters the tree or receives
+	// set_bone_name(). Resolve the real nodes by their authored name instead
+	// of retaining index pointers after clear_bones() or a replacement list.
+	LocalVector<ObjectID> rebind;
+	Node *binding_parent = this;
+#ifndef DISABLE_DEPRECATED
+	if (is_compat) {
+		binding_parent = skeleton;
+	}
+#endif
+	physical_bone_count = 0;
+	// PhysicalBone3D resolves only its direct parent as its simulator.
+	for (int child = 0; child < binding_parent->get_child_count(); child++) {
+		if (PhysicalBone3D *physical = Object::cast_to<PhysicalBone3D>(binding_parent->get_child(child))) {
+			if (physical->is_inside_tree() && physical->get_simulator() == this) {
+				const int index = skeleton->find_bone(physical->get_bone_name());
+				if (index >= 0 && index < int(previous.size()) &&
+						physical->get_bone_id() == index && previous[index].physical_bone == physical &&
+						previous[index].name == bones[index].name) {
+					bones[index].physical_bone = physical;
+					physical_bone_count++;
+				} else {
+					rebind.push_back(physical->get_instance_id());
+				}
+			}
+		}
+	}
+	for (ObjectID id : rebind) {
+		if (PhysicalBone3D *physical = ObjectDB::get_instance<PhysicalBone3D>(id)) {
+			const String name = physical->get_bone_name();
+			physical->set_bone_name(name);
+		}
+	}
+
+	if (physical_bone_count > 0) {
+		for (uint32_t i = 0; i < bones.size(); i++) {
+			if (!simulating || i >= previous.size() || previous[i].name != bones[i].name) {
+				_bone_pose_updated(skeleton, i);
+			}
+		}
+	}
+	rebuilding_bone_list = false;
+	_rebuild_physical_bones_cache(true);
+	_update_pose_subscription();
+}
+
+void PhysicalBoneSimulator3D::_update_pose_subscription() {
 	Skeleton3D *skeleton = get_skeleton();
 	if (!skeleton) {
 		return;
 	}
-	for (int i = 0; i < skeleton->get_bone_count(); i++) {
-		SimulatedBone sb;
-		sb.parent = skeleton->get_bone_parent(i);
-		sb.child_bones = skeleton->get_bone_children(i);
-		bones.push_back(sb);
+	const Callable callback = callable_mp(this, &PhysicalBoneSimulator3D::_pose_updated);
+	const bool connected = skeleton->is_connected(SceneStringName(pose_updated), callback);
+	if (physical_bone_count > 0 && !connected) {
+		skeleton->connect(SceneStringName(pose_updated), callback);
+	} else if (physical_bone_count == 0 && connected) {
+		skeleton->disconnect(SceneStringName(pose_updated), callback);
 	}
-	_rebuild_physical_bones_cache();
-	_pose_updated();
 }
 
 void PhysicalBoneSimulator3D::_pose_updated() {
 	Skeleton3D *skeleton = get_skeleton();
-	if (!skeleton || simulating) {
+	if (!skeleton || simulating || rebuilding_bone_list || physical_bone_count == 0) {
 		return;
 	}
 	// If this triggers that means that we likely haven't rebuilt the bone list yet.
@@ -139,21 +207,51 @@ bool PhysicalBoneSimulator3D::is_bone_parent_of(int p_bone, int p_parent_bone_id
 }
 
 void PhysicalBoneSimulator3D::bind_physical_bone_to_bone(int p_bone, PhysicalBone3D *p_physical_bone) {
+	if (!rebuilding_bone_list) {
+		if (Skeleton3D *skeleton = get_skeleton()) {
+			if (skeleton->get_bone_count() != int(bones.size())) {
+				_bone_list_changed();
+			}
+		}
+	}
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
-	ERR_FAIL_COND(bones[p_bone].physical_bone);
 	ERR_FAIL_NULL(p_physical_bone);
+	// A structural rebuild can rebind this node while its initial bind is
+	// still on the stack.
+	if (bones[p_bone].physical_bone == p_physical_bone) {
+		return;
+	}
+	ERR_FAIL_COND(bones[p_bone].physical_bone);
+	const bool first_binding = physical_bone_count == 0;
 	bones[p_bone].physical_bone = p_physical_bone;
-
-	_rebuild_physical_bones_cache();
+	physical_bone_count++;
+	if (!rebuilding_bone_list) {
+		if (Skeleton3D *skeleton = get_skeleton()) {
+			if (first_binding) {
+				for (uint32_t i = 0; i < bones.size(); i++) {
+					_bone_pose_updated(skeleton, i);
+				}
+			} else {
+				_bone_pose_updated(skeleton, p_bone);
+			}
+		}
+		_rebuild_physical_bones_cache();
+		_update_pose_subscription();
+	}
 }
 
 void PhysicalBoneSimulator3D::unbind_physical_bone_from_bone(int p_bone) {
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
-	bones[p_bone].physical_bone = nullptr;
-
-	_rebuild_physical_bones_cache();
+	if (bones[p_bone].physical_bone) {
+		bones[p_bone].physical_bone = nullptr;
+		physical_bone_count--;
+	}
+	if (!rebuilding_bone_list) {
+		_rebuild_physical_bones_cache();
+		_update_pose_subscription();
+	}
 }
 
 PhysicalBone3D *PhysicalBoneSimulator3D::get_physical_bone(int p_bone) {
@@ -187,15 +285,15 @@ PhysicalBone3D *PhysicalBoneSimulator3D::_get_physical_bone_parent(int p_bone) {
 	if (pb) {
 		return pb;
 	} else {
-		return get_physical_bone_parent(parent_bone);
+		return _get_physical_bone_parent(parent_bone);
 	}
 }
 
-void PhysicalBoneSimulator3D::_rebuild_physical_bones_cache() {
+void PhysicalBoneSimulator3D::_rebuild_physical_bones_cache(bool p_force) {
 	const int b_size = bones.size();
 	for (int i = 0; i < b_size; ++i) {
 		PhysicalBone3D *parent_pb = _get_physical_bone_parent(i);
-		if (parent_pb != bones[i].cache_parent_physical_bone) {
+		if (p_force || parent_pb != bones[i].cache_parent_physical_bone) {
 			bones[i].cache_parent_physical_bone = parent_pb;
 			if (bones[i].physical_bone) {
 				bones[i].physical_bone->_on_bone_parent_changed();
@@ -356,6 +454,13 @@ void PhysicalBoneSimulator3D::physical_bones_remove_collision_exception(RID p_ex
 }
 
 Transform3D PhysicalBoneSimulator3D::get_bone_global_pose(int p_bone) const {
+	// Empty simulators do not duplicate every animation pose. During a binding
+	// rebuild the owner's pose also supplies the newly resolved bodies.
+	if (physical_bone_count == 0 || rebuilding_bone_list) {
+		if (Skeleton3D *skeleton = get_skeleton()) {
+			return skeleton->get_bone_global_pose(p_bone);
+		}
+	}
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX_V(p_bone, bone_size, Transform3D());
 	return bones[p_bone].global_pose;
@@ -368,6 +473,9 @@ void PhysicalBoneSimulator3D::set_bone_global_pose(int p_bone, const Transform3D
 }
 
 void PhysicalBoneSimulator3D::_process_modification(double p_delta) {
+	if (physical_bone_count == 0) {
+		return;
+	}
 	Skeleton3D *skeleton = get_skeleton();
 	if (!skeleton) {
 		return;

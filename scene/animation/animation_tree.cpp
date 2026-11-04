@@ -37,6 +37,8 @@
 #include "scene/animation/animation_blend_tree.h"
 #include "scene/animation/animation_player.h"
 
+#include "modules/cz_animation/animation_hooks.h"
+
 thread_local AnimationNode::ProcessState *AnimationNode::tls_process_state = nullptr;
 thread_local AnimationNodeInstance *AnimationNode::current_instance = nullptr;
 
@@ -82,6 +84,7 @@ bool AnimationNode::is_parameter_read_only(const StringName &p_parameter) const 
 }
 
 void AnimationNode::set_parameter_ex(const StringName &p_name, const Variant &p_value) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_NULL(tls_process_state);
 	ERR_FAIL_NULL(current_instance);
 	current_instance->set_parameter(p_name, p_value, tls_process_state->is_testing);
@@ -124,6 +127,7 @@ AnimationNode::NodeTimeInfo AnimationNode::_pre_process(ProcessState &p_process_
 }
 
 void AnimationNode::add_validation_error(const AnimationTree *p_tree, const StringName &p_path, const String &p_error, int p_input_index) const {
+	CZ_ANIMATION_SYNC(nullptr);
 	p_tree->_add_validation_error(p_path, p_error, p_input_index);
 }
 
@@ -276,6 +280,7 @@ String AnimationNode::get_caption() const {
 }
 
 bool AnimationNode::add_input(const String &p_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	// Root nodes can't add inputs.
 	ERR_FAIL_COND_V(Object::cast_to<AnimationRootNode>(this) != nullptr, false);
 	Input input;
@@ -287,12 +292,14 @@ bool AnimationNode::add_input(const String &p_name) {
 }
 
 void AnimationNode::remove_input(int p_index) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_index, (int64_t)inputs.size());
 	inputs.remove_at(p_index);
 	emit_changed();
 }
 
 bool AnimationNode::set_input_name(int p_input, const String &p_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX_V(p_input, (int64_t)inputs.size(), false);
 	ERR_FAIL_COND_V(p_name.contains_char('.') || p_name.contains_char('/'), false);
 	inputs[p_input].name = p_name;
@@ -356,6 +363,7 @@ AnimationNode::NodeTimeInfo AnimationNode::_process(ProcessState &p_process_stat
 }
 
 void AnimationNode::set_filter_path(const NodePath &p_path, bool p_enable) {
+	CZ_ANIMATION_SYNC(nullptr);
 	if (p_enable) {
 		(void)p_path.hash(); // Make sure the cache is valid.
 		filter.insert(p_path);
@@ -366,6 +374,7 @@ void AnimationNode::set_filter_path(const NodePath &p_path, bool p_enable) {
 }
 
 void AnimationNode::set_filter_enabled(bool p_enable) {
+	CZ_ANIMATION_SYNC(nullptr);
 	filter_enabled = p_enable;
 	_mark_filters_dirty();
 }
@@ -382,6 +391,7 @@ void AnimationNode::_mark_filters_dirty() {
 }
 
 void AnimationNode::set_deletable(bool p_closable) {
+	CZ_ANIMATION_SYNC(nullptr);
 	closable = p_closable;
 }
 
@@ -635,6 +645,7 @@ void AnimationRootNode::_animation_node_removed(const ObjectID &p_oid, const Str
 ////////////////////
 
 void AnimationTree::set_root_animation_node(const Ref<AnimationRootNode> &p_animation_node) {
+	CZ_ANIMATION_SYNC(this);
 	if (root_animation_node.is_valid()) {
 		root_animation_node->disconnect(SNAME("tree_changed"), callable_mp(this, &AnimationTree::_tree_changed));
 		root_animation_node->disconnect(SNAME("node_updated"), callable_mp(this, &AnimationTree::_node_updated));
@@ -661,7 +672,10 @@ Ref<AnimationRootNode> AnimationTree::get_root_animation_node() const {
 }
 
 bool AnimationTree::_blend_pre_process(double p_delta, int p_track_count, const AHashMap<NodePath, int> &p_track_map) {
-	_update_properties(); // If properties need updating, update them.
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	if (!CZAnimationBridge::is_evaluating(this))
+#endif
+		_update_properties(); // If properties need updating, update them.
 
 	if (root_animation_node.is_null()) {
 		process_state = AnimationNode::ProcessState();
@@ -758,6 +772,9 @@ PackedStringArray AnimationTree::get_configuration_warnings() const {
 }
 
 void AnimationTree::_tree_changed() {
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	CZAnimationBridge::invalidate_graph(this);
+#endif
 	if (properties_dirty) {
 		return;
 	}
@@ -767,6 +784,9 @@ void AnimationTree::_tree_changed() {
 }
 
 void AnimationTree::_node_updated(const ObjectID &p_oid) {
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	CZAnimationBridge::invalidate_graph(this);
+#endif
 	// This is for when the animation in AnimationNodeAnimation changes.
 	// or a connection in AnimationNodeBlendTree changes.
 
@@ -980,6 +1000,7 @@ void AnimationTree::_notification(int p_what) {
 }
 
 void AnimationTree::set_animation_player(const NodePath &p_path) {
+	CZ_ANIMATION_SYNC(this);
 	animation_player = p_path;
 	if (p_path.is_empty()) {
 		set_root_node(NodePath(".."));
@@ -1058,6 +1079,7 @@ void AnimationTree::_validate_property(PropertyInfo &p_property) const {
 }
 
 bool AnimationTree::_set(const StringName &p_name, const Variant &p_value) {
+	CZ_ANIMATION_SYNC(this);
 #ifndef DISABLE_DEPRECATED
 	String name = p_name;
 	if (name == "process_callback") {
@@ -1166,4 +1188,8 @@ AnimationTree::AnimationTree() {
 }
 
 AnimationTree::~AnimationTree() {
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	CZAnimationBridge::forget_object(get_instance_id());
+#endif
+	CZ_ANIMATION_SYNC(this);
 }

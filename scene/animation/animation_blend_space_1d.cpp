@@ -34,11 +34,17 @@
 #include "core/object/class_db.h"
 #include "scene/animation/animation_blend_tree.h"
 
+#include "modules/cz_animation/animation_hooks.h"
+
 void AnimationNodeBlendSpace1D::get_parameter_list(LocalVector<PropertyInfo> *r_list) const {
 	AnimationNode::get_parameter_list(r_list);
 	r_list->push_back(PropertyInfo(Variant::FLOAT, blend_position));
 	r_list->push_back(PropertyInfo(Variant::OBJECT, observer, PROPERTY_HINT_RESOURCE_TYPE, AnimationNodeObserverBlendSpace::get_class_static(), PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_ALWAYS_DUPLICATE));
 	r_list->push_back(PropertyInfo(Variant::INT, closest, PROPERTY_HINT_NONE, "", PROPERTY_USAGE_NONE));
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	r_list->push_back(PropertyInfo(Variant::FLOAT, cycle_duration_override));
+	r_list->push_back(PropertyInfo(Variant::FLOAT, effective_cycle_duration, PROPERTY_HINT_NONE, "", PROPERTY_USAGE_READ_ONLY));
+#endif
 }
 
 Variant AnimationNodeBlendSpace1D::get_parameter_default_value(const StringName &p_parameter) const {
@@ -89,6 +95,11 @@ void AnimationNodeBlendSpace1D::validate_node(const AnimationTree *p_tree, const
 }
 
 void AnimationNodeBlendSpace1D::_bind_methods() {
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	ClassDB::bind_method(D_METHOD("set_sample_weight_interpolation_speed", "speed"), &AnimationNodeBlendSpace1D::set_sample_weight_interpolation_speed);
+	ClassDB::bind_method(D_METHOD("get_sample_weight_interpolation_speed"), &AnimationNodeBlendSpace1D::get_sample_weight_interpolation_speed);
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "sample_weight_interpolation_speed", PROPERTY_HINT_RANGE, "0.0,100.0,0.01,or_greater"), "set_sample_weight_interpolation_speed", "get_sample_weight_interpolation_speed");
+#endif
 	ClassDB::bind_method(D_METHOD("add_blend_point", "node", "pos", "at_index", "name"), &AnimationNodeBlendSpace1D::add_blend_point, DEFVAL(-1), DEFVAL(StringName()));
 	ClassDB::bind_method(D_METHOD("set_blend_point_position", "point", "pos"), &AnimationNodeBlendSpace1D::set_blend_point_position);
 	ClassDB::bind_method(D_METHOD("get_blend_point_position", "point"), &AnimationNodeBlendSpace1D::get_blend_point_position);
@@ -160,6 +171,7 @@ void AnimationNodeBlendSpace1D::get_child_nodes(LocalVector<ChildNode> *r_child_
 }
 
 void AnimationNodeBlendSpace1D::add_blend_point(const Ref<AnimationRootNode> &p_node, float p_position, int p_at_index, const StringName &p_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND(blend_points_used >= MAX_BLEND_POINTS);
 	ERR_FAIL_COND(p_node.is_null());
 	ERR_FAIL_COND(p_at_index < -1 || p_at_index > blend_points_used);
@@ -192,12 +204,14 @@ void AnimationNodeBlendSpace1D::add_blend_point(const Ref<AnimationRootNode> &p_
 }
 
 void AnimationNodeBlendSpace1D::set_blend_point_position(int p_point, float p_position) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_point, blend_points_used);
 
 	blend_points[p_point].position = p_position;
 }
 
 void AnimationNodeBlendSpace1D::set_blend_point_node(int p_point, const Ref<AnimationRootNode> &p_node) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_point, blend_points_used);
 	ERR_FAIL_COND(p_node.is_null());
 
@@ -223,6 +237,7 @@ Ref<AnimationRootNode> AnimationNodeBlendSpace1D::get_blend_point_node(int p_poi
 }
 
 void AnimationNodeBlendSpace1D::set_blend_point_name(int p_point, const StringName &p_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_point, blend_points_used);
 	String new_name = p_name;
 	ERR_FAIL_COND(new_name.is_empty() || new_name.contains_char('.') || new_name.contains_char('/'));
@@ -250,6 +265,7 @@ int AnimationNodeBlendSpace1D::find_blend_point_by_name(const StringName &p_name
 }
 
 void AnimationNodeBlendSpace1D::remove_blend_point(int p_point) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_point, blend_points_used);
 
 	ERR_FAIL_COND(blend_points[p_point].node.is_null());
@@ -290,6 +306,7 @@ void AnimationNodeBlendSpace1D::reorder_blend_point(int p_from_index, int p_to_i
 }
 
 void AnimationNodeBlendSpace1D::set_min_space(float p_min) {
+	CZ_ANIMATION_SYNC(nullptr);
 	min_space = p_min;
 
 	if (min_space >= max_space) {
@@ -302,6 +319,7 @@ float AnimationNodeBlendSpace1D::get_min_space() const {
 }
 
 void AnimationNodeBlendSpace1D::set_max_space(float p_max) {
+	CZ_ANIMATION_SYNC(nullptr);
 	max_space = p_max;
 
 	if (max_space <= min_space) {
@@ -314,6 +332,7 @@ float AnimationNodeBlendSpace1D::get_max_space() const {
 }
 
 void AnimationNodeBlendSpace1D::set_snap(float p_snap) {
+	CZ_ANIMATION_SYNC(nullptr);
 	snap = p_snap;
 }
 
@@ -322,6 +341,7 @@ float AnimationNodeBlendSpace1D::get_snap() const {
 }
 
 void AnimationNodeBlendSpace1D::set_value_label(const String &p_label) {
+	CZ_ANIMATION_SYNC(nullptr);
 	value_label = p_label;
 }
 
@@ -330,6 +350,7 @@ String AnimationNodeBlendSpace1D::get_value_label() const {
 }
 
 void AnimationNodeBlendSpace1D::set_blend_mode(BlendMode p_blend_mode) {
+	CZ_ANIMATION_SYNC(nullptr);
 	blend_mode = p_blend_mode;
 }
 
@@ -339,6 +360,7 @@ AnimationNodeBlendSpace1D::BlendMode AnimationNodeBlendSpace1D::get_blend_mode()
 
 #ifndef DISABLE_DEPRECATED
 void AnimationNodeBlendSpace1D::set_use_sync(bool p_sync) {
+	CZ_ANIMATION_SYNC(nullptr);
 	sync_mode = p_sync ? SYNC_MODE_INDEPENDENT : SYNC_MODE_NONE;
 }
 
@@ -348,6 +370,7 @@ bool AnimationNodeBlendSpace1D::is_using_sync() const {
 #endif // DISABLE_DEPRECATED
 
 void AnimationNodeBlendSpace1D::set_sync_mode(SyncMode p_sync_mode) {
+	CZ_ANIMATION_SYNC(nullptr);
 	sync_mode = p_sync_mode;
 	_check_can_sync();
 }
@@ -357,6 +380,7 @@ AnimationNodeBlendSpace1D::SyncMode AnimationNodeBlendSpace1D::get_sync_mode() c
 }
 
 void AnimationNodeBlendSpace1D::set_cyclic_length(double p_length) {
+	CZ_ANIMATION_SYNC(nullptr);
 	cyclic_length = p_length;
 	inverted_cycle_length = (p_length > CMP_EPSILON) ? (1.0 / p_length) : 0.0;
 }
@@ -366,6 +390,7 @@ double AnimationNodeBlendSpace1D::get_cyclic_length() const {
 }
 
 bool AnimationNodeBlendSpace1D::_set(const StringName &p_name, const Variant &p_value) {
+	CZ_ANIMATION_SYNC(nullptr);
 	String prop = p_name;
 	if (prop.begins_with("blend_point_")) {
 		int idx = prop.get_slicec('_', 2).to_int();
@@ -457,7 +482,17 @@ AnimationNode::NodeTimeInfo AnimationNodeBlendSpace1D::_process(ProcessState &p_
 	NodeTimeInfo mind;
 
 	// Build weights array for all blend points.
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	CZAnimationBridge::BlendSpaceState &cz_space = CZAnimationBridge::blend_space(p_process_state.tree, p_instance.path);
+	LocalVector<float> &weights = cz_space.target_weights;
+	LocalVector<double> &module_cached_lengths = cz_space.lengths;
+	bool module_lengths_dirty = module_cached_lengths.size() != uint32_t(blend_points_used);
+	weights.clear();
+#else
 	LocalVector<float> weights;
+	LocalVector<double> &module_cached_lengths = cached_lengths;
+	bool &module_lengths_dirty = lengths_dirty;
+#endif
 	LocalVector<double> deltas;
 	weights.resize_initialized(blend_points_used);
 	deltas.resize_initialized(blend_points_used);
@@ -522,28 +557,41 @@ AnimationNode::NodeTimeInfo AnimationNodeBlendSpace1D::_process(ProcessState &p_
 		weights[new_closest] = 1.0;
 	}
 
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	if (!p_test_only) {
+		CZAnimationBridge::interpolate_blend_space_weights(p_process_state.tree, p_instance.path, weights, sample_weight_interpolation_speed, p_playback_info.delta, p_playback_info.seeked);
+	}
+	p_instance.set_parameter(effective_cycle_duration, 0.0, p_test_only);
+#endif
 	// Compute all deltas.
 	if (sync_mode >= SYNC_MODE_CYCLIC_MUTABLE) {
 		// Refresh cached lengths when blend points have changed.
-		if (lengths_dirty) {
-			cached_lengths.resize(blend_points_used);
+		if (module_lengths_dirty) {
+			module_cached_lengths.resize(blend_points_used);
 			for (int i = 0; i < blend_points_used; i++) {
 				AnimationMixer::PlaybackInfo test_pi = p_playback_info;
 				test_pi.weight = 0;
 				AnimationNodeInstance &other_instance = p_instance.get_child_instance_by_path(get_blend_point_name(i));
 				NodeTimeInfo info = blend_node(p_process_state, p_instance, &other_instance, test_pi, FILTER_IGNORE, true, true);
-				cached_lengths[i] = (info.length > CMP_EPSILON) ? info.length : 0.0;
+				module_cached_lengths[i] = (info.length > CMP_EPSILON) ? info.length : 0.0;
 			}
-			lengths_dirty = false;
+			module_lengths_dirty = false;
 		}
 		double inv_target_length = 0.0;
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+		double effective = 0;
+		const double override_duration = p_instance.get_parameter(cycle_duration_override);
+		const double duration = CZAnimationBridge::resolve_blend_space_cycle_duration(weights, module_cached_lengths, override_duration, effective);
+		p_instance.set_parameter(effective_cycle_duration, effective, p_test_only);
+		inv_target_length = sync_mode == SYNC_MODE_CYCLIC_MUTABLE || override_duration > CMP_EPSILON ? (duration > CMP_EPSILON ? 1.0 / duration : 0.0) : inverted_cycle_length;
+#else
 		if (sync_mode == SYNC_MODE_CYCLIC_MUTABLE) {
 			// Compute blended_len from active weights.
 			double target_length = 0.0;
 			double total_weight = 0.0;
 			for (int i = 0; i < blend_points_used; i++) {
-				if (weights[i] > 0.0f && cached_lengths[i] > CMP_EPSILON) {
-					target_length += weights[i] * cached_lengths[i];
+				if (weights[i] > 0.0f && module_cached_lengths[i] > CMP_EPSILON) {
+					target_length += weights[i] * module_cached_lengths[i];
 					total_weight += weights[i];
 				}
 			}
@@ -555,8 +603,9 @@ AnimationNode::NodeTimeInfo AnimationNodeBlendSpace1D::_process(ProcessState &p_
 			// Use cached inverse of user-specified cyclic_length.
 			inv_target_length = inverted_cycle_length;
 		}
+#endif
 		for (int i = 0; i < blend_points_used; i++) {
-			deltas[i] = pi.delta * cached_lengths[i] * inv_target_length;
+			deltas[i] = pi.delta * module_cached_lengths[i] * inv_target_length;
 		}
 	} else if (sync_mode == SYNC_MODE_INDEPENDENT) {
 		for (int i = 0; i < blend_points_used; i++) {
@@ -624,3 +673,16 @@ AnimationNode::NodeTimeInfo AnimationNodeBlendSpace1D::_process(ProcessState &p_
 String AnimationNodeBlendSpace1D::get_caption() const {
 	return "BlendSpace1D";
 }
+
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+void AnimationNodeBlendSpace1D::set_sample_weight_interpolation_speed(float p_speed) {
+	CZ_ANIMATION_SYNC(nullptr);
+	sample_weight_interpolation_speed = MAX(0.0f, p_speed);
+}
+float AnimationNodeBlendSpace1D::get_sample_weight_interpolation_speed() const {
+	return sample_weight_interpolation_speed;
+}
+bool AnimationNodeBlendSpace1D::is_parameter_read_only(const StringName &p_parameter) const {
+	return p_parameter == effective_cycle_duration || AnimationRootNode::is_parameter_read_only(p_parameter);
+}
+#endif

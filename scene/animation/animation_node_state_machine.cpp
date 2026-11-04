@@ -34,9 +34,12 @@
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 
+#include "modules/cz_animation/animation_hooks.h"
+
 /////////////////////////////////////////////////
 
 void AnimationNodeStateMachineTransition::set_switch_mode(SwitchMode p_mode) {
+	CZ_ANIMATION_SYNC(nullptr);
 	switch_mode = p_mode;
 }
 
@@ -45,6 +48,7 @@ AnimationNodeStateMachineTransition::SwitchMode AnimationNodeStateMachineTransit
 }
 
 void AnimationNodeStateMachineTransition::set_advance_mode(AdvanceMode p_mode) {
+	CZ_ANIMATION_SYNC(nullptr);
 	advance_mode = p_mode;
 }
 
@@ -53,6 +57,7 @@ AnimationNodeStateMachineTransition::AdvanceMode AnimationNodeStateMachineTransi
 }
 
 void AnimationNodeStateMachineTransition::set_advance_condition(const StringName &p_condition) {
+	CZ_ANIMATION_SYNC(nullptr);
 	String cs = p_condition;
 	ERR_FAIL_COND(cs.contains_char('/') || cs.contains_char(':'));
 	advance_condition = p_condition;
@@ -73,6 +78,7 @@ StringName AnimationNodeStateMachineTransition::get_advance_condition_name() con
 }
 
 void AnimationNodeStateMachineTransition::set_advance_expression(const String &p_expression) {
+	CZ_ANIMATION_SYNC(nullptr);
 	advance_expression = p_expression;
 
 	String advance_expression_stripped = advance_expression.strip_edges();
@@ -93,6 +99,7 @@ String AnimationNodeStateMachineTransition::get_advance_expression() const {
 }
 
 void AnimationNodeStateMachineTransition::set_xfade_time(float p_xfade) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND(p_xfade < 0);
 	xfade_time = p_xfade;
 	emit_changed();
@@ -103,6 +110,7 @@ float AnimationNodeStateMachineTransition::get_xfade_time() const {
 }
 
 void AnimationNodeStateMachineTransition::set_xfade_curve(const Ref<Curve> &p_curve) {
+	CZ_ANIMATION_SYNC(nullptr);
 	xfade_curve = p_curve;
 	emit_changed();
 }
@@ -112,6 +120,7 @@ Ref<Curve> AnimationNodeStateMachineTransition::get_xfade_curve() const {
 }
 
 void AnimationNodeStateMachineTransition::set_break_loop_at_end(bool p_enable) {
+	CZ_ANIMATION_SYNC(nullptr);
 	break_loop_at_end = p_enable;
 	emit_changed();
 }
@@ -121,6 +130,7 @@ bool AnimationNodeStateMachineTransition::is_loop_broken_at_end() const {
 }
 
 void AnimationNodeStateMachineTransition::set_reset(bool p_reset) {
+	CZ_ANIMATION_SYNC(nullptr);
 	reset = p_reset;
 	emit_changed();
 }
@@ -130,6 +140,7 @@ bool AnimationNodeStateMachineTransition::is_reset() const {
 }
 
 void AnimationNodeStateMachineTransition::set_priority(int p_priority) {
+	CZ_ANIMATION_SYNC(nullptr);
 	priority = p_priority;
 	emit_changed();
 }
@@ -263,23 +274,27 @@ void AnimationNodeStateMachinePlayback::_set_grouped(bool p_is_grouped) {
 }
 
 void AnimationNodeStateMachinePlayback::travel(const StringName &p_state, bool p_reset_on_teleport) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND_EDMSG(is_grouped, "Grouped AnimationNodeStateMachinePlayback must be handled by parent AnimationNodeStateMachinePlayback. You need to retrieve the parent Root/Nested AnimationNodeStateMachine.");
 	ERR_FAIL_COND_EDMSG(String(p_state).contains("/Start") || String(p_state).contains("/End"), "Grouped AnimationNodeStateMachinePlayback doesn't allow to play Start/End directly. Instead, play the prev or next state of group in the parent AnimationNodeStateMachine.");
 	_travel_main(p_state, p_reset_on_teleport);
 }
 
 void AnimationNodeStateMachinePlayback::start(const StringName &p_state, bool p_reset) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND_EDMSG(is_grouped, "Grouped AnimationNodeStateMachinePlayback must be handled by parent AnimationNodeStateMachinePlayback. You need to retrieve the parent Root/Nested AnimationNodeStateMachine.");
 	ERR_FAIL_COND_EDMSG(String(p_state).contains("/Start") || String(p_state).contains("/End"), "Grouped AnimationNodeStateMachinePlayback doesn't allow to play Start/End directly. Instead, play the prev or next state of group in the parent AnimationNodeStateMachine.");
 	_start_main(p_state, p_reset);
 }
 
 void AnimationNodeStateMachinePlayback::next() {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND_EDMSG(is_grouped, "Grouped AnimationNodeStateMachinePlayback must be handled by parent AnimationNodeStateMachinePlayback. You need to retrieve the parent Root/Nested AnimationNodeStateMachine.");
 	_next_main();
 }
 
 void AnimationNodeStateMachinePlayback::stop() {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND_EDMSG(is_grouped, "Grouped AnimationNodeStateMachinePlayback must be handled by parent AnimationNodeStateMachinePlayback. You need to retrieve the parent Root/Nested AnimationNodeStateMachine.");
 	_stop_main();
 }
@@ -374,7 +389,10 @@ void AnimationNodeStateMachinePlayback::_signal_state_change(AnimationTree *p_an
 			parent_playback->_signal_state_change(p_animation_tree, prefix + p_state, p_started);
 		}
 	}
-	emit_signal(p_started ? SceneStringName(state_started) : SceneStringName(state_finished), p_state);
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	if (!CZAnimationBridge::queue_resource_signal(Ref<Resource>(this), p_started ? SceneStringName(state_started) : SceneStringName(state_finished), p_state))
+#endif
+		emit_signal(p_started ? SceneStringName(state_started) : SceneStringName(state_finished), p_state);
 }
 
 void AnimationNodeStateMachinePlayback::_clear_path_children(AnimationNode::ProcessState &p_process_state, AnimationTree *p_tree, AnimationNodeStateMachine *p_state_machine, bool p_test_only) {
@@ -1301,6 +1319,7 @@ bool AnimationNodeStateMachine::is_parameter_read_only(const StringName &p_param
 }
 
 void AnimationNodeStateMachine::add_node(const StringName &p_name, Ref<AnimationNode> p_node, const Vector2 &p_position) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND(states.has(p_name));
 	ERR_FAIL_COND(p_node.is_null());
 	ERR_FAIL_COND(String(p_name).contains_char('/'));
@@ -1317,6 +1336,7 @@ void AnimationNodeStateMachine::add_node(const StringName &p_name, Ref<Animation
 }
 
 void AnimationNodeStateMachine::replace_node(const StringName &p_name, Ref<AnimationNode> p_node) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND(states.has(p_name) == false);
 	ERR_FAIL_COND(p_node.is_null());
 	ERR_FAIL_COND(String(p_name).contains_char('/'));
@@ -1336,6 +1356,7 @@ void AnimationNodeStateMachine::replace_node(const StringName &p_name, Ref<Anima
 }
 
 void AnimationNodeStateMachine::set_state_machine_type(StateMachineType p_state_machine_type) {
+	CZ_ANIMATION_SYNC(nullptr);
 	state_machine_type = p_state_machine_type;
 	emit_changed();
 	_tree_changed();
@@ -1347,6 +1368,7 @@ AnimationNodeStateMachine::StateMachineType AnimationNodeStateMachine::get_state
 }
 
 void AnimationNodeStateMachine::set_allow_transition_to_self(bool p_enable) {
+	CZ_ANIMATION_SYNC(nullptr);
 	allow_transition_to_self = p_enable;
 }
 
@@ -1355,6 +1377,7 @@ bool AnimationNodeStateMachine::is_allow_transition_to_self() const {
 }
 
 void AnimationNodeStateMachine::set_reset_ends(bool p_enable) {
+	CZ_ANIMATION_SYNC(nullptr);
 	reset_ends = p_enable;
 }
 
@@ -1409,6 +1432,7 @@ bool AnimationNodeStateMachine::has_node(const StringName &p_name) const {
 }
 
 void AnimationNodeStateMachine::remove_node(const StringName &p_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND(!states.has(p_name));
 
 	if (!can_edit_node(p_name)) {
@@ -1436,6 +1460,7 @@ void AnimationNodeStateMachine::remove_node(const StringName &p_name) {
 }
 
 void AnimationNodeStateMachine::rename_node(const StringName &p_name, const StringName &p_new_name) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND(!states.has(p_name));
 	ERR_FAIL_COND(states.has(p_new_name));
 	ERR_FAIL_COND(!can_edit_node(p_name));
@@ -1557,6 +1582,7 @@ bool AnimationNodeStateMachine::_can_connect(const StringName &p_name) {
 }
 
 void AnimationNodeStateMachine::add_transition(const StringName &p_from, const StringName &p_to, const Ref<AnimationNodeStateMachineTransition> &p_transition) {
+	CZ_ANIMATION_SYNC(nullptr);
 	if (updating_transitions) {
 		return;
 	}
@@ -1615,6 +1641,7 @@ int AnimationNodeStateMachine::get_transition_count() const {
 }
 
 void AnimationNodeStateMachine::remove_transition(const StringName &p_from, const StringName &p_to) {
+	CZ_ANIMATION_SYNC(nullptr);
 	for (int i = 0; i < transitions.size(); i++) {
 		if (transitions[i].from == p_from && transitions[i].to == p_to) {
 			remove_transition_by_index(i);
@@ -1624,6 +1651,7 @@ void AnimationNodeStateMachine::remove_transition(const StringName &p_from, cons
 }
 
 void AnimationNodeStateMachine::remove_transition_by_index(const int p_transition) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_INDEX(p_transition, transitions.size());
 	transitions.write[p_transition].transition->disconnect("advance_condition_changed", callable_mp(this, &AnimationNodeStateMachine::_tree_changed));
 	transitions.remove_at(p_transition);
@@ -1639,6 +1667,7 @@ void AnimationNodeStateMachine::_remove_transition(const Ref<AnimationNodeStateM
 }
 
 void AnimationNodeStateMachine::set_graph_offset(const Vector2 &p_offset) {
+	CZ_ANIMATION_SYNC(nullptr);
 	graph_offset = p_offset;
 }
 
@@ -1668,6 +1697,7 @@ Ref<AnimationNode> AnimationNodeStateMachine::get_child_by_name(const StringName
 }
 
 bool AnimationNodeStateMachine::_set(const StringName &p_name, const Variant &p_value) {
+	CZ_ANIMATION_SYNC(nullptr);
 	String prop_name = p_name;
 	if (prop_name.begins_with("states/")) {
 		String node_name = prop_name.get_slicec('/', 1);
@@ -1793,6 +1823,7 @@ void AnimationNodeStateMachine::reset_state() {
 }
 
 void AnimationNodeStateMachine::set_node_position(const StringName &p_name, const Vector2 &p_position) {
+	CZ_ANIMATION_SYNC(nullptr);
 	ERR_FAIL_COND(!states.has(p_name));
 	states[p_name].position = p_position;
 }

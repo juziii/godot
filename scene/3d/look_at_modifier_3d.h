@@ -35,6 +35,7 @@
 
 class LookAtModifier3D : public SkeletonModifier3D {
 	GDCLASS(LookAtModifier3D, SkeletonModifier3D);
+	friend class CZAnimationBridge;
 
 public:
 	enum OriginFrom {

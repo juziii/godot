@@ -41,6 +41,7 @@ class AnimatedValuesBackup;
 
 class AnimationMixer : public Node {
 	GDCLASS(AnimationMixer, Node);
+	friend class CZAnimationBridge;
 	friend AnimatedValuesBackup;
 #ifdef TOOLS_ENABLED
 	bool editing = false;
