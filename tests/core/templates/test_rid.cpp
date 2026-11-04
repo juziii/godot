@@ -105,6 +105,66 @@ TEST_CASE("[RID] 'get_local_index'") {
 	CHECK(RID::from_uint64(4'294'967'297).get_local_index() == 1);
 }
 
+template <bool THREAD_SAFE>
+void test_initialized_rid_enumeration() {
+	struct DataHolder {
+		uint64_t value = 0;
+	};
+
+	RID_Owner<DataHolder, THREAD_SAFE> owner(sizeof(DataHolder), 8);
+	RID first = owner.allocate_rid();
+	RID second = owner.allocate_rid();
+	CHECK_EQ(owner.get_rid_count(), 2);
+	CHECK(owner.get_owned_list().is_empty());
+	RID buffer[2] = { RID::from_uint64(1), RID::from_uint64(2) };
+	CHECK_EQ(owner.fill_owned_buffer(buffer), 0);
+	CHECK(buffer[0] == RID::from_uint64(1));
+	CHECK(buffer[1] == RID::from_uint64(2));
+
+	owner.initialize_rid(first, DataHolder{ 10 });
+	LocalVector<RID> owned = owner.get_owned_list();
+	REQUIRE_EQ(owned.size(), 1);
+	CHECK(owned[0] == first);
+	CHECK_EQ(owner.fill_owned_buffer(buffer), 1);
+	CHECK(buffer[0] == first);
+	CHECK(buffer[1] == RID::from_uint64(2));
+
+	owner.initialize_rid(second, DataHolder{ 20 });
+	owned = owner.get_owned_list();
+	REQUIRE_EQ(owned.size(), 2);
+	CHECK(owned[0] == first);
+	CHECK(owned[1] == second);
+	CHECK_EQ(owner.fill_owned_buffer(buffer), 2);
+	CHECK(buffer[0] == first);
+	CHECK(buffer[1] == second);
+
+	owner.free(second);
+	owner.free(first);
+	CHECK_EQ(owner.get_rid_count(), 0);
+	CHECK(owner.get_owned_list().is_empty());
+	CHECK_EQ(owner.fill_owned_buffer(buffer), 0);
+
+	RID reused = owner.allocate_rid();
+	CHECK_EQ(reused.get_local_index(), first.get_local_index());
+	CHECK(reused != first);
+	CHECK(owner.get_owned_list().is_empty());
+	owner.initialize_rid(reused, DataHolder{ 30 });
+	CHECK(owner.get_or_null(first) == nullptr);
+	CHECK(owner.get_or_null(reused) != nullptr);
+	owned = owner.get_owned_list();
+	REQUIRE_EQ(owned.size(), 1);
+	CHECK(owned[0] == reused);
+	owner.free(reused);
+}
+
+TEST_CASE("[RID_Owner] Enumeration excludes uninitialized allocations") {
+	test_initialized_rid_enumeration<false>();
+}
+
+TEST_CASE("[RID_Owner] Thread-safe enumeration excludes uninitialized allocations") {
+	test_initialized_rid_enumeration<true>();
+}
+
 #ifdef THREADS_ENABLED
 // This case would let sanitizers realize data races.
 // Additionally, on purely weakly ordered architectures, it would detect synchronization issues

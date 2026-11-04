@@ -62,6 +62,10 @@ class CSharpScript;
 class CSharpInstance;
 class CSharpLanguage;
 
+namespace TestResourceCache {
+class CSharpCacheTestAccess;
+}
+
 template <typename TScriptInstance, typename TScriptLanguage>
 TScriptInstance *cast_script_instance(ScriptInstance *p_inst) {
 	return dynamic_cast<TScriptInstance *>(p_inst);
@@ -363,6 +367,7 @@ public:
 class CSharpInstance : public ScriptInstance {
 	friend class CSharpScript;
 	friend class CSharpLanguage;
+	friend class TestResourceCache::CSharpCacheTestAccess;
 
 	Object *owner = nullptr;
 	bool base_ref_counted = false;
@@ -431,6 +436,7 @@ public:
 
 	void refcount_incremented() override;
 	bool refcount_decremented() override;
+	bool refcount_prepare_cached_reference() override;
 
 	const Variant get_rpc_config() const override;
 
@@ -462,6 +468,7 @@ class ManagedCallableMiddleman : public Object {
 class CSharpLanguage : public ScriptLanguage {
 	friend class CSharpScript;
 	friend class CSharpInstance;
+	friend class TestResourceCache::CSharpCacheTestAccess;
 
 	static CSharpLanguage *singleton;
 

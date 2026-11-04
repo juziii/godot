@@ -82,6 +82,9 @@ public:
 
 	virtual void refcount_incremented() {}
 	virtual bool refcount_decremented() { return true; } //return true if it can die
+	// Called under a native cache's lock before acquiring a new Ref.
+	// Managed instances can reject a reference after their target was collected.
+	virtual bool refcount_prepare_cached_reference() { return true; }
 
 	virtual Script *get_script() const = 0;
 

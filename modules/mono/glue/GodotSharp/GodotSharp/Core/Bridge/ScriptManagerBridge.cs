@@ -518,7 +518,19 @@ namespace Godot.Bridge
                 {
                     // Use existing
                     NativeFuncs.godotsharp_ref_new_from_ref_counted_ptr(out *outScript, scriptPtr);
-                    return;
+                    if (outScript->Reference != IntPtr.Zero)
+                        return;
+
+                    // The last Ref can retire before the destructor removes this pointer.
+                    _scriptTypeBiMap.ReadWriteLock.EnterWriteLock();
+                    try
+                    {
+                        _scriptTypeBiMap.Remove(scriptPtr);
+                    }
+                    finally
+                    {
+                        _scriptTypeBiMap.ReadWriteLock.ExitWriteLock();
+                    }
                 }
 
                 // This path is slower, but it's only executed for the first instantiation of the type
@@ -544,8 +556,22 @@ namespace Godot.Bridge
                     {
                         // Use existing
                         NativeFuncs.godotsharp_ref_new_from_ref_counted_ptr(out *outScript, scriptPtr);
-                        scriptPath = null;
-                        return false;
+                        if (outScript->Reference != IntPtr.Zero)
+                        {
+                            scriptPath = null;
+                            return false;
+                        }
+
+                        // Its destructor may be waiting for this map's write lock.
+                        _scriptTypeBiMap.ReadWriteLock.EnterWriteLock();
+                        try
+                        {
+                            _scriptTypeBiMap.Remove(scriptPtr);
+                        }
+                        finally
+                        {
+                            _scriptTypeBiMap.ReadWriteLock.ExitWriteLock();
+                        }
                     }
 
                     // This path is slower, but it's only executed for the first instantiation of the type
@@ -1468,9 +1494,10 @@ namespace Godot.Bridge
 
                 if (target == null)
                 {
-                    CustomGCHandle.Free(oldGCHandle);
-                    *outNewGCHandlePtr = IntPtr.Zero;
-                    return godot_bool.False; // Called after the managed side was collected, so nothing to do here
+                    // A short weak target is cleared before its finalizer runs.
+                    // Disposal still owns this handle and must free it exactly once.
+                    *outNewGCHandlePtr = oldGCHandlePtr;
+                    return godot_bool.False;
                 }
 
                 // Release the current weak handle and replace it with a strong handle.
