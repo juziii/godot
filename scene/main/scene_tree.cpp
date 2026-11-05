@@ -42,6 +42,9 @@ STATIC_ASSERT_INCOMPLETE_TYPE(class, RenderingServer);
 #include "core/object/worker_thread_pool.h"
 #include "core/os/os.h"
 #include "core/profiling/profiling.h"
+#ifndef _3D_DISABLED
+#include "scene/animation/animation_batch_processor.h"
+#endif
 #include "scene/animation/tween.h"
 #include "scene/debugger/scene_debugger.h"
 #include "scene/gui/control.h"
@@ -653,6 +656,9 @@ bool SceneTree::physics_process(double p_time) {
 #endif // !defined(PHYSICS_2D_DISABLED) || !defined(PHYSICS_3D_DISABLED)
 
 	_process(true);
+#ifndef _3D_DISABLED
+	AnimationBatchProcessor::finish_pending_frames();
+#endif
 
 	_flush_ugc();
 	MessageQueue::get_singleton()->flush(); //small little hack
@@ -721,6 +727,9 @@ bool SceneTree::process(double p_time) {
 
 	GodotProfileZoneGrouped(_stproc_zone, "SceneTree::_process_nodes");
 	_process(false);
+#ifndef _3D_DISABLED
+	AnimationBatchProcessor::finish_pending_frames();
+#endif
 
 	GodotProfileZoneGrouped(_stproc_zone, "SceneTree::flush_ugc");
 	_flush_ugc();

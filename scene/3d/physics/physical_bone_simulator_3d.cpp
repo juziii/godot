@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "physical_bone_simulator_3d.h"
+#include "core/profiling/profiling.h"
 
 #include "core/config/engine.h"
 #include "core/object/callable_mp.h"
@@ -48,32 +49,58 @@ void PhysicalBoneSimulator3D::_skeleton_changed(Skeleton3D *p_old, Skeleton3D *p
 		if (!p_new->is_connected(SNAME("bone_list_changed"), callable_mp(this, &PhysicalBoneSimulator3D::_bone_list_changed))) {
 			p_new->connect(SNAME("bone_list_changed"), callable_mp(this, &PhysicalBoneSimulator3D::_bone_list_changed));
 		}
-		if (!p_new->is_connected(SceneStringName(pose_updated), callable_mp(this, &PhysicalBoneSimulator3D::_pose_updated))) {
-			p_new->connect(SceneStringName(pose_updated), callable_mp(this, &PhysicalBoneSimulator3D::_pose_updated));
-		}
+
 	}
+	bones.clear();
+	physical_bone_count = 0;
 	_bone_list_changed();
 }
 
 void PhysicalBoneSimulator3D::_bone_list_changed() {
-	bones.clear();
-	Skeleton3D *skeleton = get_skeleton();
-	if (!skeleton) {
+	// Reading children may update Skeleton's process order and emit this signal again.
+	if (rebuilding_bone_list) {
 		return;
 	}
-	for (int i = 0; i < skeleton->get_bone_count(); i++) {
-		SimulatedBone sb;
-		sb.parent = skeleton->get_bone_parent(i);
-		sb.child_bones = skeleton->get_bone_children(i);
-		bones.push_back(sb);
+	Skeleton3D *skeleton = get_skeleton();
+	if (!skeleton) {
+		bones.clear();
+		physical_bone_count = 0;
+		return;
 	}
+	rebuilding_bone_list = true;
+	bones.resize(skeleton->get_bone_count());
+	physical_bone_count = 0;
+	for (int i = 0; i < skeleton->get_bone_count(); i++) {
+		// Bone indices survive hierarchy edits and additions. Keep existing bindings.
+		SimulatedBone &bone = bones[i];
+		bone.parent = skeleton->get_bone_parent(i);
+		bone.child_bones = skeleton->get_bone_children(i);
+		if (bone.physical_bone) {
+			physical_bone_count++;
+		}
+	}
+	rebuilding_bone_list = false;
 	_rebuild_physical_bones_cache();
+	_update_pose_subscription();
 	_pose_updated();
 }
 
-void PhysicalBoneSimulator3D::_pose_updated() {
+void PhysicalBoneSimulator3D::_update_pose_subscription() {
 	Skeleton3D *skeleton = get_skeleton();
-	if (!skeleton || simulating) {
+	if (!skeleton) { return; }
+	const Callable callback = callable_mp(this, &PhysicalBoneSimulator3D::_pose_updated);
+	const bool connected = skeleton->is_connected(SceneStringName(pose_updated), callback);
+	if (physical_bone_count > 0 && !connected) {
+		skeleton->connect(SceneStringName(pose_updated), callback);
+	} else if (physical_bone_count == 0 && connected) {
+		skeleton->disconnect(SceneStringName(pose_updated), callback);
+	}
+}
+
+void PhysicalBoneSimulator3D::_pose_updated() {
+	GodotProfileZone("Animation.PhysicalBonePoseUpdate");
+	Skeleton3D *skeleton = get_skeleton();
+	if (!skeleton || simulating || physical_bone_count == 0) {
 		return;
 	}
 	// If this triggers that means that we likely haven't rebuilt the bone list yet.
@@ -144,6 +171,9 @@ void PhysicalBoneSimulator3D::bind_physical_bone_to_bone(int p_bone, PhysicalBon
 	ERR_FAIL_COND(bones[p_bone].physical_bone);
 	ERR_FAIL_NULL(p_physical_bone);
 	bones[p_bone].physical_bone = p_physical_bone;
+	physical_bone_count++;
+	_update_pose_subscription();
+	_pose_updated();
 
 	_rebuild_physical_bones_cache();
 }
@@ -151,7 +181,9 @@ void PhysicalBoneSimulator3D::bind_physical_bone_to_bone(int p_bone, PhysicalBon
 void PhysicalBoneSimulator3D::unbind_physical_bone_from_bone(int p_bone) {
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
+	if (bones[p_bone].physical_bone) { physical_bone_count--; }
 	bones[p_bone].physical_bone = nullptr;
+	_update_pose_subscription();
 
 	_rebuild_physical_bones_cache();
 }
@@ -358,6 +390,11 @@ void PhysicalBoneSimulator3D::physical_bones_remove_collision_exception(RID p_ex
 Transform3D PhysicalBoneSimulator3D::get_bone_global_pose(int p_bone) const {
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX_V(p_bone, bone_size, Transform3D());
+	// Empty compatibility simulators do not keep a per-frame duplicate of every bone.
+	if (!simulating && physical_bone_count == 0) {
+		Skeleton3D *skeleton = get_skeleton();
+		if (skeleton) { return skeleton->get_bone_global_pose(p_bone); }
+	}
 	return bones[p_bone].global_pose;
 }
 
@@ -368,6 +405,9 @@ void PhysicalBoneSimulator3D::set_bone_global_pose(int p_bone, const Transform3D
 }
 
 void PhysicalBoneSimulator3D::_process_modification(double p_delta) {
+	if (physical_bone_count == 0) {
+		return;
+	}
 	Skeleton3D *skeleton = get_skeleton();
 	if (!skeleton) {
 		return;

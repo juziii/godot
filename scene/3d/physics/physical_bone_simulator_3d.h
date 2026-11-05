@@ -38,6 +38,9 @@ class PhysicalBoneSimulator3D : public SkeletonModifier3D {
 	GDCLASS(PhysicalBoneSimulator3D, SkeletonModifier3D);
 
 	bool simulating = false;
+	int physical_bone_count = 0;
+	bool rebuilding_bone_list = false;
+	void _update_pose_subscription();
 
 	struct SimulatedBone {
 		int parent;

@@ -29,6 +29,12 @@
 /**************************************************************************/
 
 #include "animation_player.h"
+#ifndef _3D_DISABLED
+#include "animation_batch_processor.h"
+#define ANIMATION_BATCH_MUTATION_GUARD() AnimationBatchMutationScope mutation_scope(batch_owner)
+#else
+#define ANIMATION_BATCH_MUTATION_GUARD()
+#endif
 #include "animation_player.compat.inc"
 
 #include "core/config/engine.h"
@@ -257,7 +263,7 @@ void AnimationPlayer::_process_playback_data(PlaybackData &cd, double p_delta, f
 }
 
 float AnimationPlayer::get_current_blend_amount() {
-	Playback &c = playback;
+	Playback &c = _evaluation_playback();
 	float blend = 1.0;
 	for (const Blend &b : c.blend) {
 		blend = blend - b.blend_left;
@@ -266,7 +272,7 @@ float AnimationPlayer::get_current_blend_amount() {
 }
 
 void AnimationPlayer::_blend_playback_data(double p_delta, bool p_started) {
-	Playback &c = playback;
+	Playback &c = _evaluation_playback();
 
 	bool seeked = c.seeked; // The animation may be changed during process, so it is safer that the state is changed before process.
 	bool internal_seeked = c.internal_seeked;
@@ -281,9 +287,9 @@ void AnimationPlayer::_blend_playback_data(double p_delta, bool p_started) {
 
 	// Finally, if not end the animation, do blending.
 	if (end_reached) {
-		playback.blend.clear();
+		_evaluation_playback().blend.clear();
 		if (end_notify) {
-			finished_anim = playback.assigned;
+			finished_anim = _evaluation_playback().assigned;
 		}
 		return;
 	}
@@ -305,27 +311,27 @@ void AnimationPlayer::_blend_playback_data(double p_delta, bool p_started) {
 }
 
 bool AnimationPlayer::_blend_pre_process(double p_delta, int p_track_count, const AHashMap<NodePath, int> &p_track_map) {
-	if (!playback.current.is_enabled) {
-		_set_process(false);
+	if (!_evaluation_playback().current.is_enabled || (is_batch_evaluating() && !playing)) {
+		if (!is_batch_evaluating()) { _set_process(false); }
 		return false;
 	}
 
-	AnimationData *p_from = &animation_set[playback.current.animation_name];
+	AnimationData *p_from = &animation_set[_evaluation_playback().current.animation_name];
 	tmp_from = p_from->animation->get_instance_id();
 	end_reached = false;
 	end_notify = false;
 
 	finished_anim = StringName();
 
-	bool started = playback.started; // The animation may be changed during process, so it is safer that the state is changed before process.
-	if (playback.started) {
-		playback.started = false;
+	bool started = _evaluation_playback().started; // The animation may be changed during process, so it is safer that the state is changed before process.
+	if (_evaluation_playback().started) {
+		_evaluation_playback().started = false;
 	}
 
-	String prev_animation_name = playback.current.animation_name;
+	String prev_animation_name = _evaluation_playback().current.animation_name;
 	_blend_playback_data(p_delta, started);
 
-	if (prev_animation_name != playback.current.animation_name) {
+	if (prev_animation_name != _evaluation_playback().current.animation_name) {
 		return false; // Animation has been changed in the process (may be caused by method track), abort process.
 	}
 
@@ -337,12 +343,14 @@ void AnimationPlayer::_blend_capture(double p_delta) {
 }
 
 void AnimationPlayer::_blend_post_process() {
+	const ObjectID owner_id = get_instance_id();
 	if (end_reached) {
 		// If the method track changes current animation, the animation is not finished.
 		if (tmp_from == animation_set[playback.current.animation_name].animation->get_instance_id()) {
 			if (!playback_queue.is_empty()) {
 				if (!finished_anim.is_empty()) {
 					emit_signal(SceneStringName(animation_finished), finished_anim);
+					if (ObjectDB::get_instance(owner_id) != this) { return; }
 					// Abort if playback_queue is cleared by animation_finished signal.
 					if (playback_queue.is_empty()) {
 						end_reached = false;
@@ -357,6 +365,7 @@ void AnimationPlayer::_blend_post_process() {
 				playback_queue.pop_front();
 				if (end_notify) {
 					emit_signal(SceneStringName(animation_changed), old, new_name);
+					if (ObjectDB::get_instance(owner_id) != this) { return; }
 				}
 			} else {
 				_clear_caches(clear_cache_on_stop);
@@ -365,8 +374,10 @@ void AnimationPlayer::_blend_post_process() {
 				if (end_notify) {
 					if (!finished_anim.is_empty()) {
 						emit_signal(SceneStringName(animation_finished), finished_anim);
+						if (ObjectDB::get_instance(owner_id) != this) { return; }
 					}
 					emit_signal(SNAME("current_animation_changed"), "");
+					if (ObjectDB::get_instance(owner_id) != this) { return; }
 					if (movie_quit_on_finish && OS::get_singleton()->has_feature("movie")) {
 						print_line(vformat("Movie Maker mode is enabled. Quitting on animation finish as requested by: %s", get_path()));
 						get_tree()->quit();
@@ -381,6 +392,8 @@ void AnimationPlayer::_blend_post_process() {
 }
 
 void AnimationPlayer::queue(const StringName &p_name) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	if (!is_playing()) {
 		play(p_name);
 	} else {
@@ -398,6 +411,8 @@ TypedArray<StringName> AnimationPlayer::get_queue() {
 }
 
 void AnimationPlayer::clear_queue() {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	playback_queue.clear();
 }
 
@@ -414,6 +429,8 @@ void AnimationPlayer::play_section_backwards(const StringName &p_name, double p_
 }
 
 void AnimationPlayer::play(const StringName &p_name, double p_custom_blend, float p_custom_scale, bool p_from_end) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	if (auto_capture) {
 		play_with_capture(p_name, auto_capture_duration, p_custom_blend, p_custom_scale, p_from_end, auto_capture_transition_type, auto_capture_ease_type);
 	} else {
@@ -426,6 +443,8 @@ void AnimationPlayer::_play(const StringName &p_name, double p_custom_blend, flo
 }
 
 void AnimationPlayer::play_section_with_markers(const StringName &p_name, const StringName &p_start_marker, const StringName &p_end_marker, double p_custom_blend, float p_custom_scale, bool p_from_end) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	StringName name = p_name;
 
 	if (name == StringName()) {
@@ -457,6 +476,8 @@ void AnimationPlayer::play_section_with_markers(const StringName &p_name, const 
 }
 
 void AnimationPlayer::play_section(const StringName &p_name, double p_start_time, double p_end_time, double p_custom_blend, float p_custom_scale, bool p_from_end) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	StringName name = p_name;
 
 	if (name == StringName()) {
@@ -597,6 +618,8 @@ void AnimationPlayer::_capture(const StringName &p_name, bool p_from_end, double
 }
 
 void AnimationPlayer::play_with_capture(const StringName &p_name, double p_duration, double p_custom_blend, float p_custom_scale, bool p_from_end, Tween::TransitionType p_trans_type, Tween::EaseType p_ease_type) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	_capture(p_name, p_from_end, p_duration, p_trans_type, p_ease_type);
 	_play(p_name, p_custom_blend, p_custom_scale, p_from_end);
 }
@@ -606,6 +629,8 @@ bool AnimationPlayer::is_playing() const {
 }
 
 void AnimationPlayer::set_current_animation(const StringName &p_animation) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	if (p_animation == SNAME("[stop]") || p_animation.is_empty()) {
 		// It should be call deferred and handled only when is_playing() == true to prevent infinite loops caused by seeking within stop().
 		// Especially when the key current_animation = "[stop]" is placed at the beginning of an animation,
@@ -628,6 +653,8 @@ StringName AnimationPlayer::get_current_animation() const {
 }
 
 void AnimationPlayer::set_assigned_animation(const StringName &p_animation) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	if (is_playing()) {
 		float speed = playback.current.speed_scale;
 		play(p_animation, -1.0, speed, std::signbit(speed));
@@ -649,14 +676,20 @@ StringName AnimationPlayer::get_assigned_animation() const {
 }
 
 void AnimationPlayer::pause() {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	_stop_internal(false, false);
 }
 
 void AnimationPlayer::stop(bool p_keep_state) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	_stop_internal(true, p_keep_state);
 }
 
 void AnimationPlayer::set_speed_scale(float p_speed) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	speed_scale = p_speed;
 }
 
@@ -672,6 +705,8 @@ float AnimationPlayer::get_playing_speed() const {
 }
 
 void AnimationPlayer::seek_internal(double p_time, bool p_update, bool p_update_only, bool p_is_internal_seek) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	if (!active) {
 		return;
 	}
@@ -714,6 +749,8 @@ void AnimationPlayer::seek(double p_time, bool p_update, bool p_update_only) {
 }
 
 void AnimationPlayer::advance(double p_time) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	_check_immediately_after_start();
 	AnimationMixer::advance(p_time);
 }
@@ -755,6 +792,8 @@ void AnimationPlayer::set_section_with_markers(const StringName &p_start_marker,
 }
 
 void AnimationPlayer::set_section(double p_start_time, double p_end_time) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	ERR_FAIL_COND_MSG(!playback.current.is_enabled, "AnimationPlayer has no current animation.");
 	ERR_FAIL_COND_MSG(Animation::is_greater_or_equal_approx(p_start_time, 0) && Animation::is_greater_or_equal_approx(p_end_time, 0) && Animation::is_greater_or_equal_approx(p_start_time, p_end_time), vformat("Start time %f is greater than end time %f.", p_start_time, p_end_time));
 	playback.current.start_time = p_start_time;
@@ -763,6 +802,8 @@ void AnimationPlayer::set_section(double p_start_time, double p_end_time) {
 }
 
 void AnimationPlayer::reset_section() {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	playback.current.start_time = -1;
 	playback.current.end_time = -1;
 }
@@ -810,6 +851,8 @@ bool AnimationPlayer::is_clear_cache_on_stop_enabled() const {
 }
 
 void AnimationPlayer::_animation_changed(const StringName &p_name) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	AnimationMixer::_animation_changed(p_name);
 	if (playback.current.is_enabled && playback.current.animation_name == p_name && animation_set.has(p_name)) {
 		playback.current.animation_length = animation_set[p_name].animation->get_length();
@@ -817,6 +860,8 @@ void AnimationPlayer::_animation_changed(const StringName &p_name) {
 }
 
 void AnimationPlayer::_stop_internal(bool p_reset, bool p_keep_state) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	_clear_caches(clear_cache_on_stop);
 	Playback &c = playback;
 	double start = c.current.is_enabled ? playback.current.get_start_time() : 0;
@@ -838,6 +883,8 @@ void AnimationPlayer::_stop_internal(bool p_reset, bool p_keep_state) {
 }
 
 void AnimationPlayer::animation_set_next(const StringName &p_animation, const StringName &p_next) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	ERR_FAIL_COND_MSG(!animation_set.has(p_animation), vformat("Animation not found: %s.", p_animation));
 	animation_next_set[p_animation] = p_next;
 }
@@ -851,6 +898,8 @@ StringName AnimationPlayer::animation_get_next(const StringName &p_animation) co
 }
 
 void AnimationPlayer::set_default_blend_time(double p_default) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	default_blend_time = p_default;
 }
 
@@ -859,6 +908,8 @@ double AnimationPlayer::get_default_blend_time() const {
 }
 
 void AnimationPlayer::set_blend_time(const StringName &p_animation1, const StringName &p_animation2, double p_time) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	ERR_FAIL_COND_MSG(!animation_set.has(p_animation1), vformat("Animation not found: %s.", p_animation1));
 	ERR_FAIL_COND_MSG(!animation_set.has(p_animation2), vformat("Animation not found: %s.", p_animation2));
 	ERR_FAIL_COND_MSG(p_time < 0, "Blend time cannot be smaller than 0.");
@@ -931,6 +982,8 @@ void AnimationPlayer::get_argument_options(const StringName &p_function, int p_i
 #endif
 
 void AnimationPlayer::_animation_removed(const StringName &p_name, const StringName &p_library) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	AnimationMixer::_animation_removed(p_name, p_library);
 
 	const StringName &name = p_library == StringName() ? p_name : StringName(String(p_library) + "/" + String(p_name));
@@ -956,6 +1009,8 @@ void AnimationPlayer::_animation_removed(const StringName &p_name, const StringN
 }
 
 void AnimationPlayer::_rename_animation(const StringName &p_from_name, const StringName &p_to_name) {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 	AnimationMixer::_rename_animation(p_from_name, p_to_name);
 
 	// Rename autoplay or blends if needed.
@@ -1084,4 +1139,31 @@ AnimationPlayer::AnimationPlayer() {
 }
 
 AnimationPlayer::~AnimationPlayer() {
+	finish_pending_animation();
+	ANIMATION_BATCH_MUTATION_GUARD();
 }
+
+#ifndef _3D_DISABLED
+bool AnimationPlayer::_prepare_batch_graph() {
+    batch_playback = playback;
+    return true;
+}
+
+void AnimationPlayer::_evaluate_batch_start() {
+    if (!batch_playback.started || !playing) { return; }
+    // Advance performs an initial zero step. Keep its events buffered until publication.
+    _blend_init();
+    if (_blend_pre_process(0, track_count, track_map)) {
+        _blend_calc_total_weight();
+        _blend_process(0, false);
+        _blend_apply();
+    }
+    batch_initial_instances = animation_instances;
+    batch_instance_offset = batch_initial_instances.size();
+    clear_animation_instances();
+}
+
+void AnimationPlayer::_commit_batch_state() {
+    playback = batch_playback;
+}
+#endif

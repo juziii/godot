@@ -374,6 +374,12 @@ void AnimationNodeStateMachinePlayback::_signal_state_change(AnimationTree *p_an
 			parent_playback->_signal_state_change(p_animation_tree, prefix + p_state, p_started);
 		}
 	}
+#ifndef _3D_DISABLED
+    if (p_animation_tree && p_animation_tree->is_batch_evaluating()) {
+        p_animation_tree->queue_resource_signal(Ref<Resource>(this), p_started ? SceneStringName(state_started) : SceneStringName(state_finished), p_state);
+        return;
+    }
+#endif
 	emit_signal(p_started ? SceneStringName(state_started) : SceneStringName(state_finished), p_state);
 }
 

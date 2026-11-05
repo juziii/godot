@@ -29,10 +29,14 @@
 /**************************************************************************/
 
 #include "skeleton_3d.h"
+#include "scene/animation/animation_batch_processor.h"
+#include "bone_attachment_3d.h"
+#include "skeleton_animation_pose.h"
 #include "skeleton_3d.compat.inc"
 
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "core/profiling/profiling.h"
 #include "scene/3d/skeleton_modifier_3d.h"
 #if !defined(DISABLE_DEPRECATED) && !defined(PHYSICS_3D_DISABLED)
 #include "scene/3d/physics/physical_bone_simulator_3d.h"
@@ -356,7 +360,6 @@ void Skeleton3D::_notification(int p_what) {
 			updating = true;
 
 			Bone *bonesptr = bones.ptr();
-			int len = bones.size();
 
 			LocalVector<bool> bone_global_pose_dirty_backup;
 
@@ -364,7 +367,8 @@ void Skeleton3D::_notification(int p_what) {
 
 			LocalVector<BonePoseBackup> bones_backup;
 			_find_modifiers();
-			if (!modifiers.is_empty()) {
+			const bool apply_modifiers = modifiers_enabled && !modifiers.is_empty();
+			if (apply_modifiers) {
 				bones_backup.resize(bones.size());
 				// Store unmodified bone poses.
 				for (uint32_t i = 0; i < bones.size(); i++) {
@@ -387,68 +391,9 @@ void Skeleton3D::_notification(int p_what) {
 
 			emit_signal(SceneStringName(skeleton_updated));
 
-			// Update skins.
-			RenderingServer *rs = RenderingServer::get_singleton();
-			for (SkinReference *E : skin_bindings) {
-				const Skin *skin = E->skin.operator->();
-				RID skeleton = E->skeleton;
-				uint32_t bind_count = skin->get_bind_count();
+			_update_skin_transforms();
 
-				if (E->bind_count != bind_count) {
-					RS::get_singleton()->skeleton_allocate_data(skeleton, bind_count);
-					E->bind_count = bind_count;
-					E->skin_bone_indices.resize(bind_count);
-					E->skin_bone_indices_ptrs = E->skin_bone_indices.ptrw();
-				}
-
-				if (E->skeleton_version != version) {
-					for (uint32_t i = 0; i < bind_count; i++) {
-						StringName bind_name = skin->get_bind_name(i);
-
-						if (bind_name != StringName()) {
-							// Bind name used, use this.
-							bool found = false;
-							for (int j = 0; j < len; j++) {
-								if (bonesptr[j].name == bind_name) {
-									E->skin_bone_indices_ptrs[i] = j;
-									found = true;
-									break;
-								}
-							}
-
-							if (!found) {
-								ERR_PRINT("Skin bind #" + itos(i) + " contains named bind '" + String(bind_name) + "' but Skeleton3D has no bone by that name.");
-								E->skin_bone_indices_ptrs[i] = 0;
-							}
-						} else if (skin->get_bind_bone(i) >= 0) {
-							int bind_index = skin->get_bind_bone(i);
-							if (bind_index >= len) {
-								ERR_PRINT("Skin bind #" + itos(i) + " contains bone index bind: " + itos(bind_index) + " , which is greater than the skeleton bone count: " + itos(len) + ".");
-								E->skin_bone_indices_ptrs[i] = 0;
-							} else {
-								E->skin_bone_indices_ptrs[i] = bind_index;
-							}
-						} else {
-							ERR_PRINT("Skin bind #" + itos(i) + " does not contain a name nor a bone index.");
-							E->skin_bone_indices_ptrs[i] = 0;
-						}
-					}
-
-					E->skeleton_version = version;
-				}
-
-				for (uint32_t i = 0; i < bind_count; i++) {
-					uint32_t bone_index = E->skin_bone_indices_ptrs[i];
-					ERR_CONTINUE(bone_index >= (uint32_t)len);
-					Transform3D bind_pose_transform = skin->get_bind_pose(i);
-					if (bonesptr[bone_index].is_skin_scaled) {
-						bind_pose_transform = bind_pose_transform.scaled(bonesptr[bone_index].skin_scale);
-					}
-					rs->skeleton_bone_set_transform(skeleton, i, bonesptr[bone_index].global_pose * bind_pose_transform);
-				}
-			}
-
-			if (!modifiers.is_empty()) {
+			if (apply_modifiers) {
 				// Restore unmodified bone poses.
 				for (uint32_t i = 0; i < bones.size(); i++) {
 					bones_backup[i].restore(bones[i]);
@@ -470,11 +415,21 @@ void Skeleton3D::_notification(int p_what) {
 }
 
 void Skeleton3D::advance(double p_delta) {
+	if (!modifiers_enabled) { return; }
 	_find_modifiers();
 	if (!modifiers.is_empty()) {
 		update_delta += p_delta; // Accumulate delta for manual advance as it needs to process in deferred update.
 		_update_deferred(UPDATE_FLAG_MODIFIER);
 	}
+}
+
+void Skeleton3D::set_modifiers_enabled(bool p_enabled) {
+	if (modifiers_enabled == p_enabled) { return; }
+	AnimationBatchProcessor::finish_pending_frames();
+	modifiers_enabled = p_enabled;
+	animation_pose_input_version++;
+	update_delta = 0.0;
+	_make_dirty();
 }
 
 void Skeleton3D::set_modifier_callback_mode_process(Skeleton3D::ModifierCallbackModeProcess p_mode) {
@@ -656,6 +611,7 @@ int Skeleton3D::add_bone(const String &p_name) {
 	int new_idx = bones.size() - 1;
 	name_to_bone_index.insert(p_name, new_idx);
 	process_order_dirty = true;
+	animation_pose_binding_version++;
 	version++;
 	rest_dirty = true;
 	_make_dirty();
@@ -761,6 +717,8 @@ int Skeleton3D::get_bone_count() const {
 }
 
 void Skeleton3D::set_bone_parent(int p_bone, int p_parent) {
+	AnimationBatchProcessor::finish_pending_frames();
+	animation_pose_input_version++;
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 	ERR_FAIL_COND(p_parent != -1 && (p_parent < 0));
@@ -768,6 +726,7 @@ void Skeleton3D::set_bone_parent(int p_bone, int p_parent) {
 
 	bones[p_bone].parent = p_parent;
 	process_order_dirty = true;
+	animation_pose_binding_version++;
 	rest_dirty = true;
 	_make_dirty();
 }
@@ -786,6 +745,7 @@ void Skeleton3D::unparent_bone_and_rest(int p_bone) {
 
 	bones[p_bone].parent = -1;
 	process_order_dirty = true;
+	animation_pose_binding_version++;
 
 	rest_dirty = true;
 	_make_dirty();
@@ -817,10 +777,13 @@ Vector<int> Skeleton3D::get_parentless_bones() const {
 }
 
 void Skeleton3D::set_bone_rest(int p_bone, const Transform3D &p_rest) {
+	AnimationBatchProcessor::finish_pending_frames();
+	animation_pose_input_version++;
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 
 	bones[p_bone].rest = p_rest;
+	animation_pose_binding_version++;
 	rest_dirty = true;
 	_make_dirty();
 	_make_bone_global_pose_subtree_dirty(p_bone);
@@ -841,6 +804,8 @@ Transform3D Skeleton3D::get_bone_global_rest(int p_bone) const {
 }
 
 void Skeleton3D::set_bone_enabled(int p_bone, bool p_enabled) {
+	AnimationBatchProcessor::finish_pending_frames();
+	animation_pose_input_version++;
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 
@@ -868,6 +833,8 @@ bool Skeleton3D::is_show_rest_only() const {
 }
 
 void Skeleton3D::clear_bones() {
+	AnimationBatchProcessor::finish_pending_frames();
+	animation_pose_input_version++;
 	bones.clear();
 	name_to_bone_index.clear();
 
@@ -878,6 +845,7 @@ void Skeleton3D::clear_bones() {
 	nested_set_offset_to_bone_index.clear();
 
 	process_order_dirty = true;
+	animation_pose_binding_version++;
 	version++;
 	_make_dirty();
 }
@@ -885,6 +853,8 @@ void Skeleton3D::clear_bones() {
 // Posing api
 
 void Skeleton3D::set_bone_pose(int p_bone, const Transform3D &p_pose) {
+	AnimationBatchProcessor::finish_pending_frames();
+	animation_pose_input_version++;
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 	if (modifier_updating) {
@@ -901,6 +871,8 @@ void Skeleton3D::set_bone_pose(int p_bone, const Transform3D &p_pose) {
 }
 
 void Skeleton3D::set_bone_pose_position(int p_bone, const Vector3 &p_position) {
+	AnimationBatchProcessor::finish_pending_frames();
+	animation_pose_input_version++;
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 	if (modifier_updating) {
@@ -914,6 +886,8 @@ void Skeleton3D::set_bone_pose_position(int p_bone, const Vector3 &p_position) {
 	}
 }
 void Skeleton3D::set_bone_pose_rotation(int p_bone, const Quaternion &p_rotation) {
+	AnimationBatchProcessor::finish_pending_frames();
+	animation_pose_input_version++;
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 	if (modifier_updating) {
@@ -927,6 +901,8 @@ void Skeleton3D::set_bone_pose_rotation(int p_bone, const Quaternion &p_rotation
 	}
 }
 void Skeleton3D::set_bone_pose_scale(int p_bone, const Vector3 &p_scale) {
+	AnimationBatchProcessor::finish_pending_frames();
+	animation_pose_input_version++;
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 	if (modifier_updating) {
@@ -959,6 +935,8 @@ Vector3 Skeleton3D::get_bone_pose_scale(int p_bone) const {
 }
 
 void Skeleton3D::set_bone_skin_scale(int p_bone, const Vector3 &p_skin_scale) {
+	AnimationBatchProcessor::finish_pending_frames();
+	animation_pose_input_version++;
 	const int bone_size = bones.size();
 	ERR_FAIL_INDEX(p_bone, bone_size);
 	bones[p_bone].skin_scale = p_skin_scale;
@@ -1237,6 +1215,7 @@ void Skeleton3D::_find_modifiers() {
 }
 
 void Skeleton3D::_process_modifiers() {
+	if (!modifiers_enabled) { return; }
 	for (const ObjectID &oid : modifiers) {
 		Object *t_obj = ObjectDB::get_instance(oid);
 		if (!t_obj) {
@@ -1295,6 +1274,8 @@ void Skeleton3D::remove_child_notify(Node *p_child) {
 }
 
 void Skeleton3D::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("set_modifiers_enabled", "enabled"), &Skeleton3D::set_modifiers_enabled);
+	ClassDB::bind_method(D_METHOD("are_modifiers_enabled"), &Skeleton3D::are_modifiers_enabled);
 	ClassDB::bind_method(D_METHOD("add_bone", "name"), &Skeleton3D::add_bone);
 	ClassDB::bind_method(D_METHOD("find_bone", "name"), &Skeleton3D::find_bone);
 	ClassDB::bind_method(D_METHOD("get_bone_name", "bone_idx"), &Skeleton3D::get_bone_name);
@@ -1499,4 +1480,208 @@ Skeleton3D::~Skeleton3D() {
 	for (SkinReference *E : skin_bindings) {
 		E->skeleton_node = nullptr;
 	}
+}
+
+void Skeleton3D::_update_skin_transforms() {
+	Bone *bonesptr = bones.ptr();
+	int len = bones.size();
+	// Update skins.
+	RenderingServer *rs = RenderingServer::get_singleton();
+	for (SkinReference *E : skin_bindings) {
+		const Skin *skin = E->skin.operator->();
+		RID skeleton = E->skeleton;
+		uint32_t bind_count = skin->get_bind_count();
+
+		if (E->bind_count != bind_count) {
+			RS::get_singleton()->skeleton_allocate_data(skeleton, bind_count);
+			E->bind_count = bind_count;
+			E->skin_bone_indices.resize(bind_count);
+			E->skin_bone_indices_ptrs = E->skin_bone_indices.ptrw();
+		}
+
+		if (E->skeleton_version != version) {
+			for (uint32_t i = 0; i < bind_count; i++) {
+				StringName bind_name = skin->get_bind_name(i);
+
+				if (bind_name != StringName()) {
+					// Bind name used, use this.
+					bool found = false;
+					for (int j = 0; j < len; j++) {
+						if (bonesptr[j].name == bind_name) {
+							E->skin_bone_indices_ptrs[i] = j;
+							found = true;
+							break;
+						}
+					}
+
+					if (!found) {
+						ERR_PRINT("Skin bind #" + itos(i) + " contains named bind '" + String(bind_name) + "' but Skeleton3D has no bone by that name.");
+						E->skin_bone_indices_ptrs[i] = 0;
+					}
+				} else if (skin->get_bind_bone(i) >= 0) {
+					int bind_index = skin->get_bind_bone(i);
+					if (bind_index >= len) {
+						ERR_PRINT("Skin bind #" + itos(i) + " contains bone index bind: " + itos(bind_index) + " , which is greater than the skeleton bone count: " + itos(len) + ".");
+						E->skin_bone_indices_ptrs[i] = 0;
+					} else {
+						E->skin_bone_indices_ptrs[i] = bind_index;
+					}
+				} else {
+					ERR_PRINT("Skin bind #" + itos(i) + " does not contain a name nor a bone index.");
+					E->skin_bone_indices_ptrs[i] = 0;
+				}
+			}
+
+			E->skeleton_version = version;
+		}
+
+		for (uint32_t i = 0; i < bind_count; i++) {
+			uint32_t bone_index = E->skin_bone_indices_ptrs[i];
+			ERR_CONTINUE(bone_index >= (uint32_t)len);
+			Transform3D bind_pose_transform = skin->get_bind_pose(i);
+			if (bonesptr[bone_index].is_skin_scaled) {
+				bind_pose_transform = bind_pose_transform.scaled(bonesptr[bone_index].skin_scale);
+			}
+			rs->skeleton_bone_set_transform(skeleton, i, bonesptr[bone_index].global_pose * bind_pose_transform);
+		}
+	}
+}
+
+bool Skeleton3D::_publish_animation_pose(SkeletonAnimationPose *p_pose) {
+ ERR_FAIL_COND_V(!p_pose || p_pose->skeleton_id != get_instance_id() || p_pose->skeleton_version != version || p_pose->binding_version != animation_pose_binding_version || p_pose->bones.size() != bones.size(), false);
+ // The fast path leaves the public Skeleton in its base pose and passes final
+ // transforms directly to ordinary attachments. Unknown observers keep the
+ // original base/final/base publication order below.
+ List<Object::Connection> connections;
+ get_signal_connection_list(SceneStringName(skeleton_updated), &connections);
+ bool direct_attachments = !has_connections(SceneStringName(pose_updated));
+ for (const Object::Connection &connection : connections) {
+  auto *attachment = Object::cast_to<BoneAttachment3D>(connection.callable.get_object());
+  if (!attachment || attachment->get_script_instance() || attachment->get_override_pose() ||
+      connection.flags != 0 || attachment->get_skeleton() != this ||
+      connection.callable != callable_mp(attachment, &BoneAttachment3D::on_skeleton_update)) {
+   direct_attachments = false;
+   break;
+  }
+ }
+ p_pose->publish_stats.skeleton_updated_observers = connections.is_empty() ? 0 : 1;
+ for (const Object::Connection &connection : connections) {
+  if (Object::cast_to<BoneAttachment3D>(connection.callable.get_object())) { p_pose->publish_stats.attachments++; }
+ }
+ if (direct_attachments) {
+  GodotProfileZone("Animation.PublishFast");
+  p_pose->publish_stats.fast_path = true;
+  updating = true;
+  for (uint32_t i = 0; i < bones.size(); i++) {
+   Bone &bone = bones[i];
+   const auto &pose = p_pose->bones[i];
+   bone.pose_cache = pose.base;
+   bone.pose_position = pose.base_position;
+   bone.pose_rotation = pose.base_rotation;
+   bone.pose_scale = pose.base_scale;
+   bone.pose_cache_dirty = false;
+   bone.global_pose = pose.base_global;
+#ifndef DISABLE_DEPRECATED
+   bone.pose_global_no_override = pose.base_global;
+#endif
+   bone_global_pose_dirty[bone.nested_set_offset] = false;
+  }
+  dirty = false;
+  const ObjectID owner_id = get_instance_id();
+  {
+   GodotProfileZone("Animation.PublishAttachments");
+   for (const Object::Connection &connection : connections) {
+    auto *attachment = Object::cast_to<BoneAttachment3D>(connection.callable.get_object());
+    if (!attachment) { continue; }
+    const int bone = attachment->get_bone_idx();
+    if (bone >= 0 && bone < int(p_pose->bones.size())) {
+     attachment->apply_animation_pose(p_pose->bones[bone].global);
+     if (ObjectDB::get_instance(owner_id) != this) { return false; }
+    }
+   }
+  }
+  {
+   GodotProfileZone("Animation.PublishSkinUpload");
+   for (const auto &skin : p_pose->skins) {
+    RenderingServer::get_singleton()->skeleton_set_buffer(skin.rendering_skeleton, skin.buffers[skin.buffer_index]);
+    p_pose->publish_stats.skins++;
+    p_pose->publish_stats.skin_bytes += uint64_t(skin.buffers[skin.buffer_index].size()) * sizeof(float);
+   }
+  }
+  updating = false;
+  update_flags = UPDATE_FLAG_NONE;
+  return true;
+ }
+ updating = true;
+ const ObjectID owner_id = get_instance_id();
+ if (has_connections(SceneStringName(pose_updated))) {
+  GodotProfileZone("Animation.PublishPoseUpdated");
+  p_pose->publish_stats.pose_updated_observers = 1;
+  for (uint32_t i = 0; i < bones.size(); i++) {
+   Bone &b = bones[i];
+   const auto &p = p_pose->bones[i];
+   b.pose_cache = p.base;
+   b.pose_position = p.base_position;
+   b.pose_rotation = p.base_rotation;
+   b.pose_scale = p.base_scale;
+   b.pose_cache_dirty = false;
+   b.global_pose = p.base_global;
+   bone_global_pose_dirty[b.nested_set_offset] = false;
+  }
+  dirty = false;
+  emit_signal(SceneStringName(pose_updated));
+  if (ObjectDB::get_instance(owner_id) != this) { return false; }
+  if (p_pose->skeleton_version != version || p_pose->binding_version != animation_pose_binding_version || p_pose->bones.size() != bones.size()) {
+   updating = false;
+   return false;
+  }
+ }
+ { GodotProfileZone("Animation.PublishBoneWrite");
+ for (uint32_t i = 0; i < bones.size(); i++) {
+  Bone &b = bones[i];
+  const auto &p = p_pose->bones[i];
+  b.pose_cache = p.local;
+  b.pose_position = p.position;
+  b.pose_rotation = p.rotation;
+  b.pose_scale = p.scale;
+  b.pose_cache_dirty = false;
+  b.global_pose = p.global;
+  bone_global_pose_dirty[b.nested_set_offset] = false;
+ }
+ dirty = false;
+ }
+ { GodotProfileZone("Animation.PublishSkeletonUpdated"); emit_signal(SceneStringName(skeleton_updated)); }
+ if (ObjectDB::get_instance(owner_id) != this) { return false; }
+ if (p_pose->skeleton_version != version || p_pose->binding_version != animation_pose_binding_version || p_pose->bones.size() != bones.size()) {
+  updating = false;
+  return false;
+ }
+ { GodotProfileZone("Animation.PublishSkinUpload");
+ for (const auto &skin : p_pose->skins) {
+  RenderingServer::get_singleton()->skeleton_set_buffer(skin.rendering_skeleton, skin.buffers[skin.buffer_index]);
+  p_pose->publish_stats.skins++;
+  p_pose->publish_stats.skin_bytes += uint64_t(skin.buffers[skin.buffer_index].size()) * sizeof(float);
+ }
+ }
+ // Match normal modifier publication: attachments/skins see final poses, animation sees base poses.
+ { GodotProfileZone("Animation.PublishRestoreBase");
+ for (uint32_t i = 0; i < bones.size(); i++) {
+  Bone &b = bones[i];
+  const auto &p = p_pose->bones[i];
+  b.pose_cache = p.base;
+  b.pose_position = p.base_position;
+  b.pose_rotation = p.base_rotation;
+  b.pose_scale = p.base_scale;
+  b.pose_cache_dirty = false;
+  b.global_pose = p.base_global;
+#ifndef DISABLE_DEPRECATED
+  b.pose_global_no_override = p.base_global;
+#endif
+  bone_global_pose_dirty[b.nested_set_offset] = false;
+ }
+ }
+ updating = false;
+ update_flags = UPDATE_FLAG_NONE;
+ dirty = false;
+ return true;
 }
