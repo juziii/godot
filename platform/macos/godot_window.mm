@@ -79,4 +79,58 @@
 	return !wd.no_focus && !wd.is_popup;
 }
 
+// Background harness runs (GODOT_BACKGROUND_MODE) must never surface a window,
+// take focus, or switch Spaces. These AppKit entry points can order a window
+// onscreen implicitly without going through orderFront/makeKeyAndOrderFront,
+// which the display server call sites already guard; suppress them here.
+static bool godot_window_background_mode() {
+	static int cached = -1;
+	if (cached < 0) {
+		cached = getenv("GODOT_BACKGROUND_MODE") != nullptr ? 1 : 0;
+	}
+	return cached == 1;
+}
+
+- (void)deminiaturize:(id)sender {
+	if (godot_window_background_mode()) {
+		return;
+	}
+	[super deminiaturize:sender];
+}
+
+- (void)miniaturize:(id)sender {
+	if (godot_window_background_mode()) {
+		return;
+	}
+	[super miniaturize:sender];
+}
+
+- (void)performMiniaturize:(id)sender {
+	if (godot_window_background_mode()) {
+		return;
+	}
+	[super performMiniaturize:sender];
+}
+
+- (void)toggleFullScreen:(id)sender {
+	if (godot_window_background_mode()) {
+		return;
+	}
+	[super toggleFullScreen:sender];
+}
+
+- (void)performZoom:(id)sender {
+	if (godot_window_background_mode()) {
+		return;
+	}
+	[super performZoom:sender];
+}
+
+- (void)zoom:(id)sender {
+	if (godot_window_background_mode()) {
+		return;
+	}
+	[super zoom:sender];
+}
+
 @end

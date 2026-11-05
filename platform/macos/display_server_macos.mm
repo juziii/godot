@@ -1793,11 +1793,18 @@ DisplayServerEnums::WindowID DisplayServerMacOS::create_sub_window(DisplayServer
 void DisplayServerMacOS::show_window(DisplayServerEnums::WindowID p_id) {
 	WindowData &wd = windows[p_id];
 
-	if (p_id == DisplayServerEnums::MAIN_WINDOW_ID) {
+	static const bool background_mode = getenv("GODOT_BACKGROUND_MODE") != nullptr;
+
+	if (p_id == DisplayServerEnums::MAIN_WINDOW_ID && !background_mode) {
 		[GodotApp activateApplication];
 	}
 
 	popup_open(p_id);
+	if (background_mode) {
+		// Background harness runs keep windows offscreen; the drawable still renders.
+		[wd.window_object orderOut:nil];
+		return;
+	}
 	if ([wd.window_object isMiniaturized]) {
 		return;
 	} else if (wd.no_focus) {
@@ -2752,6 +2759,11 @@ void DisplayServerMacOS::window_set_taskbar_progress_state(DisplayServerEnums::P
 
 void DisplayServerMacOS::window_move_to_foreground(DisplayServerEnums::WindowID p_window) {
 	_THREAD_SAFE_METHOD_
+
+	if (getenv("GODOT_BACKGROUND_MODE")) {
+		// Background harness runs never take focus or surface their window.
+		return;
+	}
 
 	ERR_FAIL_COND(!windows.has(p_window));
 	const WindowData &wd = windows[p_window];

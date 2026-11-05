@@ -47,6 +47,41 @@
 
 HashMap<String, Vector<String>> WindowsUtils::temp_pdbs;
 
+static bool get_user_object_name(HANDLE p_object, String &r_name) {
+	DWORD bytes_needed = 0;
+	GetUserObjectInformationW(p_object, UOI_NAME, nullptr, 0, &bytes_needed);
+	if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || bytes_needed < sizeof(WCHAR)) {
+		return false;
+	}
+
+	Vector<WCHAR> buffer;
+	buffer.resize((bytes_needed + sizeof(WCHAR) - 1) / sizeof(WCHAR));
+	if (!GetUserObjectInformationW(p_object, UOI_NAME, buffer.ptrw(), bytes_needed, &bytes_needed)) {
+		return false;
+	}
+
+	r_name = String::utf16((const char16_t *)buffer.ptr(), (bytes_needed / sizeof(WCHAR)) - 1);
+	return !r_name.is_empty();
+}
+
+bool WindowsUtils::is_current_thread_input_desktop() {
+	HDESK current_desktop = GetThreadDesktop(GetCurrentThreadId());
+	if (current_desktop == nullptr) {
+		return false;
+	}
+
+	HDESK input_desktop = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+	if (input_desktop == nullptr) {
+		return false;
+	}
+
+	String current_name;
+	String input_name;
+	bool same_desktop = get_user_object_name(current_desktop, current_name) && get_user_object_name(input_desktop, input_name) && current_name == input_name;
+	CloseDesktop(input_desktop);
+	return same_desktop;
+}
+
 Error WindowsUtils::copy_and_rename_pdb(const String &p_dll_path) {
 #ifdef DEBUG_ENABLED
 	// 1000 ought to be enough for anybody, in case the debugger does not unblock previous PDBs.
