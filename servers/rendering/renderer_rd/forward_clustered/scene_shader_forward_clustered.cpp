@@ -64,6 +64,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	uses_alpha_antialiasing = false;
 	uses_blend_alpha = false;
 	uses_depth_prepass_alpha = false;
+	uses_depth_prepass_no_material = false;
 	uses_discard = false;
 	uses_roughness = false;
 	uses_normal = false;
@@ -128,6 +129,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	actions.usage_flag_pointers["ALPHA_ANTIALIASING_EDGE"] = &uses_alpha_antialiasing;
 	actions.usage_flag_pointers["ALPHA_TEXTURE_COORDINATE"] = &uses_alpha_antialiasing;
 	actions.render_mode_flags["depth_prepass_alpha"] = &uses_depth_prepass_alpha;
+	actions.render_mode_flags["depth_prepass_no_material"] = &uses_depth_prepass_no_material;
 
 	actions.usage_flag_pointers["SSS_STRENGTH"] = &uses_sss;
 	actions.usage_flag_pointers["SSS_TRANSMITTANCE_DEPTH"] = &uses_transmittance;
