@@ -30,6 +30,8 @@
 
 #include "animation_batch_processor.h"
 
+#include "render_hooks.h"
+
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/os/os.h"
@@ -582,6 +584,10 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
 	result["sample_scratch_reuse_enabled"] = CZPoseTrackBinding::is_sample_scratch_reuse_enabled();
 	result["in_place_first_blend_enabled"] = CZPoseTrackBinding::is_in_place_first_blend_enabled();
 	result["zero_pose_skip_enabled"] = CZPoseTrackBinding::is_zero_pose_skip_enabled();
+	result["no_material_depth_prepass_enabled"] = CZAnimationRenderHooks::is_no_material_depth_prepass_enabled();
+	const CZAnimationRenderHooks::NoMaterialDepthStatistics &depth_statistics = CZAnimationRenderHooks::get_no_material_depth_statistics();
+	result["no_material_depth_eligible_draw_calls_total"] = depth_statistics.eligible_draw_calls.load(std::memory_order_relaxed);
+	result["no_material_depth_simplified_draw_calls_total"] = depth_statistics.simplified_draw_calls.load(std::memory_order_relaxed);
 	result["sample_scratch_buffer_growths_total"] = CZPoseSamplingScratch::get_buffer_growths_total();
 	if (Thread::is_main_thread() && group == -1 && !pending && !preparing && !publishing) {
 		uint64_t binding_bytes = 0, pose_bytes = 0;

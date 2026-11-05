@@ -44,6 +44,10 @@
 
 #include "modules/modules_enabled.gen.h"
 
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+#include "modules/cz_animation/render_hooks.h"
+#endif
+
 #ifdef MODULE_TEXTURE_STREAMING_ENABLED
 #include "modules/texture_streaming/texture_streaming.h"
 #endif
@@ -345,6 +349,11 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 	}
 
 	bool should_request_redraw = false;
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	const bool no_material_depth_enabled = CZAnimationRenderHooks::is_no_material_depth_prepass_enabled();
+	uint64_t no_material_eligible_draws = 0;
+	uint64_t no_material_simplified_draws = 0;
+#endif
 
 	for (uint32_t i = p_from_element; i < p_to_element; i++) {
 		const GeometryInstanceSurfaceDataCache *surf = p_params->elements[i];
@@ -395,8 +404,14 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 				// Opted-out surfaces use geometric normals and default roughness
 				// instead of running their material shader in the prepass.
 				if (surf->shader->uses_depth_prepass_no_material) {
-					material_uniform_set = scene_shader.default_material_uniform_set;
-					shader = scene_shader.default_material_shader_ptr;
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+					if (no_material_depth_enabled) {
+#endif
+						material_uniform_set = scene_shader.default_material_uniform_set;
+						shader = scene_shader.default_material_shader_ptr;
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+					}
+#endif
 				}
 			}
 		}
@@ -631,10 +646,22 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 			} else {
 				RD::get_singleton()->draw_list_draw(draw_list, index_array_rd.is_valid(), instance_count);
 			}
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+			if constexpr (p_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS || p_pass_mode == PASS_MODE_DEPTH_NORMAL_ROUGHNESS_VOXEL_GI) {
+				if (surf->shader->uses_depth_prepass_no_material) {
+					no_material_eligible_draws++;
+					no_material_simplified_draws += no_material_depth_enabled;
+				}
+			}
+#endif
 		}
 
 		i += element_info.repeat - 1; //skip equal elements
 	}
+
+#ifdef MODULE_CZ_ANIMATION_ENABLED
+	CZAnimationRenderHooks::record_no_material_depth_draws(no_material_eligible_draws, no_material_simplified_draws);
+#endif
 
 	// Make the actual redraw request
 	if (should_request_redraw) {
