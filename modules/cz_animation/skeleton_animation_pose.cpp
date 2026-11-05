@@ -149,9 +149,9 @@ bool CZAnimationBridge::capture_skeleton(SkeletonAnimationPose *p_pose, Skeleton
 	const int count = p_skeleton->bones.size();
 	const uint64_t revision = skeleton_version(p_skeleton);
 	const int desired_lod = SkeletonAnimationPose::global_bone_lod_enabled ? p_pose->requested_lod : 0;
-	const bool rebuild = p_pose->binding_dirty || p_pose->binding_version != revision ||
-			p_pose->structural_version != p_skeleton->version || p_pose->bones.size() != uint32_t(count) ||
-			p_pose->bound_lod != desired_lod || p_pose->bound_force_full_bones != p_pose->force_full_bones;
+	const bool binding_rebuild = p_pose->binding_dirty || p_pose->binding_version != revision ||
+			p_pose->structural_version != p_skeleton->version || p_pose->bones.size() != uint32_t(count);
+	const bool rebuild = binding_rebuild || p_pose->bound_lod != desired_lod || p_pose->bound_force_full_bones != p_pose->force_full_bones;
 	p_pose->skeleton_id = p_skeleton->get_instance_id();
 	const uint64_t input_version = skeleton_input_version(p_skeleton);
 	const bool input_changed = p_pose->input_version != input_version;
@@ -392,28 +392,31 @@ bool CZAnimationBridge::capture_skeleton(SkeletonAnimationPose *p_pose, Skeleton
 		p_pose->required = p_pose->required_next;
 		p_pose->binding_dirty = true;
 	}
+	const bool rebind_tracks = binding_rebuild || p_pose->binding_dirty;
 	const bool rebound = rebuild || p_pose->binding_dirty;
 	if (rebound) {
-		p_pose->bones.resize(count);
-		p_pose->parents.resize(count);
-		p_pose->rest_transforms.resize(count);
-		p_pose->first_disabled.resize(count);
-		for (int bone = 0; bone < count; bone++) {
-			const Skeleton3D::Bone &source = p_skeleton->bones[bone];
+		if (rebind_tracks) {
+			p_pose->bones.resize(count);
+			p_pose->parents.resize(count);
+			p_pose->rest_transforms.resize(count);
+			p_pose->first_disabled.resize(count);
+			for (int bone = 0; bone < count; bone++) {
+				const Skeleton3D::Bone &source = p_skeleton->bones[bone];
 #ifndef DISABLE_DEPRECATED
-			if (source.global_pose_override_amount >= CMP_EPSILON) {
-				return p_pose->_fail("Deprecated global pose override requires synchronous processing.");
-			}
+				if (source.global_pose_override_amount >= CMP_EPSILON) {
+					return p_pose->_fail("Deprecated global pose override requires synchronous processing.");
+				}
 #endif
-			p_pose->bones[bone] = { source.parent, source.rest, source.global_rest, source.skin_scale, source.enabled };
-			p_pose->parents[bone] = source.parent;
-			p_pose->rest_transforms[bone] = source.rest;
-			p_pose->first_disabled[bone] = 0;
-		}
-		for (int index = 0; index < p_pose->lod_names.size(); index++) {
-			const int bone = p_skeleton->find_bone(p_pose->lod_names[index]);
-			if (bone >= 0) {
-				p_pose->first_disabled[bone] = p_pose->lod_levels[index];
+				p_pose->bones[bone] = { source.parent, source.rest, source.global_rest, source.skin_scale, source.enabled };
+				p_pose->parents[bone] = source.parent;
+				p_pose->rest_transforms[bone] = source.rest;
+				p_pose->first_disabled[bone] = 0;
+			}
+			for (int index = 0; index < p_pose->lod_names.size(); index++) {
+				const int bone = p_skeleton->find_bone(p_pose->lod_names[index]);
+				if (bone >= 0) {
+					p_pose->first_disabled[bone] = p_pose->lod_levels[index];
+				}
 			}
 		}
 		if (!p_pose->lod.build(p_pose->parents, p_pose->rest_transforms, p_pose->first_disabled,
@@ -442,12 +445,13 @@ bool CZAnimationBridge::capture_skeleton(SkeletonAnimationPose *p_pose, Skeleton
 			p_pose->reference_pose.set_scale(compact, source.enabled ? source.pose_scale : source.rest.basis.get_scale());
 		}
 		p_pose->captured_bones += active;
+		p_pose->capture_rebounds_total++;
 		p_pose->blended.copy_from(p_pose->reference_pose);
 		p_pose->retained_base.copy_from(p_pose->blended);
 		p_pose->base_pose.copy_from(p_pose->reference_pose);
 		p_pose->displayed.copy_from(p_pose->reference_pose);
 		p_pose->history_count = 0;
-		p_pose->layout_version++;
+		p_pose->layout_version += rebind_tracks;
 		p_pose->bound_lod = desired_lod;
 		p_pose->bound_force_full_bones = p_pose->force_full_bones;
 		p_pose->binding_version = revision;
@@ -458,6 +462,7 @@ bool CZAnimationBridge::capture_skeleton(SkeletonAnimationPose *p_pose, Skeleton
 	// binding/input changes need another native component snapshot; standalone
 	// Capture always exposes the current native pose immediately.
 	if (!rebound && (!p_animated || input_changed || p_pose->reference_capture_dirty)) {
+		p_pose->capture_input_refreshes_total++;
 		for (int compact = 0; compact < p_pose->reference_pose.size(); compact++) {
 			const Skeleton3D::Bone &source = p_skeleton->bones[p_pose->lod.to_original(compact)];
 			p_pose->blended.set_position(compact, source.enabled ? source.pose_position : source.rest.origin);
@@ -557,7 +562,6 @@ void SkeletonAnimationPose::set_bone_lod(int p_level) {
 		CZAnimationBridge::synchronize();
 		capture_generation++;
 		requested_lod = p_level;
-		binding_dirty = true;
 		history_count = 0;
 	}
 }
@@ -583,9 +587,11 @@ bool SkeletonAnimationPose::prepare_frame(bool p_sample, bool p_display, bool p_
 	ERR_FAIL_COND_V(!Thread::is_main_thread(), false);
 	sample_blend_us = interpolate_us = skin_pack_us = matrix_us = 0;
 	captured_bones = 0;
-	force_full_bones = p_force_full_bones;
 	simd_enabled = global_simd_enabled;
 	const int desired_lod = global_bone_lod_enabled ? requested_lod : 0;
+	// At LOD0 all bones are already present. Exact firing requests must not
+	// invalidate the same full binding when toggling ForceFullBones.
+	force_full_bones = p_force_full_bones && desired_lod > 0;
 	const bool changed = !matches_current_inputs() || force_full_bones != bound_force_full_bones || desired_lod != bound_lod;
 	const bool compatible = p_interval > 0 && supports_interpolation();
 	sample_requested = p_sample || p_exact || changed || history_count == 0 || !compatible;
@@ -603,7 +609,9 @@ void SkeletonAnimationPose::_update_globals() {
 	GodotProfileZone("CZAnimation.Matrix");
 	const uint64_t start = OS::get_singleton()->get_ticks_usec();
 	lod.expand_global(blended, globals);
-	matrix_us += OS::get_singleton()->get_ticks_usec() - start;
+	const uint64_t elapsed = OS::get_singleton()->get_ticks_usec() - start;
+	matrix_us += elapsed;
+	matrix_us_total += elapsed;
 }
 
 Transform3D SkeletonAnimationPose::get_local_pose(int p_bone) const {
@@ -828,14 +836,18 @@ void SkeletonAnimationPose::interpolate_frame() {
 			displayed_base.copy_from(base_history[history_index]);
 		}
 	}
-	interpolate_us += OS::get_singleton()->get_ticks_usec() - start;
+	const uint64_t interpolate_elapsed = OS::get_singleton()->get_ticks_usec() - start;
+	interpolate_us += interpolate_elapsed;
+	interpolate_us_total += interpolate_elapsed;
 	const uint64_t matrix_start = OS::get_singleton()->get_ticks_usec();
 	{
 		GodotProfileZone("CZAnimation.Matrix");
 		lod.expand_global(displayed, globals);
 		lod.expand_global(displayed_base, base_globals);
 	}
-	matrix_us += OS::get_singleton()->get_ticks_usec() - matrix_start;
+	const uint64_t matrix_elapsed = OS::get_singleton()->get_ticks_usec() - matrix_start;
+	matrix_us += matrix_elapsed;
+	matrix_us_total += matrix_elapsed;
 	_pack_skins();
 	evaluate_sockets();
 	evaluated = true;
@@ -866,11 +878,15 @@ void SkeletonAnimationPose::_pack_skins() {
 			}
 		}
 	}
-	skin_pack_us += OS::get_singleton()->get_ticks_usec() - start;
+	const uint64_t elapsed = OS::get_singleton()->get_ticks_usec() - start;
+	skin_pack_us += elapsed;
+	skin_pack_us_total += elapsed;
 }
 
 uint64_t SkeletonAnimationPose::get_storage_bytes() const {
 	uint64_t bytes = sizeof(SkeletonAnimationPose);
+	bytes += lod.get_storage_bytes();
+	bytes += sampling_scratch.get_storage_bytes();
 	for (const CZPoseSoA *pose : { &reference_pose, &sampled, &blended, &displayed, &base_pose, &displayed_base, &retained_base, &before_modifier, &history[0], &history[1], &base_history[0], &base_history[1] }) {
 		bytes += pose->get_storage_bytes();
 	}
@@ -883,6 +899,14 @@ uint64_t SkeletonAnimationPose::get_storage_bytes() const {
 		bytes += uint64_t(skin.bones.get_capacity()) * sizeof(int);
 		bytes += uint64_t(skin.bind_poses.get_capacity()) * sizeof(Transform3D);
 		bytes += uint64_t(skin.buffer.capacity()) * sizeof(float);
+	}
+	return bytes;
+}
+
+uint64_t SkeletonAnimationPose::get_pose_copy_bytes() const {
+	uint64_t bytes = 0;
+	for (const CZPoseSoA *pose : { &reference_pose, &sampled, &blended, &displayed, &base_pose, &displayed_base, &retained_base, &before_modifier, &history[0], &history[1], &base_history[0], &base_history[1] }) {
+		bytes += pose->get_copy_bytes();
 	}
 	return bytes;
 }
@@ -1074,7 +1098,14 @@ void SkeletonAnimationPose::configure_attachment(const Ref<SkeletonAnimationPose
 	CZAnimationBridge::synchronize();
 	capture_generation++;
 	ERR_FAIL_COND(source.is_valid() && source->_depends_on(this));
-	if (attachment_source.is_valid()) {
+	const bool dependency_changed = source != attachment_source || p_bone != attachment_bone;
+	if (!dependency_changed) {
+		attachment_same_source_updates_total++;
+	} else {
+		attachment_dependency_changes_total++;
+	}
+	// Updating attachment matrices does not change the parent's required bones.
+	if (dependency_changed && attachment_source.is_valid()) {
 		attachment_source->_require_external(attachment_bone, -1);
 	}
 	attachment_source = source;
@@ -1082,10 +1113,12 @@ void SkeletonAnimationPose::configure_attachment(const Ref<SkeletonAnimationPose
 	attachment_scale = p_scale_transform;
 	attachment_offset = p_offset;
 	attachment_disable_scale = p_disable_scale;
-	if (source.is_valid() && p_bone >= 0) {
+	if (dependency_changed && source.is_valid() && p_bone >= 0) {
 		source->_require_external(p_bone, 1);
 	}
-	binding_dirty = true;
+	if (dependency_changed) {
+		binding_dirty = true;
+	}
 }
 
 void SkeletonAnimationPose::set_socket_input(int p_index, int p_bone, const Vector3 &p_offset, const Transform3D &p_parent, const Basis &p_marker_basis, bool p_enabled) {
@@ -1293,6 +1326,7 @@ void SkeletonAnimationPose::_require_external(int p_bone, int p_delta) {
 	if (p_bone < 0) {
 		return;
 	}
+	external_requirement_updates_total++;
 	int *count = external_requirements.getptr(p_bone);
 	if (p_delta > 0) {
 		external_requirements[p_bone] = count ? *count + p_delta : p_delta;

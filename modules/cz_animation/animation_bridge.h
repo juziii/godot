@@ -99,6 +99,7 @@ public:
 	static MethodValidationStatistics get_method_validation_statistics(const State *p_state);
 	static void reset_evaluation_statistics(State *p_state, bool p_enabled);
 	static EvaluationStatistics get_evaluation_statistics(const State *p_state);
+	static uint64_t get_binding_sample_scratch_bytes(const State *p_state);
 	static bool prepare(State *p_state, double p_delta, const LocalVector<Ref<SkeletonAnimationPose>> &p_poses);
 	static void evaluate(State *p_state);
 	static bool publish(State *p_state);

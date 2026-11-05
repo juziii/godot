@@ -133,6 +133,11 @@ class SkeletonAnimationPose : public RefCounted {
 	uint64_t structural_version = 0;
 	uint64_t layout_version = 0;
 	uint64_t capture_generation = 0;
+	uint64_t capture_rebounds_total = 0;
+	uint64_t capture_input_refreshes_total = 0;
+	uint64_t attachment_same_source_updates_total = 0;
+	uint64_t attachment_dependency_changes_total = 0;
+	uint64_t external_requirement_updates_total = 0;
 	LocalVector<Bone> bones;
 	LocalVector<int> parents;
 	LocalVector<Transform3D> rest_transforms;
@@ -165,6 +170,17 @@ class SkeletonAnimationPose : public RefCounted {
 	uint64_t interpolate_us = 0;
 	uint64_t skin_pack_us = 0;
 	uint64_t matrix_us = 0;
+	uint64_t sample_blend_us_total = 0;
+	uint64_t in_place_blends_total = 0;
+	uint64_t sampler_calls_total = 0;
+	uint64_t sampler_blends_total = 0;
+	uint64_t interpolate_us_total = 0;
+	uint64_t skin_pack_us_total = 0;
+	uint64_t matrix_us_total = 0;
+	uint64_t active_bones_total = 0;
+	uint64_t full_bones_total = 0;
+	uint64_t sampled_bones_total = 0;
+	uint64_t displayed_bones_total = 0;
 	uint64_t captured_bones = 0;
 	bool owns_callback = false;
 	bool observed = false;
@@ -187,6 +203,7 @@ class SkeletonAnimationPose : public RefCounted {
 	CZPoseSoA reference_pose;
 	LocalVector<uint8_t> reference_mask;
 	CZPoseSoA sampled;
+	CZPoseSamplingScratch sampling_scratch;
 	CZPoseSoA blended;
 	CZPoseSoA base_pose;
 	CZPoseSoA displayed_base;
@@ -258,6 +275,7 @@ public:
 	real_t get_motion_scale() const { return motion_scale; }
 	uint64_t get_skin_buffer_copies() const;
 	uint64_t get_storage_bytes() const;
+	uint64_t get_pose_copy_bytes() const;
 	static void set_simd_enabled(bool p_enabled);
 	static bool is_simd_enabled() { return global_simd_enabled; }
 	static void set_bone_lod_enabled(bool p_enabled);

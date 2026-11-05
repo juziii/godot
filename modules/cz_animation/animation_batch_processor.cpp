@@ -79,6 +79,7 @@ int64_t AnimationBatchProcessor::_register(AnimationMixer *p_mixer, const TypedA
 			entry->poses.push_back(pose);
 		}
 	}
+	_collect_pose_statistics(entry, true);
 	CZAnimationBridge::set_callback_mode(p_mixer, AnimationMixer::ANIMATION_CALLBACK_MODE_PROCESS_MANUAL);
 	entries.push_back(entry);
 	handles.insert(entry->handle, entry);
@@ -107,6 +108,7 @@ void AnimationBatchProcessor::_dispose_entry(Entry *p_entry) {
 }
 
 void AnimationBatchProcessor::_remove(Entry *p_entry) {
+	_collect_pose_statistics(p_entry);
 	work.erase(p_entry);
 	handles.erase(p_entry->handle);
 	entries.erase(p_entry);
@@ -150,7 +152,55 @@ bool AnimationBatchProcessor::queue_update_with_options(int64_t p_handle, double
 	entry->interval = p_interval;
 	entry->full_bones = p_force_full_bones;
 	entry->queued = true;
+	force_full_bones_requests_total += p_force_full_bones;
 	return true;
+}
+
+void AnimationBatchProcessor::_collect_pose_statistics(Entry *p_entry, bool p_baseline) {
+	PoseTotals current;
+	for (const Ref<SkeletonAnimationPose> &pose : p_entry->poses) {
+		current.sample_blend_us += pose->sample_blend_us_total;
+		current.interpolate_us += pose->interpolate_us_total;
+		current.matrix_us += pose->matrix_us_total;
+		current.skin_pack_us += pose->skin_pack_us_total;
+		current.copy_bytes += pose->get_pose_copy_bytes();
+		current.in_place_blends += pose->in_place_blends_total;
+		current.sampler_calls += pose->sampler_calls_total;
+		current.sampler_blends += pose->sampler_blends_total;
+		current.active_bones += pose->active_bones_total;
+		current.full_bones += pose->full_bones_total;
+		current.sampled_bones += pose->sampled_bones_total;
+		current.displayed_bones += pose->displayed_bones_total;
+	}
+	if (!p_baseline) {
+		pose_totals.sample_blend_us += current.sample_blend_us - p_entry->pose_snapshot.sample_blend_us;
+		pose_totals.interpolate_us += current.interpolate_us - p_entry->pose_snapshot.interpolate_us;
+		pose_totals.matrix_us += current.matrix_us - p_entry->pose_snapshot.matrix_us;
+		pose_totals.skin_pack_us += current.skin_pack_us - p_entry->pose_snapshot.skin_pack_us;
+		pose_totals.copy_bytes += current.copy_bytes - p_entry->pose_snapshot.copy_bytes;
+		pose_totals.in_place_blends += current.in_place_blends - p_entry->pose_snapshot.in_place_blends;
+		pose_totals.sampler_calls += current.sampler_calls - p_entry->pose_snapshot.sampler_calls;
+		pose_totals.sampler_blends += current.sampler_blends - p_entry->pose_snapshot.sampler_blends;
+		pose_totals.active_bones += current.active_bones - p_entry->pose_snapshot.active_bones;
+		pose_totals.full_bones += current.full_bones - p_entry->pose_snapshot.full_bones;
+		pose_totals.sampled_bones += current.sampled_bones - p_entry->pose_snapshot.sampled_bones;
+		pose_totals.displayed_bones += current.displayed_bones - p_entry->pose_snapshot.displayed_bones;
+	}
+	p_entry->pose_snapshot = current;
+}
+
+void AnimationBatchProcessor::_finish_frame_statistics() {
+	if (!frame_statistics_pending) {
+		return;
+	}
+	frame_statistics_pending = false;
+	completed_frames_total++;
+	prepare_us_total += prepare_us;
+	wait_us_total += wait_us;
+	publish_us_total += publish_us;
+	fallbacks_total += fallbacks;
+	failures_total += failures;
+	recomputed_total += recomputed;
 }
 
 void AnimationBatchProcessor::_prepare(Entry *p_entry) {
@@ -232,10 +282,20 @@ int64_t AnimationBatchProcessor::submit(int p_batch_size, int p_max_workers) {
 		entry->queued = false;
 	}
 	frame++;
+	frame_statistics_pending = true;
 	pending = !work.is_empty();
 	batch_count = (units.size() + batch_size - 1) / batch_size;
+	batch_task_statistics.resize(batch_count);
+	for (TaskStatistics &statistics : batch_task_statistics) {
+		statistics = {};
+	}
+	running_tasks.set(0);
+	task_concurrency_peak.set(0);
+	task_concurrency_peak_last = 0;
+	task_statistics_pending = pending;
 	workers = pending ? MIN(MIN(batch_count, p_max_workers), MAX(1, WorkerThreadPool::get_singleton()->get_thread_count())) : 0;
 	if (!pending) {
+		_finish_frame_statistics();
 		if (phase_diagnostics_enabled) {
 			submit_total_us = OS::get_singleton()->get_ticks_usec() - submit_start;
 		}
@@ -262,6 +322,11 @@ int64_t AnimationBatchProcessor::submit(int p_batch_size, int p_max_workers) {
 }
 
 void AnimationBatchProcessor::_execute(uint32_t p_batch, bool p_unused) {
+	const uint64_t start = OS::get_singleton()->get_ticks_usec();
+	task_concurrency_peak.exchange_if_greater(running_tasks.increment());
+	TaskStatistics &statistics = batch_task_statistics[p_batch];
+	statistics.thread_id = Thread::get_caller_id();
+	statistics.main_thread = Thread::is_main_thread();
 	const uint32_t unit_end = MIN(uint32_t((p_batch + 1) * batch_size), units.size());
 	for (uint32_t unit = p_batch * batch_size; unit < unit_end; unit++) {
 		for (uint32_t index = units[unit].begin; index < units[unit].end; index++) {
@@ -276,6 +341,8 @@ void AnimationBatchProcessor::_execute(uint32_t p_batch, bool p_unused) {
 			CZAnimationBridge::evaluate(entry->state);
 		}
 	}
+	running_tasks.decrement();
+	statistics.wall_us = OS::get_singleton()->get_ticks_usec() - start;
 }
 
 void AnimationBatchProcessor::complete() {
@@ -286,6 +353,24 @@ void AnimationBatchProcessor::complete() {
 		WorkerThreadPool::get_singleton()->wait_for_group_task_completion(group);
 		wait_us += OS::get_singleton()->get_ticks_usec() - start;
 		group = -1;
+	}
+	if (task_statistics_pending) {
+		// Each slot has one batch writer; read only after joining every worker.
+		// Sum of execution wall intervals, including inline batches, not CPU time.
+		for (const TaskStatistics &statistics : batch_task_statistics) {
+			task_wall_us_total += statistics.wall_us;
+			main_thread_tasks_total += statistics.main_thread;
+			worker_thread_tasks_total += !statistics.main_thread;
+			task_threads.insert(statistics.thread_id);
+		}
+		tasks_total += batch_task_statistics.size();
+		task_concurrency_peak_last = task_concurrency_peak.get();
+		task_concurrency_peak_total = MAX(task_concurrency_peak_total, task_concurrency_peak_last);
+		parallel_submissions_total += task_concurrency_peak_last > 1;
+		task_statistics_pending = false;
+		for (Entry *entry : work) {
+			_collect_pose_statistics(entry);
+		}
 	}
 }
 
@@ -331,6 +416,7 @@ void AnimationBatchProcessor::_publish(Entry *p_entry) {
 		}
 		mixer->advance(p_entry->delta);
 	}
+	_collect_pose_statistics(p_entry);
 }
 
 void AnimationBatchProcessor::publish(int64_t p_handle) {
@@ -381,6 +467,7 @@ void AnimationBatchProcessor::complete_and_publish() {
 	publish_us += OS::get_singleton()->get_ticks_usec() - start;
 	publishing = false;
 	pending = false;
+	_finish_frame_statistics();
 	active.erase(Ref<AnimationBatchProcessor>(this));
 	for (int index = int(entries.size()) - 1; index >= 0; index--) {
 		if (entries[index]->removed || !CZAnimationBridge::mixer(entries[index]->state)) {
@@ -485,6 +572,33 @@ String AnimationBatchProcessor::get_fallback_reason(int64_t p_handle) const {
 
 Dictionary AnimationBatchProcessor::get_statistics() const {
 	Dictionary result;
+	result.merge(CZPoseTrackBinding::get_track_data_statistics());
+	result["sample_scratch_reuse_enabled"] = CZPoseTrackBinding::is_sample_scratch_reuse_enabled();
+	result["in_place_first_blend_enabled"] = CZPoseTrackBinding::is_in_place_first_blend_enabled();
+	result["zero_pose_skip_enabled"] = CZPoseTrackBinding::is_zero_pose_skip_enabled();
+	result["sample_scratch_buffer_growths_total"] = CZPoseSamplingScratch::get_buffer_growths_total();
+	if (Thread::is_main_thread() && group == -1 && !pending && !preparing && !publishing) {
+		uint64_t binding_bytes = 0, pose_bytes = 0;
+		uint64_t lod_bytes = 0;
+		HashSet<const void *> registered_layouts;
+		for (const Entry *entry : entries) {
+			binding_bytes += CZAnimationBridge::get_binding_sample_scratch_bytes(entry->state);
+			for (const Ref<SkeletonAnimationPose> &pose : entry->poses) {
+				pose_bytes += pose->sampling_scratch.get_storage_bytes();
+				const void *identity = pose->lod.get_descriptor_identity();
+				if (!entry->removed && identity && !registered_layouts.has(identity)) {
+					registered_layouts.insert(identity);
+					lod_bytes += pose->lod.get_storage_bytes();
+				}
+			}
+		}
+		result["binding_sample_scratch_bytes"] = binding_bytes;
+		result["pose_sample_scratch_bytes"] = pose_bytes;
+		result["sample_scratch_bytes"] = binding_bytes + pose_bytes;
+		result["registered_lod_layout_bytes"] = lod_bytes;
+		result["registered_lod_layout_count"] = registered_layouts.size();
+		result.merge(CZBoneLod::get_cache_statistics());
+	}
 	result["phase_diagnostics_enabled"] = phase_diagnostics_enabled;
 	result["pose_fastpaths_enabled"] = pose_fastpaths_enabled;
 	const bool diagnostics_ready = phase_diagnostics_enabled && Thread::is_main_thread() && frame > 0 && group == -1 && !pending && !preparing && !publishing;
@@ -501,12 +615,45 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
 	result["prepare_us"] = prepare_us;
 	result["wait_us"] = wait_us;
 	result["publish_us"] = publish_us;
+	result["completed_frames_total"] = completed_frames_total;
+	result["tasks_total"] = tasks_total;
+	result["task_wall_us_total"] = task_wall_us_total;
+	result["main_thread_tasks_total"] = main_thread_tasks_total;
+	result["worker_thread_tasks_total"] = worker_thread_tasks_total;
+	result["task_threads_total"] = task_threads.size();
+	result["parallel_submissions_total"] = parallel_submissions_total;
+	result["task_concurrency_peak_total"] = task_concurrency_peak_total;
+	result["task_concurrency_peak_last"] = task_concurrency_peak_last;
+	result["prepare_us_total"] = prepare_us_total;
+	result["wait_us_total"] = wait_us_total;
+	result["publish_us_total"] = publish_us_total;
+	result["sample_blend_us_total"] = pose_totals.sample_blend_us;
+	result["interpolate_us_total"] = pose_totals.interpolate_us;
+	result["matrix_us_total"] = pose_totals.matrix_us;
+	result["skin_pack_us_total"] = pose_totals.skin_pack_us;
+	result["pose_copy_bytes_total"] = pose_totals.copy_bytes;
+	result["in_place_blends_total"] = pose_totals.in_place_blends;
+	result["sampler_calls_total"] = pose_totals.sampler_calls;
+	result["sampler_blends_total"] = pose_totals.sampler_blends;
+	result["sampler_without_blend_calls_total"] = pose_totals.sampler_calls - pose_totals.sampler_blends;
+	result["fallbacks_total"] = fallbacks_total;
+	result["failures_total"] = failures_total;
+	result["recomputed_total"] = recomputed_total;
+	result["active_bones_total"] = pose_totals.active_bones;
+	result["full_bones_total"] = pose_totals.full_bones;
+	result["sampled_bones_total"] = pose_totals.sampled_bones;
+	result["displayed_bones_total"] = pose_totals.displayed_bones;
+	result["force_full_bones_requests_total"] = force_full_bones_requests_total;
 	result["pose_simd_available"] = CZPoseSoA::is_simd_available();
 	result["pose_simd_enabled"] = SkeletonAnimationPose::is_simd_enabled();
+	result["pose_layout_soa"] = CZPoseSoA::get_default_layout() == CZPoseSoA::SOA;
+	result["pose_simd_effective"] = SkeletonAnimationPose::is_simd_enabled() && CZPoseSoA::is_simd_available() && CZPoseSoA::get_default_layout() == CZPoseSoA::SOA;
 	result["bone_lod_enabled"] = SkeletonAnimationPose::is_bone_lod_enabled();
 	int counts[3] = {}, fallback_counts[3] = {}, evaluated_counts[3] = {};
 	int samples = 0, displays = 0, exact = 0, active_bones = 0, total_bones = 0;
 	uint64_t sample_blend_us = 0, interpolate_us = 0, skin_pack_us = 0, matrix_us = 0, pose_memory_bytes = 0, copies = 0, captured_bones = 0;
+	uint64_t capture_rebounds = 0, capture_input_refreshes = 0;
+	uint64_t attachment_same_source_updates = 0, attachment_dependency_changes = 0, external_requirement_updates = 0;
 	CZAnimationBridge::MethodValidationStatistics method_statistics;
 	for (const Entry *entry : work) {
 		AnimationMixer *mixer = CZAnimationBridge::mixer(entry->state);
@@ -568,6 +715,11 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
 				pose_memory_bytes += pose->get_storage_bytes();
 				copies += pose->get_skin_buffer_copies();
 				captured_bones += pose->captured_bones;
+				capture_rebounds += pose->capture_rebounds_total;
+				capture_input_refreshes += pose->capture_input_refreshes_total;
+				attachment_same_source_updates += pose->attachment_same_source_updates_total;
+				attachment_dependency_changes += pose->attachment_dependency_changes_total;
+				external_requirement_updates += pose->external_requirement_updates_total;
 			}
 		}
 		if (group == -1) {
@@ -601,6 +753,11 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
 		result["pose_memory_bytes"] = pose_memory_bytes;
 		result["skin_buffer_copies"] = copies;
 		result["captured_bones"] = captured_bones;
+		result["capture_rebounds_total"] = capture_rebounds;
+		result["capture_input_refreshes_total"] = capture_input_refreshes;
+		result["attachment_same_source_updates_total"] = attachment_same_source_updates;
+		result["attachment_dependency_changes_total"] = attachment_dependency_changes;
+		result["external_requirement_updates_total"] = external_requirement_updates;
 	}
 	if (diagnostics_ready) {
 		result["submit_total_us"] = submit_total_us;

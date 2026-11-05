@@ -35,10 +35,27 @@
 
 #include "core/object/worker_thread_pool.h"
 #include "core/os/mutex.h"
+#include "core/os/thread.h"
+#include "core/templates/hash_set.h"
+#include "core/templates/safe_refcount.h"
 
 class AnimationBatchProcessor : public RefCounted {
 	GDCLASS(AnimationBatchProcessor, RefCounted);
 	friend class CZAnimationBridge;
+	struct PoseTotals {
+		uint64_t sample_blend_us = 0;
+		uint64_t interpolate_us = 0;
+		uint64_t matrix_us = 0;
+		uint64_t skin_pack_us = 0;
+		uint64_t copy_bytes = 0;
+		uint64_t in_place_blends = 0;
+		uint64_t sampler_calls = 0;
+		uint64_t sampler_blends = 0;
+		uint64_t active_bones = 0;
+		uint64_t full_bones = 0;
+		uint64_t sampled_bones = 0;
+		uint64_t displayed_bones = 0;
+	};
 	struct Entry {
 		int64_t handle = 0;
 		int64_t parent = 0;
@@ -59,10 +76,16 @@ class AnimationBatchProcessor : public RefCounted {
 		bool removed = false;
 		bool dirty = false;
 		String fallback;
+		PoseTotals pose_snapshot;
 	};
 	struct Unit {
 		uint32_t begin = 0;
 		uint32_t end = 0;
+	};
+	struct TaskStatistics {
+		uint64_t wall_us = 0;
+		Thread::ID thread_id = Thread::UNASSIGNED_ID;
+		bool main_thread = false;
 	};
 	LocalVector<Entry *> entries;
 	HashMap<int64_t, Entry *> handles;
@@ -84,6 +107,28 @@ class AnimationBatchProcessor : public RefCounted {
 	uint64_t publish_us = 0;
 	uint64_t submit_total_us = 0;
 	uint64_t submit_inline_us = 0;
+	PoseTotals pose_totals;
+	uint64_t completed_frames_total = 0;
+	uint64_t tasks_total = 0;
+	uint64_t task_wall_us_total = 0;
+	uint64_t main_thread_tasks_total = 0;
+	uint64_t worker_thread_tasks_total = 0;
+	uint64_t parallel_submissions_total = 0;
+	uint32_t task_concurrency_peak_total = 0;
+	uint32_t task_concurrency_peak_last = 0;
+	HashSet<Thread::ID> task_threads;
+	SafeNumeric<uint32_t> running_tasks;
+	SafeNumeric<uint32_t> task_concurrency_peak;
+	uint64_t prepare_us_total = 0;
+	uint64_t wait_us_total = 0;
+	uint64_t publish_us_total = 0;
+	uint64_t fallbacks_total = 0;
+	uint64_t failures_total = 0;
+	uint64_t recomputed_total = 0;
+	uint64_t force_full_bones_requests_total = 0;
+	LocalVector<TaskStatistics> batch_task_statistics;
+	bool task_statistics_pending = false;
+	bool frame_statistics_pending = false;
 	bool phase_diagnostics_enabled = false;
 	bool pose_fastpaths_enabled = true;
 	uint64_t submission_generation = 0;
@@ -104,6 +149,8 @@ class AnimationBatchProcessor : public RefCounted {
 	void _prepare(Entry *p_entry);
 	void _publish(Entry *p_entry);
 	void _remove(Entry *p_entry);
+	void _collect_pose_statistics(Entry *p_entry, bool p_baseline = false);
+	void _finish_frame_statistics();
 
 protected:
 	static void _bind_methods();

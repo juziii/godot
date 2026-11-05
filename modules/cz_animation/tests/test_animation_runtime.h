@@ -50,6 +50,8 @@
 #include "modules/cz_animation/animation_batch_processor.h"
 #include "modules/cz_animation/animation_hooks.h"
 
+#include <atomic>
+
 namespace TestCZAnimationRuntime {
 
 class AppliedCounter : public RefCounted {
@@ -378,6 +380,8 @@ TEST_CASE("[SceneTree][CZAnimation] Phase diagnostics cover empty submissions an
 	check_phase_diagnostics(empty_statistics);
 	CHECK(int64_t(empty_statistics["evaluate_calls"]) == 0);
 	CHECK(int64_t(empty_statistics["evaluate_total_us"]) == 0);
+	CHECK(int64_t(empty_statistics["task_threads_total"]) == 0);
+	CHECK(int64_t(empty_statistics["task_concurrency_peak_last"]) == 0);
 	struct Rigs {
 		LocalVector<Rig *> items;
 		~Rigs() {
@@ -391,7 +395,21 @@ TEST_CASE("[SceneTree][CZAnimation] Phase diagnostics cover empty submissions an
 		rigs.items.push_back(rig);
 		REQUIRE(processor->queue_update(rig->handle, 0.1));
 	}
-	CHECK(processor->submit(1, 2) != 0);
+	CHECK(processor->submit(1, 1) != 0);
+	processor->complete_and_publish();
+	const Dictionary serial = processor->get_statistics();
+	CHECK(int64_t(serial["tasks_total"]) == 16);
+	CHECK(int64_t(serial["main_thread_tasks_total"]) == 16);
+	CHECK(int64_t(serial["worker_thread_tasks_total"]) == 0);
+	CHECK(int64_t(serial["task_threads_total"]) == 1);
+	CHECK(int64_t(serial["task_concurrency_peak_last"]) == 1);
+	CHECK(int64_t(serial["task_concurrency_peak_total"]) == 1);
+	CHECK(int64_t(serial["parallel_submissions_total"]) == 0);
+	for (const Rig *rig : rigs.items) {
+		REQUIRE(processor->queue_update(rig->handle, 0.1));
+	}
+	CHECK(processor->submit(1, 8) != 0);
+	CHECK(int64_t(processor->get_statistics()["tasks_total"]) == 16);
 	processor->complete();
 	CHECK_FALSE(processor->get_statistics().has("evaluate_total_us"));
 	processor->complete_and_publish();
@@ -399,10 +417,28 @@ TEST_CASE("[SceneTree][CZAnimation] Phase diagnostics cover empty submissions an
 	check_phase_diagnostics(statistics);
 	CHECK(int64_t(statistics["evaluate_calls"]) == 16);
 	CHECK(int64_t(statistics["pawns_evaluated"]) == 16);
-	CHECK(int64_t(statistics["workers"]) == MIN(2, MAX(1, WorkerThreadPool::get_singleton()->get_thread_count())));
+	CHECK(int64_t(statistics["workers"]) == MIN(8, MAX(1, WorkerThreadPool::get_singleton()->get_thread_count())));
+	CHECK(int64_t(statistics["tasks_total"]) == 32);
+	CHECK(int64_t(statistics["main_thread_tasks_total"]) + int64_t(statistics["worker_thread_tasks_total"]) == 32);
+	CHECK(int64_t(statistics["task_threads_total"]) >= 1);
+	CHECK(int64_t(statistics["task_threads_total"]) <= 9);
+	const int64_t peak = statistics["task_concurrency_peak_last"];
+	CHECK(peak >= 1);
+	CHECK(peak <= 8);
+	CHECK(int64_t(statistics["task_concurrency_peak_total"]) == peak);
+	CHECK(int64_t(statistics["parallel_submissions_total"]) == (peak > 1 ? 1 : 0));
+	if (WorkerThreadPool::get_singleton()->get_thread_count() >= 2) {
+		CHECK(int64_t(statistics["worker_thread_tasks_total"]) > 0);
+	}
 	for (const Rig *rig : rigs.items) {
-		CHECK(rig->observer->count == 1);
-		CHECK(rig->skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(1, 0, 0)));
+		CHECK(rig->observer->count == 2);
+		CHECK(rig->skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(2, 0, 0)));
+	}
+	processor->complete_and_publish();
+	memdelete(rigs.items[rigs.items.size() - 1]);
+	rigs.items.remove_at(rigs.items.size() - 1);
+	for (const char *key : { "tasks_total", "main_thread_tasks_total", "worker_thread_tasks_total", "task_threads_total", "parallel_submissions_total", "task_concurrency_peak_total", "task_concurrency_peak_last" }) {
+		CHECK(int64_t(processor->get_statistics()[key]) == int64_t(statistics[key]));
 	}
 }
 
@@ -878,6 +914,117 @@ TEST_CASE("[SceneTree][CZAnimation] Bone LOD and ForceFullBones do not change th
 	CHECK(rig.pose->get_active_bone_count() == 1);
 }
 
+TEST_CASE("[SceneTree][CZAnimation] Bone LOD views retain full bindings and restore mixer reference channels") {
+	Rig original, batched;
+	for (Rig *rig : { &original, &batched }) {
+		rig->skeleton->set_bone_rest(1, Transform3D(Basis(), Vector3(0, 4, 0)));
+		const int finger = rig->animation->add_track(Animation::TYPE_POSITION_3D);
+		rig->animation->track_set_path(finger, NodePath("Skeleton3D:Finger"));
+		rig->animation->position_track_insert_key(finger, 0, Vector3(0, 8, 0));
+		Ref<AnimationLibrary> library = rig->tree->get_animation_library(StringName());
+		Ref<Animation> reset, empty;
+		reset.instantiate();
+		empty.instantiate();
+		const int reset_finger = reset->add_track(Animation::TYPE_POSITION_3D);
+		reset->track_set_path(reset_finger, NodePath("Skeleton3D:Finger"));
+		// Skeleton tracks use bone rest, even when RESET supplies another value.
+		reset->position_track_insert_key(reset_finger, 0, Vector3(0, 12, 0));
+		REQUIRE(library->add_animation("RESET", reset) == OK);
+		REQUIRE(library->add_animation("Empty", empty) == OK);
+		Ref<AnimationNodeBlendTree> graph;
+		Ref<AnimationNodeAnimation> empty_node;
+		Ref<AnimationNodeBlend2> blend;
+		graph.instantiate();
+		empty_node.instantiate();
+		blend.instantiate();
+		empty_node->set_animation("Empty");
+		graph->add_node("Move", rig->animation_node);
+		graph->add_node("Empty", empty_node);
+		graph->add_node("Blend", blend);
+		graph->connect_node("Blend", 0, "Move");
+		graph->connect_node("Blend", 1, "Empty");
+		graph->connect_node("output", 0, "Blend");
+		rig->tree->set_root_animation_node(graph);
+		rig->tree->set_deterministic(true);
+		rig->tree->set("parameters/Blend/blend_amount", 0.5);
+	}
+	batched.pose->configure_bone_lod({ "Finger" }, { 1 });
+	batched.pose->set_bone_lod(1);
+	original.tree->advance(0.1);
+	batched.submit();
+	batched.processor->complete_and_publish();
+	const int64_t builds = method_statistic(batched.processor, "track_descriptor_builds");
+	REQUIRE(builds > 0);
+	for (bool full : { true, false, true, false }) {
+		original.tree->advance(0.1);
+		batched.submit(0.1, full);
+		batched.processor->complete_and_publish();
+		CHECK(batched.processor->was_evaluated(batched.handle));
+		CHECK(batched.pose->get_bone_lod() == 1);
+		CHECK(batched.pose->get_active_bone_count() == (full ? 2 : 1));
+		CHECK(batched.skeleton->get_bone_pose(0).is_equal_approx(original.skeleton->get_bone_pose(0)));
+		const Vector3 actual = batched.skeleton->get_bone_pose_position(1);
+		const Vector3 original_position = original.skeleton->get_bone_pose_position(1);
+		CAPTURE(full, actual, original_position);
+		CHECK(original_position.is_equal_approx(Vector3(0, 6, 0)));
+		CHECK(actual.is_equal_approx(full ? original_position : Vector3(0, 4, 0)));
+		CHECK(method_statistic(batched.processor, "track_descriptor_builds") == builds);
+	}
+	for (int level : { 0, 1, 0, 1 }) {
+		batched.pose->set_bone_lod(level);
+		batched.submit(0);
+		batched.processor->complete_and_publish();
+		CHECK(batched.pose->get_active_bone_count() == (level == 0 ? 2 : 1));
+		CHECK(batched.skeleton->get_bone_pose_position(1).is_equal_approx(level == 0 ? Vector3(0, 6, 0) : Vector3(0, 4, 0)));
+		CHECK(method_statistic(batched.processor, "track_descriptor_builds") == builds);
+	}
+	for (Rig *rig : { &original, &batched }) {
+		rig->skeleton->set_bone_rest(1, Transform3D(Basis(), Vector3(0, 2, 0)));
+		rig->tree->clear_caches();
+	}
+	original.tree->advance(0);
+	batched.submit(0);
+	batched.processor->complete_and_publish();
+	CHECK(method_statistic(batched.processor, "track_descriptor_builds") > builds);
+	const int64_t rest_builds = method_statistic(batched.processor, "track_descriptor_builds");
+	CHECK(batched.skeleton->get_bone_pose_position(1).is_equal_approx(Vector3(0, 2, 0)));
+	batched.pose->set_socket_input(0, 1, Vector3(), Transform3D(), Basis(), true);
+	batched.submit(0);
+	batched.processor->complete_and_publish();
+	CHECK(batched.pose->get_active_bone_count() == 2);
+	CHECK(original.skeleton->get_bone_pose_position(1).is_equal_approx(Vector3(0, 5, 0)));
+	CHECK(batched.skeleton->get_bone_pose_position(1).is_equal_approx(original.skeleton->get_bone_pose_position(1)));
+	CHECK(method_statistic(batched.processor, "track_descriptor_builds") > rest_builds);
+}
+
+TEST_CASE("[SceneTree][CZAnimation] ForceFullBones retains an already full binding") {
+	Rig rig;
+	rig.submit();
+	rig.processor->complete_and_publish();
+	const int64_t rebounds = method_statistic(rig.processor, "capture_rebounds_total");
+	REQUIRE(rebounds > 0);
+	for (bool force_full : { true, false, true, false }) {
+		rig.submit(0, force_full);
+		rig.processor->complete_and_publish();
+		CHECK(rig.processor->was_evaluated(rig.handle));
+		CHECK(rig.pose->get_active_bone_count() == rig.pose->get_bone_count());
+		CHECK(method_statistic(rig.processor, "capture_rebounds_total") == rebounds);
+	}
+	CHECK(method_statistic(rig.processor, "force_full_bones_requests_total") == 2);
+	SkeletonAnimationPose::set_bone_lod_enabled(false);
+	rig.pose->configure_bone_lod({ "Finger" }, { 1 });
+	rig.pose->set_bone_lod(2);
+	rig.submit();
+	rig.processor->complete_and_publish();
+	const int64_t disabled_rebounds = method_statistic(rig.processor, "capture_rebounds_total");
+	rig.submit(0, true);
+	rig.processor->complete_and_publish();
+	CHECK(method_statistic(rig.processor, "capture_rebounds_total") == disabled_rebounds);
+	CHECK(rig.pose->get_active_bone_count() == rig.pose->get_bone_count());
+	CHECK(rig.pose->get_bone_lod() == 2);
+	SkeletonAnimationPose::set_bone_lod_enabled(true);
+}
+
 TEST_CASE("[SceneTree][CZAnimation] Unregistration discards a pending result and restores ownership") {
 	Rig rig;
 	rig.submit();
@@ -1098,6 +1245,29 @@ TEST_CASE("[SceneTree][CZAnimation] Pose sources reject cycles and unordered cro
 	consumer.processor->complete_and_publish();
 	CHECK_FALSE(consumer.processor->was_evaluated(consumer.handle));
 	CHECK(consumer.processor->get_fallback_reason(consumer.handle).contains("not ordered"));
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Attachment matrix updates preserve parent LOD dependencies") {
+	Rig source;
+	Rig consumer;
+	source.pose->configure_bone_lod({ "Finger" }, { 1 });
+	source.pose->set_bone_lod(1);
+	consumer.pose->configure_attachment(source.pose, 1, Transform3D(), Transform3D(), false);
+	REQUIRE(source.pose->capture_current());
+	REQUIRE(consumer.pose->capture_current());
+	CHECK(source.pose->get_active_bone_count() == 2);
+	CHECK(source.pose->matches_current_inputs());
+	const Transform3D scale(Basis::from_scale(Vector3(2, 3, 4)), Vector3());
+	const Transform3D offset(Basis(Vector3(0, 1, 0), 0.2), Vector3(5, 6, 7));
+	consumer.pose->configure_attachment(source.pose, 1, scale, offset, true);
+	CHECK(source.pose->matches_current_inputs());
+	CHECK(consumer.pose->matches_current_inputs());
+	REQUIRE(consumer.pose->capture_current());
+	CHECK(source.pose->get_active_bone_count() == 2);
+	consumer.pose->configure_attachment(source.pose, 0, scale, offset, true);
+	CHECK_FALSE(source.pose->matches_current_inputs());
+	REQUIRE(source.pose->capture_current());
+	CHECK(source.pose->get_active_bone_count() == 1);
 }
 
 TEST_CASE("[SceneTree][CZAnimation] Publication rejects retargeted captures and removed skin bindings") {
@@ -1417,6 +1587,53 @@ TEST_CASE("[SceneTree][CZAnimation] Shared animation method certificates remain 
 }
 
 #ifdef THREADS_ENABLED
+TEST_CASE("[SceneTree][CZAnimation] Worker mixer configuration leaves scene caches and pending work alone") {
+	struct ErrorCounter {
+		std::atomic<int> errors{ 0 };
+		ErrorHandlerList handler;
+		ErrorCounter() {
+			handler.userdata = this;
+			handler.errfunc = [](void *p_self, const char *, const char *, int, const char *, const char *, bool, ErrorHandlerType p_type) {
+				if (p_type != ERR_HANDLER_WARNING) {
+					static_cast<ErrorCounter *>(p_self)->errors.fetch_add(1, std::memory_order_relaxed);
+				}
+			};
+			add_error_handler(&handler);
+		}
+		~ErrorCounter() { remove_error_handler(&handler); }
+	} counter;
+	Rig rig;
+	rig.submit();
+	Thread worker;
+	worker.start([](void *) {
+		AnimationTree *tree = memnew(AnimationTree);
+		AnimationPlayer *player = memnew(AnimationPlayer);
+		Ref<AnimationNodeAnimation> root;
+		root.instantiate();
+		root->set_animation("Ready");
+		tree->set_root_animation_node(root);
+		tree->set_root_motion_track(NodePath("Rig:Root"));
+		Ref<AnimationLibrary> library;
+		library.instantiate();
+		Ref<Animation> animation;
+		animation.instantiate();
+		library->add_animation("Ready", animation);
+		player->add_animation_library(StringName(), library);
+		player->remove_animation_library(StringName());
+		memdelete(tree);
+		memdelete(player);
+	},
+			nullptr);
+	REQUIRE(worker.is_started());
+	worker.wait_to_finish();
+	CHECK(counter.errors.load(std::memory_order_relaxed) == 0);
+	CHECK(rig.processor->is_pending());
+	CHECK(rig.observer->count == 0);
+	rig.processor->complete_and_publish();
+	CHECK(rig.processor->was_evaluated(rig.handle));
+	CHECK(rig.observer->count == 1);
+}
+
 TEST_CASE("[SceneTree][CZAnimation] Independent worker library construction does not join pending scene work") {
 	Rig rig;
 	rig.submit();
@@ -1595,6 +1812,7 @@ static void install_zero_certificate_graph(Rig &p_rig) {
 
 TEST_CASE("[SceneTree][CZAnimation] Zero bone certificates preserve filtered auxiliary events mutation and root motion") {
 	PhaseDiagnosticsEnvironment diagnostics(true);
+	const bool zero_pose_skip = CZPoseTrackBinding::is_zero_pose_skip_enabled();
 	for (bool deterministic : { true, false }) {
 		PoseFastpathsEnvironment environment(false);
 		Rig legacy(Ref<AnimationBatchProcessor>(), { "rotate_y" });
@@ -1643,13 +1861,14 @@ TEST_CASE("[SceneTree][CZAnimation] Zero bone certificates preserve filtered aux
 				CHECK(rig->processor->was_evaluated(rig->handle));
 				CHECK(rig->observer->count == prior_events + 1);
 				CHECK(rig->skeleton->get_bone_pose(0).is_equal_approx(original.skeleton->get_bone_pose(0)));
+				CHECK(Math::is_equal_approx(double(rig->tree->get("parameters/Move/current_position")), double(original.tree->get("parameters/Move/current_position"))));
 				CHECK(rig->tree->get_root_motion_position().is_equal_approx(original.tree->get_root_motion_position()));
 				CHECK(rig->tree->get_root_motion_position_accumulator().is_equal_approx(original.tree->get_root_motion_position_accumulator()));
 				CHECK(aux->target->get_position().is_equal_approx(original_aux.target->get_position()));
 				CHECK(aux->target->get_rotation().is_equal_approx(original_aux.target->get_rotation()));
 				CHECK(Math::is_equal_approx(aux->mesh_instance->get_blend_shape_value(0), original_aux.mesh_instance->get_blend_shape_value(0)));
 				const int64_t skips = method_statistic(rig->processor, "sample_certified_zero_weight_calls");
-				if (variant == 0 || !deterministic || step == 1) {
+				if (variant == 0 || !deterministic || step == 1 || !zero_pose_skip) {
 					CHECK(skips == 0);
 				} else {
 					CHECK(skips > 0);
@@ -1661,7 +1880,7 @@ TEST_CASE("[SceneTree][CZAnimation] Zero bone certificates preserve filtered aux
 			}
 			if (deterministic) {
 				const int64_t rebuilds = method_statistic(fast.processor, "zero_weight_mask_rebuilds");
-				CHECK(rebuilds == int64_t(step != 1 && step != 6));
+				CHECK(rebuilds == int64_t(zero_pose_skip && step != 1 && step != 6));
 			} else {
 				CHECK(method_statistic(fast.processor, "zero_weight_mask_rebuilds") == 0);
 			}
@@ -1670,6 +1889,7 @@ TEST_CASE("[SceneTree][CZAnimation] Zero bone certificates preserve filtered aux
 }
 
 TEST_CASE("[SceneTree][CZAnimation] Zero weight masks include every registered Pose and rebuild for bone LOD") {
+	int64_t track_builds = 0;
 	struct BoneLodRestore {
 		bool enabled = SkeletonAnimationPose::is_bone_lod_enabled();
 		BoneLodRestore() { SkeletonAnimationPose::set_bone_lod_enabled(true); }
@@ -1730,13 +1950,13 @@ TEST_CASE("[SceneTree][CZAnimation] Zero weight masks include every registered P
 			}
 		}
 		const int64_t skips = method_statistic(fast.processor, "sample_certified_zero_weight_calls");
-		if (step == 2) {
+		if (step == 2 && CZPoseTrackBinding::is_zero_pose_skip_enabled()) {
 			CHECK(skips > 0);
 		} else {
 			CHECK(skips == 0);
 		}
 		CHECK(method_statistic(legacy.processor, "sample_certified_zero_weight_calls") == 0);
-		CHECK(method_statistic(fast.processor, "zero_weight_mask_rebuilds") == int64_t(step != 1));
+		CHECK(method_statistic(fast.processor, "zero_weight_mask_rebuilds") == int64_t(CZPoseTrackBinding::is_zero_pose_skip_enabled() && step != 1));
 		CHECK(method_statistic(legacy.processor, "evaluate_instance_track_skips") == 0);
 		CHECK(method_statistic(fast.processor, "evaluate_instance_track_skips") > 0);
 		CHECK(method_statistic(legacy.processor, "publish_instance_track_skips") == 0);
@@ -1745,6 +1965,11 @@ TEST_CASE("[SceneTree][CZAnimation] Zero weight masks include every registered P
 		CHECK(method_statistic(fast.processor, "evaluate_owned_weight_copy_elements") == 0);
 		for (const char *key : { "sample_pose_instance_calls", "sample_zero_bone_weight_calls", "sample_no_written_bone_calls", "sample_empty_binding_calls" }) {
 			CHECK(method_statistic(legacy.processor, key) == method_statistic(fast.processor, key));
+		}
+		if (step == 0) {
+			track_builds = method_statistic(fast.processor, "track_descriptor_builds");
+		} else {
+			CHECK(method_statistic(fast.processor, "track_descriptor_builds") == track_builds);
 		}
 	}
 }
@@ -1804,8 +2029,13 @@ TEST_CASE("[SceneTree][CZAnimation] Eventless borrowed Tree weights preserve pos
 			CHECK(Math::is_equal_approx(aux->mesh_instance->get_blend_shape_value(0), synchronous_aux.mesh_instance->get_blend_shape_value(0)));
 		}
 		if (step == 0) {
-			CHECK(method_statistic(borrowed.processor, "evaluate_zero_weight_elements_inspected") > 0);
-			CHECK(method_statistic(borrowed.processor, "sample_certified_zero_weight_calls") > 0);
+			if (CZPoseTrackBinding::is_zero_pose_skip_enabled()) {
+				CHECK(method_statistic(borrowed.processor, "evaluate_zero_weight_elements_inspected") > 0);
+				CHECK(method_statistic(borrowed.processor, "sample_certified_zero_weight_calls") > 0);
+			} else {
+				CHECK(method_statistic(borrowed.processor, "evaluate_zero_weight_elements_inspected") == 0);
+				CHECK(method_statistic(borrowed.processor, "sample_certified_zero_weight_calls") == 0);
+			}
 		}
 	}
 }
@@ -2240,6 +2470,144 @@ TEST_CASE("[SceneTree][CZAnimation] Prepared BlendSpace map serves only real 1D 
 			CHECK(batched.processor->was_evaluated(batched.handle));
 			CHECK(batched.observer->count == step + 1);
 			CHECK(batched.skeleton->get_bone_pose(0).is_equal_approx(original.skeleton->get_bone_pose(0)));
+		}
+	}
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Cumulative work statistics survive partial publication removal and idle submits") {
+	PhaseDiagnosticsEnvironment environment(false);
+	Rig rig;
+	const char *keys[] = {
+		"completed_frames_total", "tasks_total", "task_wall_us_total", "prepare_us_total", "wait_us_total", "publish_us_total",
+		"sample_blend_us_total", "interpolate_us_total", "matrix_us_total", "skin_pack_us_total", "pose_copy_bytes_total", "fallbacks_total", "failures_total",
+		"recomputed_total", "active_bones_total", "full_bones_total", "sampled_bones_total", "displayed_bones_total", "force_full_bones_requests_total",
+		"sampler_calls_total", "sampler_blends_total", "sampler_without_blend_calls_total"
+	};
+	const Dictionary initial = rig.processor->get_statistics();
+	for (const char *key : keys) {
+		REQUIRE(initial.has(key));
+		CHECK(int64_t(initial[key]) == 0);
+	}
+	rig.submit(0.1, true);
+	CHECK(method_statistic(rig.processor, "tasks_total") == 0);
+	rig.processor->complete();
+	const Dictionary joined = rig.processor->get_statistics();
+	CHECK(int64_t(joined["completed_frames_total"]) == 0);
+	CHECK(int64_t(joined["tasks_total"]) == 1);
+	CHECK(int64_t(joined["active_bones_total"]) == 2);
+	CHECK(int64_t(joined["full_bones_total"]) == 2);
+	CHECK(int64_t(joined["sampled_bones_total"]) == 2);
+	CHECK(int64_t(joined["displayed_bones_total"]) == 2);
+	CHECK(int64_t(joined["force_full_bones_requests_total"]) == 1);
+	CHECK(int64_t(joined["pose_copy_bytes_total"]) > 0);
+	CHECK(int64_t(joined["task_wall_us_total"]) >= int64_t(joined["sample_blend_us_total"]));
+	rig.processor->complete();
+	for (const char *key : keys) {
+		CHECK(int64_t(rig.processor->get_statistics()[key]) == int64_t(joined[key]));
+	}
+	rig.processor->publish(rig.handle);
+	rig.processor->complete_and_publish();
+	const Dictionary published = rig.processor->get_statistics();
+	CHECK(int64_t(published["completed_frames_total"]) == 1);
+	CHECK(int64_t(published["prepare_us_total"]) == int64_t(published["prepare_us"]));
+	CHECK(int64_t(published["wait_us_total"]) == int64_t(published["wait_us"]));
+	CHECK(int64_t(published["publish_us_total"]) == int64_t(published["publish_us"]));
+	CHECK(int64_t(published["sample_blend_us_total"]) == int64_t(joined["sample_blend_us_total"]));
+	rig.processor->complete_and_publish();
+	for (const char *key : keys) {
+		CHECK(int64_t(rig.processor->get_statistics()[key]) == int64_t(published[key]));
+	}
+	Ref<MixerDeletion> deletion;
+	deletion.instantiate();
+	deletion->target = &rig.tree;
+	rig.tree->connect(SNAME("mixer_applied"), callable_mp(deletion.ptr(), &MixerDeletion::remove));
+	rig.submit();
+	{
+		ExpectedSignalFreeError expected;
+		rig.processor->complete_and_publish();
+		CHECK(expected.unexpected == 0);
+	}
+	CHECK(rig.tree == nullptr);
+	const Dictionary removed = rig.processor->get_statistics();
+	CHECK(int64_t(removed["completed_frames_total"]) == 2);
+	CHECK(int64_t(removed["tasks_total"]) == 2);
+	CHECK(int64_t(removed["active_bones_total"]) == 4);
+	for (const char *key : keys) {
+		CHECK(int64_t(removed[key]) >= int64_t(published[key]));
+	}
+	Rig discarded(rig.processor);
+	discarded.submit();
+	rig.processor->discard(discarded.handle);
+	rig.processor->unregister_tree(discarded.handle);
+	rig.processor->complete_and_publish();
+	const Dictionary discarded_statistics = rig.processor->get_statistics();
+	CHECK(int64_t(discarded_statistics["completed_frames_total"]) == 3);
+	CHECK(int64_t(discarded_statistics["tasks_total"]) == 3);
+	CHECK(int64_t(discarded_statistics["active_bones_total"]) == 6);
+	rig.processor->submit(8, 1);
+	const Dictionary idle = rig.processor->get_statistics();
+	CHECK(int64_t(idle["completed_frames_total"]) == 4);
+	CHECK(int64_t(idle["tasks_total"]) == 3);
+	CHECK(int64_t(idle["active_bones_total"]) == 6);
+	CHECK(int64_t(idle["force_full_bones_requests_total"]) == 1);
+	CHECK(int64_t(idle["pose_copy_bytes_total"]) == int64_t(discarded_statistics["pose_copy_bytes_total"]));
+	for (const char *key : keys) {
+		CHECK(int64_t(idle[key]) >= int64_t(discarded_statistics[key]));
+	}
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Independent zero pose skip retains filtered nonfinite missing tracks and graph time") {
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	PoseFastpathsEnvironment fastpaths(true);
+	Rig original(Ref<AnimationBatchProcessor>(), { "rotate_y" });
+	Rig batched(Ref<AnimationBatchProcessor>(), { "rotate_y" });
+	original.processor->unregister_tree(original.handle);
+	AuxiliaryTracks original_aux(original), batched_aux(batched);
+	for (Rig *rig : { &original, &batched }) {
+		install_zero_certificate_graph(*rig);
+	}
+	const bool enabled = OS::get_singleton()->get_environment("CZ_ANIM_DISABLE_ZERO_POSE_SKIP") != "1";
+	CHECK(bool(batched.processor->get_statistics()["zero_pose_skip_enabled"]) == enabled);
+	for (int step = 0; step < 3; step++) {
+		for (Rig *rig : { &original, &batched }) {
+			if (step == 0) {
+				// The masked-out bone channel may contain nonfinite keys without
+				// skipping this clip's clock, method events or auxiliary outputs.
+				rig->animation->position_track_insert_key(0, 0, Vector3(real_t(Math::NaN), 0, 0));
+			} else if (step == 1) {
+				while (rig->animation->track_get_key_count(0) > 0) {
+					rig->animation->track_remove_key(0, 0);
+				}
+				rig->tree->set("parameters/Masked/blend_amount", 0.35);
+			} else {
+				rig->animation->remove_track(0);
+				rig->tree->set("parameters/Masked/blend_amount", 1.0);
+			}
+		}
+		original.tree->advance(0.1);
+		const Vector3 prior_rotation = batched_aux.target->get_rotation();
+		batched.submit();
+		batched.processor->complete();
+		CHECK(batched_aux.target->get_rotation().is_equal_approx(prior_rotation));
+		batched.processor->complete_and_publish();
+		CHECK(batched.processor->was_evaluated(batched.handle));
+		for (int bone = 0; bone < 2; bone++) {
+			CHECK(batched.skeleton->get_bone_pose(bone).is_equal_approx(original.skeleton->get_bone_pose(bone)));
+		}
+		CHECK(batched_aux.target->get_rotation().is_equal_approx(original_aux.target->get_rotation()));
+		CHECK(batched_aux.target->get_position().is_equal_approx(original_aux.target->get_position()));
+		CHECK(Math::is_equal_approx(batched_aux.mesh_instance->get_blend_shape_value(0), original_aux.mesh_instance->get_blend_shape_value(0)));
+		CHECK(Math::is_equal_approx(double(batched.tree->get("parameters/Move/current_position")), double(original.tree->get("parameters/Move/current_position"))));
+		const int64_t calls = method_statistic(batched.processor, "sampler_calls_total");
+		const int64_t blends = method_statistic(batched.processor, "sampler_blends_total");
+		CHECK(calls > 0);
+		CHECK(blends <= calls);
+		CHECK(method_statistic(batched.processor, "sampler_without_blend_calls_total") == calls - blends);
+		if (!enabled) {
+			CHECK(blends == calls);
+			CHECK(method_statistic(batched.processor, "sample_certified_zero_weight_calls") == 0);
+			CHECK(method_statistic(batched.processor, "zero_weight_mask_rebuilds") == 0);
+			CHECK(method_statistic(batched.processor, "evaluate_zero_weight_elements_inspected") == 0);
 		}
 	}
 }
