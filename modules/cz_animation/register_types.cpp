@@ -47,5 +47,6 @@ void uninitialize_cz_animation_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
 		CZAnimationBridge::shutdown();
 		CZPoseTrackBinding::clear_track_data_cache();
+		CZBoneLod::clear_layout_cache();
 	}
 }
