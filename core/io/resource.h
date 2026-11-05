@@ -106,6 +106,7 @@ private:
 protected:
 	virtual void _resource_path_changed();
 	static void _bind_methods();
+	void _notification(int p_what);
 
 	void _block_emit_changed();
 	void _unblock_emit_changed();

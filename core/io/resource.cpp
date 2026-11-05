@@ -76,6 +76,22 @@ void Resource::_unblock_emit_changed() {
 void Resource::_resource_path_changed() {
 }
 
+void Resource::_notification(int p_what) {
+	if (p_what == NOTIFICATION_PREDELETE_CLEANUP) {
+		if (unlikely(path_cache.is_empty())) {
+			return;
+		}
+		// Unregister before Object::_predelete() destroys the script instance.
+		// Cache readers hold this lock while preparing the managed reference.
+		MutexLock lock(ResourceCache::lock);
+		HashMap<String, Resource *>::Iterator E = ResourceCache::resources.find(path_cache);
+		if (E && E->value == this) {
+			ResourceCache::resources.remove(E);
+		}
+		path_cache = String();
+	}
+}
+
 void Resource::set_path(const String &p_path, bool p_take_over) {
 	if (path_cache == p_path) {
 		return;
@@ -855,7 +871,7 @@ Ref<Resource> ResourceCache::get_ref(const String &p_path) {
 		MutexLock mutex_lock(lock);
 		Resource **res = resources.getptr(p_path);
 
-		if (res) {
+		if (res && (!(*res)->get_script_instance() || (*res)->get_script_instance()->refcount_prepare_cached_reference())) {
 			ref = Ref<Resource>(*res);
 		}
 
@@ -876,7 +892,10 @@ void ResourceCache::get_cached_resources(List<Ref<Resource>> *p_resources) {
 	LocalVector<String> to_remove;
 
 	for (KeyValue<String, Resource *> &E : resources) {
-		Ref<Resource> ref = Ref<Resource>(E.value);
+		Ref<Resource> ref;
+		if (!E.value->get_script_instance() || E.value->get_script_instance()->refcount_prepare_cached_reference()) {
+			ref = Ref<Resource>(E.value);
+		}
 
 		if (ref.is_null()) {
 			// This resource is in the process of being deleted, ignore its existence

@@ -82,6 +82,9 @@ public:
 
 	virtual void refcount_incremented() {}
 	virtual bool refcount_decremented() { return true; } //return true if it can die
+	// Called while a native cache protects the owner, before taking a new Ref.
+	// Managed languages can reject an instance already queued for finalization.
+	virtual bool refcount_prepare_cached_reference() { return true; }
 
 	virtual Ref<Script> get_script() const = 0;
 
