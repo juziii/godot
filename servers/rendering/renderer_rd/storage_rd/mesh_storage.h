@@ -358,6 +358,9 @@ private:
 	struct SkinBufferStats {
 		std::atomic<uint64_t> apply_calls{ 0 };
 		std::atomic<uint64_t> apply_bytes{ 0 };
+		std::atomic<uint64_t> bulk_apply_calls{ 0 };
+		std::atomic<uint64_t> per_bone_apply_calls{ 0 };
+		std::atomic<uint64_t> apply_elapsed_us{ 0 };
 		std::atomic<uint64_t> upload_passes{ 0 };
 		std::atomic<uint64_t> dirty_skeletons{ 0 };
 		std::atomic<uint64_t> upload_calls{ 0 };
@@ -807,7 +810,7 @@ public:
 	virtual void skeleton_allocate_data(RID p_skeleton, int p_bones, bool p_2d_skeleton = false) override;
 	virtual void skeleton_set_base_transform_2d(RID p_skeleton, const Transform2D &p_base_transform) override;
 	virtual int skeleton_get_bone_count(RID p_skeleton) const override;
-	virtual void skeleton_set_buffer(RID p_skeleton, const Vector<float> &p_buffer) override;
+	virtual void skeleton_set_buffer(RID p_skeleton, const Vector<float> &p_buffer, bool p_bulk = true) override;
 	virtual Dictionary skeleton_get_buffer_statistics(bool p_reset = true) override;
 	virtual void skeleton_bone_set_transform(RID p_skeleton, int p_bone, const Transform3D &p_transform) override;
 	virtual Transform3D skeleton_bone_get_transform(RID p_skeleton, int p_bone) const override;

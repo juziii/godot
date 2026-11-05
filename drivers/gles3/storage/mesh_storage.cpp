@@ -2436,7 +2436,7 @@ int MeshStorage::skeleton_get_bone_count(RID p_skeleton) const {
 	return skeleton->size;
 }
 
-void MeshStorage::skeleton_set_buffer(RID p_skeleton, const Vector<float> &p_buffer) {
+void MeshStorage::skeleton_set_buffer(RID p_skeleton, const Vector<float> &p_buffer, bool p_bulk) {
 	GodotProfileZone("Animation.SkinBufferApply");
 	Skeleton *skeleton = skeleton_owner.get_or_null(p_skeleton);
 	ERR_FAIL_NULL(skeleton);
@@ -2446,9 +2446,22 @@ void MeshStorage::skeleton_set_buffer(RID p_skeleton, const Vector<float> &p_buf
 		return;
 	}
 
-	// The texture backing store is padded; the palette occupies its prefix.
-	memcpy(skeleton->data.ptr(), p_buffer.ptr(), uint64_t(p_buffer.size()) * sizeof(float));
-	_skeleton_make_dirty(skeleton);
+	if (p_bulk) {
+		// The texture backing store is padded; the palette occupies its prefix.
+		memcpy(skeleton->data.ptr(), p_buffer.ptr(), uint64_t(p_buffer.size()) * sizeof(float));
+		_skeleton_make_dirty(skeleton);
+	} else {
+		const float *buffer = p_buffer.ptr();
+		for (int bone = 0; bone < skeleton->size; bone++) {
+			const float *source = buffer + bone * 12;
+			Transform3D transform;
+			transform.basis.rows[0] = Vector3(source[0], source[1], source[2]);
+			transform.basis.rows[1] = Vector3(source[4], source[5], source[6]);
+			transform.basis.rows[2] = Vector3(source[8], source[9], source[10]);
+			transform.origin = Vector3(source[3], source[7], source[11]);
+			skeleton_bone_set_transform(p_skeleton, bone, transform);
+		}
+	}
 }
 
 void MeshStorage::skeleton_bone_set_transform(RID p_skeleton, int p_bone, const Transform3D &p_transform) {

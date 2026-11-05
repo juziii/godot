@@ -46,6 +46,11 @@ bool AnimationBatchProcessor::shutting_down = false;
 static thread_local int drain_depth = 0;
 static thread_local uint64_t drain_cutoff = 0;
 
+static bool is_bulk_skin_upload_enabled() {
+	static const bool enabled = OS::get_singleton()->get_environment("CZ_ANIM_SKIN_UPLOAD_PER_BONE") != "1";
+	return enabled;
+}
+
 AnimationBatchProcessor::AnimationBatchProcessor() {
 	phase_diagnostics_enabled = OS::get_singleton()->get_environment("CZ_ANIM_PHASE_DIAGNOSTICS") == "1";
 	pose_fastpaths_enabled = OS::get_singleton()->get_environment("CZ_ANIM_DISABLE_POSE_FASTPATHS") != "1";
@@ -572,6 +577,7 @@ String AnimationBatchProcessor::get_fallback_reason(int64_t p_handle) const {
 
 Dictionary AnimationBatchProcessor::get_statistics() const {
 	Dictionary result;
+	result["bulk_skin_upload_enabled"] = is_bulk_skin_upload_enabled();
 	result.merge(CZPoseTrackBinding::get_track_data_statistics());
 	result["sample_scratch_reuse_enabled"] = CZPoseTrackBinding::is_sample_scratch_reuse_enabled();
 	result["in_place_first_blend_enabled"] = CZPoseTrackBinding::is_in_place_first_blend_enabled();
@@ -796,9 +802,9 @@ bool AnimationBatchProcessor::set_parameter_group(AnimationTree *p_tree, const T
 	return CZAnimationBridge::set_parameter_group(p_tree, p_names, p_value);
 }
 
-static void upload_skeleton_buffer(RID p_skeleton, const Vector<float> &p_buffer) {
+static void upload_skeleton_buffer(RID p_skeleton, const Vector<float> &p_buffer, bool p_bulk) {
 	if (RSG::mesh_storage) {
-		RSG::mesh_storage->skeleton_set_buffer(p_skeleton, p_buffer);
+		RSG::mesh_storage->skeleton_set_buffer(p_skeleton, p_buffer, p_bulk);
 	}
 }
 
@@ -806,7 +812,7 @@ void AnimationBatchProcessor::set_skeleton_buffer(RID p_skeleton, const Vector<f
 	ERR_FAIL_COND(!Thread::is_main_thread());
 	// Callable-bound Variants retain the COW buffer until the render queue consumes
 	// it. RID resize, this call and free all travel through the same server queue.
-	RenderingServer::get_singleton()->call_on_render_thread(callable_mp_static(&upload_skeleton_buffer).bind(p_skeleton, p_buffer));
+	RenderingServer::get_singleton()->call_on_render_thread(callable_mp_static(&upload_skeleton_buffer).bind(p_skeleton, p_buffer, is_bulk_skin_upload_enabled()));
 }
 
 Dictionary AnimationBatchProcessor::get_skeleton_buffer_statistics(bool p_reset) {

@@ -30,6 +30,7 @@
 
 #include "mesh_storage.h"
 
+#include "core/os/os.h"
 #include "core/profiling/profiling.h"
 #include "servers/rendering/renderer_viewport.h"
 #include "servers/rendering/rendering_server.h"
@@ -2444,7 +2445,7 @@ int MeshStorage::skeleton_get_bone_count(RID p_skeleton) const {
 	return skeleton->size;
 }
 
-void MeshStorage::skeleton_set_buffer(RID p_skeleton, const Vector<float> &p_buffer) {
+void MeshStorage::skeleton_set_buffer(RID p_skeleton, const Vector<float> &p_buffer, bool p_bulk) {
 	GodotProfileZone("Animation.SkinBufferApply");
 	Skeleton *skeleton = skeleton_owner.get_or_null(p_skeleton);
 	ERR_FAIL_NULL(skeleton);
@@ -2455,10 +2456,34 @@ void MeshStorage::skeleton_set_buffer(RID p_skeleton, const Vector<float> &p_buf
 	}
 
 	uint64_t byte_count = uint64_t(p_buffer.size()) * sizeof(float);
-	memcpy(skeleton->data.ptr(), p_buffer.ptr(), byte_count);
+	uint64_t started = OS::get_singleton()->get_ticks_usec();
+	uint64_t bone_calls = 0;
+	if (p_bulk) {
+		memcpy(skeleton->data.ptr(), p_buffer.ptr(), byte_count);
+		_skeleton_make_dirty(skeleton);
+	} else {
+		const float *buffer = p_buffer.ptr();
+		for (int bone = 0; bone < skeleton->size; bone++) {
+			const float *source = buffer + bone * 12;
+			Transform3D transform;
+			transform.basis.rows[0] = Vector3(source[0], source[1], source[2]);
+			transform.basis.rows[1] = Vector3(source[4], source[5], source[6]);
+			transform.basis.rows[2] = Vector3(source[8], source[9], source[10]);
+			transform.origin = Vector3(source[3], source[7], source[11]);
+			skeleton_bone_set_transform(p_skeleton, bone, transform);
+			bone_calls++;
+		}
+	}
+	// Elapsed work for the same complete palette apply in both paths, not CPU-core time.
+	uint64_t elapsed_us = OS::get_singleton()->get_ticks_usec() - started;
 	skin_buffer_stats.apply_calls.fetch_add(1, std::memory_order_relaxed);
 	skin_buffer_stats.apply_bytes.fetch_add(byte_count, std::memory_order_relaxed);
-	_skeleton_make_dirty(skeleton);
+	skin_buffer_stats.apply_elapsed_us.fetch_add(elapsed_us, std::memory_order_relaxed);
+	if (p_bulk) {
+		skin_buffer_stats.bulk_apply_calls.fetch_add(1, std::memory_order_relaxed);
+	} else {
+		skin_buffer_stats.per_bone_apply_calls.fetch_add(bone_calls, std::memory_order_relaxed);
+	}
 }
 
 uint64_t MeshStorage::SkinBufferStats::read(std::atomic<uint64_t> &p_counter, bool p_reset) {
@@ -2469,6 +2494,9 @@ Dictionary MeshStorage::skeleton_get_buffer_statistics(bool p_reset) {
 	Dictionary result;
 	result["apply_calls"] = SkinBufferStats::read(skin_buffer_stats.apply_calls, p_reset);
 	result["apply_bytes"] = SkinBufferStats::read(skin_buffer_stats.apply_bytes, p_reset);
+	result["bulk_apply_calls"] = SkinBufferStats::read(skin_buffer_stats.bulk_apply_calls, p_reset);
+	result["per_bone_apply_calls"] = SkinBufferStats::read(skin_buffer_stats.per_bone_apply_calls, p_reset);
+	result["apply_elapsed_us"] = SkinBufferStats::read(skin_buffer_stats.apply_elapsed_us, p_reset);
 	result["upload_passes"] = SkinBufferStats::read(skin_buffer_stats.upload_passes, p_reset);
 	result["dirty_skeletons"] = SkinBufferStats::read(skin_buffer_stats.dirty_skeletons, p_reset);
 	result["upload_calls"] = SkinBufferStats::read(skin_buffer_stats.upload_calls, p_reset);
