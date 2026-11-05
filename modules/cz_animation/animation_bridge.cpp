@@ -71,8 +71,14 @@ struct CZAnimationBridge::State {
 	LocalVector<PoseBinding> poses;
 	LocalVector<Instance> instances;
 	LocalVector<Instance> initial_instances;
+	LocalVector<uint8_t> borrowed_zero_bone_weights;
 	uint32_t instance_count = 0;
 	uint32_t initial_instance_count = 0;
+	bool borrowed_weights = false;
+	uint64_t borrowed_track_version = 0;
+	uint64_t borrowed_animation_set_pass = 0;
+	uint64_t borrowed_process_pass = 0;
+	ObjectID borrowed_root_id;
 	LocalVector<Signal> signals;
 	HashMap<StringName, BlendSpaceState> blend_spaces;
 	HashSet<StringName> safe_methods;
@@ -89,6 +95,7 @@ struct CZAnimationBridge::State {
 	uint64_t method_track_version = 0;
 	uint64_t method_animation_set_pass = 0;
 	bool methods_checked = false;
+	HashMap<Ref<Animation>, bool> eventless_traits;
 	String method_failure;
 	AnimationPlayer::Playback playback;
 	StringName finished_animation;
@@ -211,6 +218,7 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 	const ObjectID mixer_id = p_state->id;
 	p_state->reason = String();
 	p_state->success = false;
+	p_state->borrowed_weights = false;
 	p_state->bone_blend_mask_prepared = false;
 	p_state->signals.clear();
 	p_state->delta = p_delta;
@@ -263,11 +271,19 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 			p_state->method_animation_set_pass != mixer->animation_set_update_pass) {
 		p_state->method_statistics.scans++;
 		p_state->method_failure = String();
+		p_state->eventless_traits.clear();
 		for (const KeyValue<StringName, AnimationMixer::AnimationData> &kv : mixer->animation_set) {
 			p_state->method_statistics.animations++;
 			const Ref<Animation> &animation = kv.value.animation;
+			bool eventless = true;
 			for (int track = 0; track < animation->get_track_count(); track++) {
 				p_state->method_statistics.tracks++;
+				// Cache every clip's trait, including empty event tracks. Method
+				// authorization still checks the whole library independently of
+				// the actual instances used for this frame's borrowing decision.
+				if (animation->track_is_enabled(track) && (animation->track_get_type(track) == Animation::TYPE_METHOD || animation->track_get_type(track) == Animation::TYPE_AUDIO)) {
+					eventless = false;
+				}
 				if (animation->track_is_enabled(track) && animation->track_get_type(track) == Animation::TYPE_METHOD) {
 					for (int key = 0; key < animation->track_get_key_count(track); key++) {
 						p_state->method_statistics.keys++;
@@ -284,6 +300,7 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 			if (!p_state->method_failure.is_empty()) {
 				break;
 			}
+			p_state->eventless_traits.insert(animation, eventless);
 		}
 		p_state->method_track_version = mixer->track_map_version;
 		p_state->method_animation_set_pass = mixer->animation_set_update_pass;
@@ -354,9 +371,6 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 					return false;
 				}
 			}
-			if (!p_state->blend_spaces.has(kv.key)) {
-				p_state->blend_spaces.insert(kv.key, BlendSpaceState());
-			}
 			if (kv.value.resource->get_script_instance()) {
 				p_state->reason = "Script animation node requires synchronous evaluation.";
 				return false;
@@ -370,6 +384,10 @@ bool CZAnimationBridge::prepare(State *p_state, double p_delta, const LocalVecto
 					type != SNAME("AnimationNodeOutput") && type != SNAME("AnimationNodeStartState") && type != SNAME("AnimationNodeEndState")) {
 				p_state->reason = "Unsupported animation node: " + String(type);
 				return false;
+			}
+			if ((type == SNAME("AnimationNodeBlendSpace1D") || type == SNAME("AnimationNodeBlendSpace2D")) &&
+					!p_state->blend_spaces.has(kv.key)) {
+				p_state->blend_spaces.insert(kv.key, BlendSpaceState());
 			}
 			if (AnimationNodeStateMachine *machine = Object::cast_to<AnimationNodeStateMachine>(kv.value.resource.ptr())) {
 				for (int i = 0; i < machine->get_transition_count(); i++) {
@@ -602,9 +620,30 @@ void CZAnimationBridge::evaluate(State *p_state) {
 	const bool diagnostics = p_state->phase_diagnostics_enabled;
 	AnimationMixer *mixer = p_state->mixer;
 	AnimationPlayer *player = Object::cast_to<AnimationPlayer>(mixer);
+	AnimationTree *tree = Object::cast_to<AnimationTree>(mixer);
 	CZAnimationEvaluationScope scope(p_state, false);
+	// Graph-owned buffers never leave this invocation. In particular, do not
+	// retain borrowed AnimationInstances for a later event/callback fallback.
+	struct BorrowedInstancesCleanup {
+		LocalVector<AnimationMixer::AnimationInstance> &instances;
+		bool active = false;
+		~BorrowedInstancesCleanup() {
+			if (active) {
+				instances.clear();
+			}
+		}
+	} borrowed_cleanup{ mixer->animation_instances };
 	p_state->initial_instance_count = 0;
 	p_state->instance_count = 0;
+	p_state->borrowed_weights = false;
+	const bool borrow_candidate = tree && p_state->pose_fastpaths_enabled && mixer->deterministic &&
+			p_state->methods_checked && mixer->cache_valid &&
+			p_state->method_track_version == mixer->track_map_version && p_state->method_animation_set_pass == mixer->animation_set_update_pass &&
+			!tree->properties_dirty && !tree->validation_dirty && tree->root_animation_node.is_valid();
+	// Until owned snapshots are complete, any graph pointers must be cleared
+	// even if graph processing fails. A successful owned path rebinds them.
+	borrowed_cleanup.active = true;
+	bool borrow_weights = false;
 	const bool certify_zero_weights = p_state->pose_fastpaths_enabled && mixer->deterministic &&
 			p_state->bone_blend_mask_prepared && !p_state->bone_blend_mask_dirty && p_state->bone_blend_mask_eligible && p_state->bone_blend_mask.size() == uint32_t(mixer->track_count);
 	const auto snapshot_weights = [&](State::Instance &r_snapshot, const AnimationMixer::AnimationInstance &p_instance) {
@@ -616,6 +655,9 @@ void CZAnimationBridge::evaluate(State *p_state) {
 		if (r_snapshot.zero_bone_weights_certified) {
 			for (; track < mixer->track_count; track++) {
 				r_snapshot.weights[track] = source && track < int(source->size()) ? (*source)[track] : 1;
+				if (diagnostics && p_state->bone_blend_mask[track]) {
+					p_state->evaluation_statistics.zero_weight_elements_inspected++;
+				}
 				if (p_state->bone_blend_mask[track] && r_snapshot.weights[track] != real_t(0)) {
 					// Exact +/-0 only. Near-zero, NaN and infinity retain sampling's
 					// original multiplication/threshold/interpolation order.
@@ -633,6 +675,7 @@ void CZAnimationBridge::evaluate(State *p_state) {
 		r_snapshot.value.playback_info.track_weights = &r_snapshot.weights;
 		if (diagnostics) {
 			p_state->evaluation_statistics.raw_weight_elements += mixer->track_count;
+			p_state->evaluation_statistics.owned_weight_copy_elements += mixer->track_count;
 		}
 	};
 	AnimationPlayer::Playback original_playback;
@@ -667,14 +710,69 @@ void CZAnimationBridge::evaluate(State *p_state) {
 			phase_start = now;
 		}
 		p_state->instance_count = mixer->animation_instances.size();
+		if (borrow_candidate && mixer->cache_valid && p_state->methods_checked &&
+				p_state->method_track_version == mixer->track_map_version && p_state->method_animation_set_pass == mixer->animation_set_update_pass) {
+			borrow_weights = true;
+			for (const AnimationMixer::AnimationInstance &instance : mixer->animation_instances) {
+				const bool *eventless = p_state->eventless_traits.getptr(instance.animation);
+				if (!eventless || !*eventless) {
+					borrow_weights = false;
+					if (diagnostics) {
+						p_state->evaluation_statistics.eventful_instances += eventless != nullptr;
+						p_state->evaluation_statistics.unknown_event_traits += eventless == nullptr;
+					} else {
+						break;
+					}
+				}
+			}
+		}
 		if (diagnostics) {
 			p_state->evaluation_statistics.animation_instances += p_state->instance_count;
 			p_state->evaluation_statistics.track_count_sum += mixer->track_count;
 		}
-		if (p_state->instances.size() < p_state->instance_count) {
+		if (!borrow_weights && p_state->instances.size() < p_state->instance_count) {
 			p_state->instances.resize(p_state->instance_count);
 		}
+		if (borrow_weights) {
+			p_state->borrowed_zero_bone_weights.resize(p_state->instance_count);
+			p_state->borrowed_weights = true;
+			p_state->borrowed_track_version = mixer->track_map_version;
+			p_state->borrowed_animation_set_pass = mixer->animation_set_update_pass;
+			p_state->borrowed_process_pass = tree->process_pass;
+			p_state->borrowed_root_id = tree->root_animation_node->get_instance_id();
+			if (diagnostics) {
+				p_state->evaluation_statistics.borrowed_weight_calls++;
+			}
+		}
 		for (uint32_t i = 0; i < mixer->animation_instances.size(); i++) {
+			if (borrow_weights) {
+				const AnimationMixer::AnimationInstance &instance = mixer->animation_instances[i];
+				const LocalVector<real_t> *source = instance.playback_info.track_weights;
+				bool zero = certify_zero_weights && Math::is_finite(instance.playback_info.weight);
+				if (zero) {
+					for (int track = 0; track < mixer->track_count; track++) {
+						if (!p_state->bone_blend_mask[track]) {
+							continue;
+						}
+						if (diagnostics) {
+							p_state->evaluation_statistics.zero_weight_elements_inspected++;
+						}
+						if ((source && track < int(source->size()) ? (*source)[track] : real_t(1)) != real_t(0)) {
+							zero = false;
+							break;
+						}
+					}
+				}
+				p_state->borrowed_zero_bone_weights[i] = zero;
+				if (diagnostics) {
+					// raw_weight_elements retains its historical logical extent.
+					// Borrowed elements count the actual available source view, not
+					// copies, loads or default1 values for absent source elements.
+					p_state->evaluation_statistics.raw_weight_elements += mixer->track_count;
+					p_state->evaluation_statistics.borrowed_weight_elements += source ? MIN(source->size(), uint32_t(mixer->track_count)) : 0;
+				}
+				continue;
+			}
 			State::Instance &snapshot = p_state->instances[i];
 			snapshot_weights(snapshot, mixer->animation_instances[i]);
 			if (!p_state->pose_fastpaths_enabled || !mixer->deterministic) {
@@ -697,6 +795,7 @@ void CZAnimationBridge::evaluate(State *p_state) {
 			snapshot.value.playback_info.track_weights = &snapshot.weights;
 			mixer->animation_instances[i].playback_info.track_weights = &snapshot.weights;
 		}
+		borrowed_cleanup.active = borrow_weights;
 		if (diagnostics) {
 			const uint64_t now = OS::get_singleton()->get_ticks_usec();
 			p_state->evaluation_statistics.weights_us += now - phase_start;
@@ -710,13 +809,14 @@ void CZAnimationBridge::evaluate(State *p_state) {
 					GodotProfileZone("CZAnimation.SampleBlend");
 					pose->blended.copy_from(pose->reference_pose);
 					for (uint32_t i = 0; i < p_state->instance_count; i++) {
-						State::Instance &snapshot = p_state->instances[i];
-						CZPoseTrackBinding *tracks = binding.tracks.getptr(snapshot.value.animation);
+						const AnimationMixer::AnimationInstance &instance = borrow_weights ? mixer->animation_instances[i] : p_state->instances[i].value;
+						CZPoseTrackBinding *tracks = binding.tracks.getptr(instance.animation);
 						if (tracks) {
-							const LocalVector<real_t> *sample_weights = p_state->pose_fastpaths_enabled && mixer->deterministic ? &snapshot.weights : &snapshot.normalized_weights;
-							tracks->sample_and_blend(snapshot.value.playback_info.time, snapshot.value.playback_info.weight,
+							const LocalVector<real_t> *sample_weights = borrow_weights ? instance.playback_info.track_weights : (p_state->pose_fastpaths_enabled && mixer->deterministic ? &p_state->instances[i].weights : &p_state->instances[i].normalized_weights);
+							const bool zero = borrow_weights ? bool(p_state->borrowed_zero_bone_weights[i]) : p_state->instances[i].zero_bone_weights_certified;
+							tracks->sample_and_blend(instance.playback_info.time, instance.playback_info.weight,
 									sample_weights, pose->motion_scale, pose->reference_pose, pose->sampled, pose->blended, pose->simd_enabled,
-									p_state->pose_fastpaths_enabled, diagnostics ? &p_state->sampling_statistics : nullptr, snapshot.zero_bone_weights_certified);
+									p_state->pose_fastpaths_enabled, diagnostics ? &p_state->sampling_statistics : nullptr, zero);
 						}
 					}
 					if (!mixer->deterministic) {
@@ -770,6 +870,19 @@ bool CZAnimationBridge::publish(State *p_state) {
 	if (!p_state->success || ObjectDB::get_instance(id) != mixer) {
 		return false;
 	}
+	if (p_state->borrowed_weights) {
+		AnimationTree *tree = Object::cast_to<AnimationTree>(mixer);
+		if (!tree || !mixer->cache_valid || !mixer->deterministic || !p_state->methods_checked ||
+				p_state->borrowed_track_version != mixer->track_map_version || p_state->borrowed_animation_set_pass != mixer->animation_set_update_pass ||
+				tree->properties_dirty || tree->validation_dirty || tree->process_pass != p_state->borrowed_process_pass ||
+				tree->root_animation_node.is_null() || tree->root_animation_node->get_instance_id() != p_state->borrowed_root_id) {
+			// There is deliberately no borrowed snapshot fallback. Supported
+			// writers publish first or mark the Entry dirty for prepare/evaluate.
+			p_state->success = false;
+			p_state->reason = "Event-free animation inputs changed before publication.";
+			return false;
+		}
+	}
 	if (AnimationPlayer *player = Object::cast_to<AnimationPlayer>(mixer)) {
 		player->playback = p_state->playback;
 		player->finished_anim = p_state->finished_animation;
@@ -778,15 +891,20 @@ bool CZAnimationBridge::publish(State *p_state) {
 		player->end_notify = p_state->end_notify;
 	}
 	CZAnimationEvaluationScope scope(p_state, true);
-	// Reuse the official event traversal on the main thread. Both first-key and
-	// frame snapshots own their weight storage until this pass finishes.
+	// Event-bearing/Player snapshots own their weight storage through this pass.
+	// Event-free Tree buffers were already consumed and cleared in Evaluate.
 	mixer->animation_instances.clear();
-	for (uint32_t i = 0; i < p_state->initial_instance_count; i++) {
-		mixer->animation_instances.push_back(p_state->initial_instances[i].value);
+	if (!p_state->borrowed_weights) {
+		for (uint32_t i = 0; i < p_state->initial_instance_count; i++) {
+			mixer->animation_instances.push_back(p_state->initial_instances[i].value);
+		}
+		for (uint32_t i = 0; i < p_state->instance_count; i++) {
+			mixer->animation_instances.push_back(p_state->instances[i].value);
+		}
+	} else if (p_state->phase_diagnostics_enabled) {
+		p_state->evaluation_statistics.eventless_publish_calls++;
 	}
-	for (uint32_t i = 0; i < p_state->instance_count; i++) {
-		mixer->animation_instances.push_back(p_state->instances[i].value);
-	}
+	// Keep constant official bookkeeping even when there are no event instances.
 	mixer->_blend_process(p_state->delta);
 	if (ObjectDB::get_instance(id) != mixer) {
 		return false;
@@ -834,6 +952,7 @@ void CZAnimationBridge::discard(State *p_state) {
 	p_state->signals.clear();
 	p_state->instance_count = 0;
 	p_state->initial_instance_count = 0;
+	p_state->borrowed_weights = false;
 	p_state->success = false;
 }
 
@@ -873,7 +992,7 @@ void CZAnimationBridge::synchronize(AnimationMixer *p_mixer) {
 	Ref<AnimationBatchProcessor> owner;
 	{
 		MutexLock lock(state_owner_mutex);
-		if (state && (*state)->owner && !(*state)->publishing) {
+		if (state && (*state)->owner && !(*state)->publishing && (*state)->owner->pending && !(*state)->owner->preparing) {
 			// A concurrent finalizer may have brought the owner to reference count
 			// zero, but cannot finish detaching/freeing it while this lock is held.
 			owner = Ref<AnimationBatchProcessor>((*state)->owner);
@@ -926,7 +1045,7 @@ void CZAnimationBridge::complete_pose(const SkeletonAnimationPose *p_pose) {
 	Ref<AnimationBatchProcessor> owner;
 	{
 		MutexLock lock(state_owner_mutex);
-		if (state && (*state)->owner) {
+		if (state && (*state)->owner && (*state)->owner->group != -1) {
 			owner = Ref<AnimationBatchProcessor>((*state)->owner);
 		}
 	}
@@ -1116,6 +1235,7 @@ void CZAnimationBridge::invalidate_binding_cache(AnimationMixer *p_mixer) {
 	State **state = mixer_states.getptr(p_mixer->get_instance_id());
 	if (state) {
 		(*state)->methods_checked = false;
+		(*state)->eventless_traits.clear();
 		(*state)->bone_blend_mask_dirty = true;
 		(*state)->bone_blend_mask_eligible = false;
 		(*state)->bone_blend_mask_prepared = false;

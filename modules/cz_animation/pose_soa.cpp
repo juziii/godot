@@ -493,7 +493,8 @@ void CZPoseTrackBinding::sample_and_blend(double p_time, real_t p_weight, const 
 		}
 	};
 	// Only the bridge may supply this hint, after checking the exact-zero union
-	// of every prepared Pose's bone indices while copying the owned snapshot.
+	// of every prepared Pose's bone indices in the current owned or borrowed
+	// weight view. Borrowed views are consumed only inside Bridge.evaluate.
 	// Invalid index fallbacks and non-finite scalar weights retain the old path.
 	if (p_fastpaths && p_zero_weights_certified && Math::is_finite(p_weight) && p_track_weights &&
 			blend_indices_valid && maximum_blend_index < int(p_track_weights->size())) {

@@ -66,6 +66,13 @@ public:
 		uint64_t animation_instances = 0;
 		uint64_t track_count_sum = 0;
 		uint64_t raw_weight_elements = 0;
+		uint64_t owned_weight_copy_elements = 0;
+		uint64_t borrowed_weight_elements = 0;
+		uint64_t zero_weight_elements_inspected = 0;
+		uint64_t borrowed_weight_calls = 0;
+		uint64_t eventless_publish_calls = 0;
+		uint64_t eventful_instances = 0;
+		uint64_t unknown_event_traits = 0;
 		uint64_t normalized_copy_elements = 0;
 		uint64_t sample_calls = 0;
 		uint64_t sample_zero_weight_calls = 0;

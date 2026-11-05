@@ -35,10 +35,16 @@
 #include "core/os/os.h"
 #include "core/os/thread.h"
 #include "scene/3d/mesh_instance_3d.h"
+#include "scene/animation/animation_blend_space_1d.h"
+#include "scene/animation/animation_blend_space_2d.h"
 #include "scene/animation/animation_blend_tree.h"
+#include "scene/audio/audio_stream_player.h"
 #include "scene/main/scene_tree.h"
 #include "scene/main/window.h"
+#include "scene/resources/audio/audio_stream_wav.h"
 #include "scene/resources/mesh.h"
+#include "servers/audio/audio_driver_dummy.h"
+#include "servers/audio/audio_server.h"
 #include "tests/test_macros.h"
 
 #include "modules/cz_animation/animation_batch_processor.h"
@@ -182,6 +188,65 @@ struct PoseFastpathsEnvironment {
 		}
 	}
 };
+
+struct ProcessorRefProbe {
+	AnimationBatchProcessor *owner;
+	int increments = 0;
+	int decrements = 0;
+
+	static GDExtensionBool on_reference(void *, void *p_binding, GDExtensionBool p_reference) {
+		ProcessorRefProbe *self = static_cast<ProcessorRefProbe *>(p_binding);
+		if (p_reference) {
+			self->increments++;
+		} else {
+			self->decrements++;
+		}
+		return true;
+	}
+
+	explicit ProcessorRefProbe(AnimationBatchProcessor *p_owner) :
+			owner(p_owner) {
+		GDExtensionInstanceBindingCallbacks callbacks = {};
+		callbacks.reference_callback = &ProcessorRefProbe::on_reference;
+		owner->set_instance_binding(this, this, &callbacks);
+	}
+	~ProcessorRefProbe() { owner->free_instance_binding(this); }
+	void reset() { increments = decrements = 0; }
+};
+
+TEST_CASE("[SceneTree][CZAnimation] Idle synchronization avoids reference transitions and pending queries do not publish") {
+	Rig rig;
+	REQUIRE(rig.processor->get_reference_count() == 1);
+	// Public native binding callbacks observe real 1->2->1 transitions. This
+	// does not substitute a fake CLR host or assert managed allocation timing.
+	ProcessorRefProbe probe(rig.processor.ptr());
+	{
+		Ref<AnimationBatchProcessor> calibration = rig.processor;
+	}
+	REQUIRE(probe.increments == 1);
+	REQUIRE(probe.decrements == 1);
+	const auto check_idle = [&]() {
+		probe.reset();
+		for (int i = 0; i < 8; i++) {
+			CZAnimationBridge::synchronize(rig.tree);
+			CZAnimationBridge::complete_pose(rig.pose.ptr());
+		}
+		CHECK(probe.increments == 0);
+		CHECK(probe.decrements == 0);
+		CHECK(rig.processor->get_reference_count() == 1);
+	};
+	check_idle();
+	rig.submit();
+	CHECK(rig.processor->is_pending());
+	CHECK(rig.pose->get_local_pose(0).origin.is_equal_approx(Vector3(1, 0, 0)));
+	CHECK(rig.observer->count == 0);
+	CZAnimationBridge::synchronize(rig.tree);
+	CHECK(rig.observer->count == 1);
+	rig.processor->complete_and_publish();
+	CHECK(rig.observer->count == 1);
+	CHECK_FALSE(rig.processor->is_pending());
+	check_idle();
+}
 
 struct AuxiliaryTracks {
 	Node3D *target = nullptr;
@@ -451,9 +516,9 @@ TEST_CASE("[SceneTree][CZAnimation] Early track skipping refreshes switched root
 				CHECK(rig->tree->get_root_motion_position().is_zero_approx());
 				CHECK(rig->tree->get_root_motion_position_accumulator().is_zero_approx());
 			}
-			for (const char *key : { "evaluate_instance_track_skips", "publish_instance_track_skips" }) {
-				CHECK((method_statistic(rig->processor, key) > 0) == (rig == &fast && path.is_empty()));
-			}
+			CHECK((method_statistic(rig->processor, "evaluate_instance_track_skips") > 0) == (rig == &fast && path.is_empty()));
+			CHECK(method_statistic(rig->processor, "publish_instance_track_skips") == 0);
+			CHECK(method_statistic(rig->processor, "publish_eventless_calls") == int64_t(rig == &fast));
 		}
 	}
 }
@@ -496,6 +561,9 @@ TEST_CASE("[SceneTree][CZAnimation] Bone-only instance skips preserve Player fir
 			CHECK(rig->processor->was_evaluated(rig->handle));
 			CHECK(rig->skeleton->get_bone_pose(0).is_equal_approx(original.skeleton->get_bone_pose(0)));
 			const bool skipped = rig == &fast && step != 2;
+			CHECK(method_statistic(rig->processor, "evaluate_owned_weight_copy_elements") == method_statistic(rig->processor, "evaluate_raw_weight_elements"));
+			CHECK(method_statistic(rig->processor, "evaluate_borrowed_weight_calls") == 0);
+			CHECK(method_statistic(rig->processor, "publish_eventless_calls") == 0);
 			CHECK((method_statistic(rig->processor, "evaluate_instance_track_skips") > 0) == skipped);
 			CHECK((method_statistic(rig->processor, "publish_instance_track_skips") > 0) == skipped);
 			if (skipped) {
@@ -574,9 +642,9 @@ TEST_CASE("[SceneTree][CZAnimation] Instance track certificates rebuild for enab
 			CHECK(rig.skeleton->get_bone_pose(0).is_equal_approx(original.skeleton->get_bone_pose(0)));
 			CHECK(targets[index]->get_rotation().is_equal_approx(targets[0]->get_rotation()));
 			CHECK(Math::is_equal_approx(targets[index]->get_rotation().y, step >= 4 ? real_t(0.125) : real_t(0)));
-			for (const char *key : { "evaluate_instance_track_skips", "publish_instance_track_skips" }) {
-				CHECK((method_statistic(rig.processor, key) > 0) == (index == 2 && step != 2 && step != 4));
-			}
+			CHECK((method_statistic(rig.processor, "evaluate_instance_track_skips") > 0) == (index == 2 && step != 2 && step != 4));
+			CHECK(method_statistic(rig.processor, "publish_instance_track_skips") == 0);
+			CHECK(method_statistic(rig.processor, "publish_eventless_calls") == int64_t(index == 2 && step != 4));
 			if (index == 2 && (step == 1 || step == 7)) {
 				CHECK(method_statistic(rig.processor, "zero_weight_mask_rebuilds") == 0);
 			}
@@ -1669,12 +1737,509 @@ TEST_CASE("[SceneTree][CZAnimation] Zero weight masks include every registered P
 		}
 		CHECK(method_statistic(legacy.processor, "sample_certified_zero_weight_calls") == 0);
 		CHECK(method_statistic(fast.processor, "zero_weight_mask_rebuilds") == int64_t(step != 1));
-		for (const char *key : { "evaluate_instance_track_skips", "publish_instance_track_skips" }) {
-			CHECK(method_statistic(legacy.processor, key) == 0);
-			CHECK(method_statistic(fast.processor, key) > 0);
-		}
+		CHECK(method_statistic(legacy.processor, "evaluate_instance_track_skips") == 0);
+		CHECK(method_statistic(fast.processor, "evaluate_instance_track_skips") > 0);
+		CHECK(method_statistic(legacy.processor, "publish_instance_track_skips") == 0);
+		CHECK(method_statistic(fast.processor, "publish_instance_track_skips") == 0);
+		CHECK(method_statistic(fast.processor, "publish_eventless_calls") == 1);
+		CHECK(method_statistic(fast.processor, "evaluate_owned_weight_copy_elements") == 0);
 		for (const char *key : { "sample_pose_instance_calls", "sample_zero_bone_weight_calls", "sample_no_written_bone_calls", "sample_empty_binding_calls" }) {
 			CHECK(method_statistic(legacy.processor, key) == method_statistic(fast.processor, key));
+		}
+	}
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Eventless borrowed Tree weights preserve pose auxiliary caches and publication") {
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	PoseFastpathsEnvironment environment(false);
+	Rig owned;
+	environment.set_enabled(true);
+	Rig borrowed;
+	Rig synchronous;
+	synchronous.processor->unregister_tree(synchronous.handle);
+	AuxiliaryTracks owned_aux(owned);
+	AuxiliaryTracks borrowed_aux(borrowed);
+	AuxiliaryTracks synchronous_aux(synchronous);
+	for (Rig *rig : { &owned, &borrowed, &synchronous }) {
+		// AuxiliaryTracks adds its method last; keep actual value and BlendShape
+		// tracks but remove the event, rather than weakening safe-method checks.
+		const int method = rig->animation->get_track_count() - 1;
+		REQUIRE(rig->animation->track_get_type(method) == Animation::TYPE_METHOD);
+		rig->animation->remove_track(method);
+		rig->tree->set_deterministic(true);
+		install_zero_certificate_graph(*rig);
+	}
+	for (int step = 0; step < 4; step++) {
+		const NodePath root_path = step == 2 ? NodePath("Skeleton3D:Root") : NodePath();
+		for (Rig *rig : { &owned, &borrowed, &synchronous }) {
+			rig->tree->set_root_motion_track(root_path);
+		}
+		synchronous.tree->advance(0.1);
+		for (Rig *rig : { &owned, &borrowed }) {
+			const int prior = rig->observer->count;
+			rig->submit();
+			rig->processor->complete();
+			CHECK(rig->observer->count == prior);
+			rig->processor->publish(rig->handle);
+			rig->processor->publish(rig->handle);
+			rig->processor->complete_and_publish();
+			CHECK(rig->observer->count == prior + 1);
+			CHECK(rig->processor->was_evaluated(rig->handle));
+			for (int bone = 0; bone < 2; bone++) {
+				CHECK(rig->skeleton->get_bone_pose(bone).is_equal_approx(synchronous.skeleton->get_bone_pose(bone)));
+			}
+			CHECK(rig->tree->get_root_motion_position().is_equal_approx(synchronous.tree->get_root_motion_position()));
+			CHECK(rig->tree->get_root_motion_position_accumulator().is_equal_approx(synchronous.tree->get_root_motion_position_accumulator()));
+			const bool uses_borrowed = rig == &borrowed;
+			CHECK(method_statistic(rig->processor, "evaluate_borrowed_weight_calls") == int64_t(uses_borrowed));
+			CHECK(method_statistic(rig->processor, "publish_eventless_calls") == int64_t(uses_borrowed));
+			CHECK((method_statistic(rig->processor, "evaluate_owned_weight_copy_elements") > 0) == !uses_borrowed);
+			CHECK((method_statistic(rig->processor, "evaluate_borrowed_weight_elements") > 0) == uses_borrowed);
+			CHECK(method_statistic(rig->processor, "evaluate_normalized_copy_elements") == (uses_borrowed ? 0 : method_statistic(rig->processor, "evaluate_raw_weight_elements")));
+			CHECK(method_statistic(rig->processor, "publish_instance_track_skips") == 0);
+		}
+		CHECK(method_statistic(owned.processor, "evaluate_raw_weight_elements") == method_statistic(borrowed.processor, "evaluate_raw_weight_elements"));
+		for (AuxiliaryTracks *aux : { &owned_aux, &borrowed_aux }) {
+			CHECK(aux->target->get_position().is_equal_approx(synchronous_aux.target->get_position()));
+			CHECK(Math::is_equal_approx(aux->mesh_instance->get_blend_shape_value(0), synchronous_aux.mesh_instance->get_blend_shape_value(0)));
+		}
+		if (step == 0) {
+			CHECK(method_statistic(borrowed.processor, "evaluate_zero_weight_elements_inspected") > 0);
+			CHECK(method_statistic(borrowed.processor, "sample_certified_zero_weight_calls") > 0);
+		}
+	}
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Unused method traits rebuild without denying unrelated borrowed instances") {
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	PoseFastpathsEnvironment environment(true);
+	Rig rig(Ref<AnimationBatchProcessor>(), { "rotate_y" });
+	rig.tree->set_deterministic(true);
+	Ref<Animation> inactive = make_method_animation("rotate_y");
+	Ref<AnimationLibrary> library = rig.tree->get_animation_library(StringName());
+	REQUIRE(library->add_animation("Inactive", inactive) == OK);
+	for (int step = 0; step < 6; step++) {
+		if (step == 1) {
+			inactive->track_set_enabled(0, false);
+		} else if (step == 2) {
+			inactive->track_set_enabled(0, true);
+		} else if (step == 3) {
+			library->rename_animation("Inactive", "Renamed");
+		} else if (step == 4) {
+			library->remove_animation("Renamed");
+		} else if (step == 5) {
+			inactive->track_remove_key(0, 0);
+			REQUIRE(library->add_animation("EmptyEvent", inactive) == OK);
+		}
+		rig.submit();
+		rig.processor->complete_and_publish();
+		CHECK(rig.processor->was_evaluated(rig.handle));
+		CHECK(rig.observer->count == step + 1);
+		const bool uses_borrowed = true;
+		CHECK(method_statistic(rig.processor, "evaluate_borrowed_weight_calls") == int64_t(uses_borrowed));
+		CHECK(method_statistic(rig.processor, "publish_eventless_calls") == int64_t(uses_borrowed));
+		CHECK((method_statistic(rig.processor, "evaluate_owned_weight_copy_elements") > 0) == !uses_borrowed);
+		CHECK(method_statistic(rig.processor, "method_validation_scans") == 1);
+		CHECK(method_statistic(rig.processor, "evaluate_eventful_instances") == 0);
+		CHECK(method_statistic(rig.processor, "evaluate_unknown_event_traits") == 0);
+	}
+}
+
+class EventlessGraphReplacement : public RefCounted {
+	GDCLASS(EventlessGraphReplacement, RefCounted);
+
+protected:
+	static void _bind_methods() {}
+
+public:
+	AnimationTree *tree = nullptr;
+	Ref<AnimationNodeBlendTree> replacement;
+	int calls = 0;
+	void replace() {
+		calls++;
+		tree->set_root_animation_node(replacement);
+	}
+};
+
+static Ref<AnimationNodeBlendTree> eventless_still_graph(const StringName &p_animation = "Still", const StringName &p_node_name = "Still") {
+	Ref<AnimationNodeBlendTree> graph;
+	graph.instantiate();
+	Ref<AnimationNodeAnimation> clip;
+	clip.instantiate();
+	clip->set_animation(p_animation);
+	graph->add_node(p_node_name, clip);
+	graph->connect_node("output", 0, p_node_name);
+	return graph;
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Actual Walk and Work instances switch borrowing while cues remain publication only") {
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	PoseFastpathsEnvironment environment(true);
+	Rig rig(Ref<AnimationBatchProcessor>(), { "rotate_y" });
+	rig.tree->set_deterministic(true);
+	rig.tree->set_callback_mode_method(AnimationMixer::ANIMATION_CALLBACK_MODE_METHOD_IMMEDIATE);
+	Node3D *cue_target = memnew(Node3D);
+	cue_target->set_name("CueTarget");
+	rig.root->add_child(cue_target);
+	Ref<Animation> work = make_method_animation("rotate_y");
+	work->track_set_path(0, NodePath("CueTarget"));
+	Ref<AnimationLibrary> library = rig.tree->get_animation_library(StringName());
+	REQUIRE(library->add_animation("Work", work) == OK);
+	int step_index = 0;
+	const auto step = [&](const StringName &p_clip, bool p_borrow, real_t p_expected_rotation) {
+		// Fresh parameter paths give this independent clip a real zero clock;
+		// changing tree_root alone deliberately retains matching parameters.
+		rig.tree->set_root_animation_node(eventless_still_graph(p_clip, StringName("Step" + itos(step_index++))));
+		rig.tree->advance(0);
+		const int before = rig.observer->count;
+		const Vector3 rotation_before = cue_target->get_rotation();
+		rig.submit(0.6);
+		rig.processor->complete();
+		CHECK(cue_target->get_rotation().is_equal_approx(rotation_before));
+		CHECK(rig.observer->count == before);
+		rig.processor->publish(rig.handle);
+		rig.processor->publish(rig.handle);
+		rig.processor->complete_and_publish();
+		CHECK(rig.processor->was_evaluated(rig.handle));
+		CHECK(rig.observer->count == before + 1);
+		CHECK(Math::is_equal_approx(cue_target->get_rotation().y, p_expected_rotation));
+		CHECK(method_statistic(rig.processor, "evaluate_borrowed_weight_calls") == int64_t(p_borrow));
+		CHECK(method_statistic(rig.processor, "publish_eventless_calls") == int64_t(p_borrow));
+		CHECK((method_statistic(rig.processor, "evaluate_owned_weight_copy_elements") > 0) == !p_borrow);
+		CHECK(method_statistic(rig.processor, "evaluate_eventful_instances") == int64_t(!p_borrow));
+		CHECK(method_statistic(rig.processor, "evaluate_unknown_event_traits") == 0);
+	};
+	step("Move", true, 0);
+	step("Work", false, 0.125);
+	step("Move", true, 0.125);
+	// A mutation to a library clip not used in the current frame still drains
+	// its borrowed reader before writing and expires the per-animation traits.
+	for (bool enabled : { false, true }) {
+		rig.submit(0.1);
+		rig.processor->complete();
+		const int before = rig.observer->count;
+		work->track_set_enabled(0, enabled);
+		CHECK(rig.observer->count == before + 1);
+		rig.processor->complete_and_publish();
+		CHECK(method_statistic(rig.processor, "publish_eventless_calls") == 1);
+		CHECK(method_statistic(rig.processor, "evaluate_owned_weight_copy_elements") == 0);
+	}
+	step("Work", false, 0.25);
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Eventless publication ends borrowed lifetime before graph replacement callouts") {
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	PoseFastpathsEnvironment environment(true);
+	Rig rig;
+	rig.tree->set_deterministic(true);
+	Ref<EventlessGraphReplacement> action;
+	action.instantiate();
+	action->tree = rig.tree;
+	action->replacement = eventless_still_graph();
+	rig.tree->connect(SNAME("mixer_applied"), callable_mp(action.ptr(), &EventlessGraphReplacement::replace), Object::CONNECT_ONE_SHOT);
+	rig.submit();
+	rig.processor->complete_and_publish();
+	CHECK(action->calls == 1);
+	CHECK(rig.observer->count == 1);
+	CHECK(method_statistic(rig.processor, "publish_eventless_calls") == 1);
+	CHECK(method_statistic(rig.processor, "evaluate_owned_weight_copy_elements") == 0);
+	// The old graph's instance buffers can now be freed/rebuilt. A later frame
+	// must prepare the replacement, with no pointer back into the old graph.
+	rig.submit();
+	rig.processor->complete_and_publish();
+	CHECK(rig.processor->was_evaluated(rig.handle));
+	CHECK(rig.observer->count == 2);
+	CHECK(rig.skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(4, 0, 0)));
+	CHECK(method_statistic(rig.processor, "evaluate_borrowed_weight_calls") == 1);
+	CHECK(method_statistic(rig.processor, "publish_eventless_calls") == 1);
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Supported graph writer publishes borrowed frame before replacing graph storage") {
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	PoseFastpathsEnvironment environment(true);
+	Rig rig;
+	rig.tree->set_deterministic(true);
+	rig.submit();
+	rig.processor->complete();
+	CHECK(rig.observer->count == 0);
+	rig.tree->set_root_animation_node(eventless_still_graph());
+	CHECK(rig.observer->count == 1);
+	rig.processor->complete_and_publish();
+	CHECK(rig.observer->count == 1);
+	CHECK(method_statistic(rig.processor, "publish_eventless_calls") == 1);
+	rig.submit();
+	rig.processor->complete_and_publish();
+	CHECK(rig.processor->was_evaluated(rig.handle));
+	CHECK(rig.skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(4, 0, 0)));
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Actual audio instances own snapshots while unused audio permits borrowing") {
+	struct AudioFixture {
+		AudioDriverDummy *driver = AudioDriverDummy::get_dummy_singleton();
+		AudioFixture() {
+			driver->set_use_threads(false);
+			AudioDriverManager::initialize(AudioDriverManager::get_driver_count() - 1);
+			AudioServer *server = memnew(AudioServer);
+			server->init();
+		}
+		~AudioFixture() {
+			// Match the existing native audio fixture: consume deferred stream
+			// fade-outs after the nodes die, before test-harness server teardown.
+			Vector<int32_t> output;
+			output.resize(8192 * driver->get_channels());
+			driver->mix_audio(8192, output.ptrw());
+			AudioServer::get_singleton()->update();
+			driver->set_use_threads(true);
+		}
+	} audio_fixture;
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	PoseFastpathsEnvironment environment(true);
+	Rig rig;
+	rig.tree->set_deterministic(true);
+	AudioStreamPlayer *audio = memnew(AudioStreamPlayer);
+	audio->set_name("Audio");
+	rig.root->add_child(audio);
+	Ref<Animation> inactive;
+	inactive.instantiate();
+	const int track = inactive->add_track(Animation::TYPE_AUDIO);
+	inactive->track_set_path(track, NodePath("Audio"));
+	Ref<AnimationLibrary> library = rig.tree->get_animation_library(StringName());
+	REQUIRE(library->add_animation("InactiveAudio", inactive) == OK);
+	for (int step = 0; step < 5; step++) {
+		if (step == 1 || step == 4) {
+			inactive->track_set_enabled(track, false);
+		} else if (step == 2) {
+			inactive->track_set_enabled(track, true);
+		} else if (step == 3) {
+			library->remove_animation("InactiveAudio");
+		}
+		if (step == 4) {
+			REQUIRE(library->add_animation("InactiveAudio", inactive) == OK);
+			rig.tree->set_deterministic(false);
+		}
+		rig.submit();
+		rig.processor->complete_and_publish();
+		CHECK(rig.processor->was_evaluated(rig.handle));
+		CHECK(rig.observer->count == step + 1);
+		CHECK(rig.skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(step + 1, 0, 0)));
+		const bool uses_borrowed = step != 4;
+		CHECK(method_statistic(rig.processor, "evaluate_borrowed_weight_calls") == int64_t(uses_borrowed));
+		CHECK(method_statistic(rig.processor, "publish_eventless_calls") == int64_t(uses_borrowed));
+		CHECK((method_statistic(rig.processor, "evaluate_owned_weight_copy_elements") > 0) == !uses_borrowed);
+		CHECK_FALSE(audio->is_playing());
+	}
+	Rig synchronous;
+	Rig batched;
+	synchronous.processor->unregister_tree(synchronous.handle);
+	AudioStreamPlayer *players[2] = {};
+	Rig *rigs[] = { &synchronous, &batched };
+	for (int index = 0; index < 2; index++) {
+		Rig &current = *rigs[index];
+		players[index] = memnew(AudioStreamPlayer);
+		players[index]->set_name("Audio");
+		current.root->add_child(players[index]);
+		Ref<AudioStreamWAV> stream;
+		stream.instantiate();
+		stream->set_format(AudioStreamWAV::FORMAT_16_BITS);
+		stream->set_mix_rate(8000);
+		Vector<uint8_t> silence;
+		silence.resize(16000);
+		silence.fill(0);
+		stream->set_data(silence);
+		Ref<Animation> clip;
+		clip.instantiate();
+		const int audio_track = clip->add_track(Animation::TYPE_AUDIO);
+		clip->track_set_path(audio_track, NodePath("Audio"));
+		clip->audio_track_insert_key(audio_track, 0.2, stream);
+		REQUIRE(current.tree->get_animation_library(StringName())->add_animation("AudioClip", clip) == OK);
+		current.tree->set_root_animation_node(eventless_still_graph("AudioClip"));
+		current.tree->advance(0);
+	}
+	const int before = batched.observer->count;
+	synchronous.tree->advance(0.25);
+	batched.submit(0.25);
+	batched.processor->complete();
+	CHECK_FALSE(players[1]->is_playing());
+	CHECK(batched.observer->count == before);
+	batched.processor->publish(batched.handle);
+	batched.processor->publish(batched.handle);
+	batched.processor->complete_and_publish();
+	CHECK(players[0]->is_playing());
+	CHECK(players[1]->is_playing() == players[0]->is_playing());
+	CHECK(batched.observer->count == before + 1);
+	CHECK(method_statistic(batched.processor, "evaluate_borrowed_weight_calls") == 0);
+	CHECK(method_statistic(batched.processor, "publish_eventless_calls") == 0);
+	CHECK(method_statistic(batched.processor, "evaluate_owned_weight_copy_elements") > 0);
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Dirty callback generations discard and reevaluate eventless weights before publication") {
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	for (bool fastpaths : { false, true }) {
+		PoseFastpathsEnvironment environment(fastpaths);
+		Rig first;
+		Rig second;
+		Ref<ReentryAction> action;
+		action.instantiate();
+		action->processor = second.processor;
+		action->handles.push_back(second.handle);
+		first.tree->connect(SNAME("mixer_applied"), callable_mp(action.ptr(), &ReentryAction::submit), Object::CONNECT_ONE_SHOT);
+		first.submit();
+		// The callback's later submission is joined but deferred to the next
+		// publication epoch, with its output marked dirty by the writer barrier.
+		CZAnimationBridge::synchronize();
+		CHECK(action->calls == 1);
+		CHECK(second.processor->is_pending());
+		CHECK(second.observer->count == 0);
+		second.processor->complete_and_publish();
+		CHECK(second.processor->was_evaluated(second.handle));
+		CHECK(second.observer->count == 1);
+		CHECK(second.skeleton->get_bone_pose_position(0).is_equal_approx(Vector3(2, 0, 0)));
+		CHECK(method_statistic(second.processor, "recomputed") == 1);
+		CHECK(method_statistic(second.processor, "evaluate_calls") == 2);
+		CHECK(method_statistic(second.processor, "evaluate_borrowed_weight_calls") == (fastpaths ? 2 : 0));
+		CHECK(method_statistic(second.processor, "publish_eventless_calls") == int64_t(fastpaths));
+		CHECK((method_statistic(second.processor, "evaluate_owned_weight_copy_elements") > 0) == !fastpaths);
+	}
+}
+
+#ifdef THREADS_ENABLED
+TEST_CASE("[SceneTree][CZAnimation] Worker eventless Trees keep queries unpublished and own event-bearing library snapshots") {
+	REQUIRE(WorkerThreadPool::get_singleton()->get_thread_count() >= 2);
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	PoseFastpathsEnvironment environment(true);
+	Ref<AnimationBatchProcessor> processor;
+	processor.instantiate();
+	struct Rigs {
+		LocalVector<Rig *> items;
+		~Rigs() {
+			for (Rig *rig : items) {
+				memdelete(rig);
+			}
+		}
+	} rigs;
+	for (int index = 0; index < 16; index++) {
+		Rig *rig = memnew(Rig(processor));
+		rigs.items.push_back(rig);
+		rig->tree->set_deterministic(true);
+		if (index == 0) {
+			Ref<Animation> event;
+			event.instantiate();
+			const int track = event->add_track(Animation::TYPE_METHOD);
+			event->track_set_path(track, NodePath("."));
+			REQUIRE(rig->tree->get_animation_library(StringName())->add_animation("InactiveEmptyEvent", event) == OK);
+			Ref<AnimationNodeBlendTree> graph;
+			graph.instantiate();
+			Ref<AnimationNodeAnimation> event_node;
+			event_node.instantiate();
+			event_node->set_animation("InactiveEmptyEvent");
+			Ref<AnimationNodeBlend2> mix;
+			mix.instantiate();
+			mix->set_use_sync(true);
+			graph->add_node("Move", rig->animation_node);
+			graph->add_node("Event", event_node);
+			graph->add_node("Mix", mix);
+			graph->connect_node("Mix", 0, "Move");
+			graph->connect_node("Mix", 1, "Event");
+			graph->connect_node("output", 0, "Mix");
+			rig->tree->set_root_animation_node(graph);
+			rig->tree->set("parameters/Mix/blend_amount", 0.0);
+		}
+		REQUIRE(processor->queue_update(rig->handle, 0.1));
+	}
+	CHECK(processor->submit(1, 2) != 0);
+	processor->complete();
+	for (const Rig *rig : rigs.items) {
+		CHECK(rig->pose->get_local_pose(0).origin.is_equal_approx(Vector3(1, 0, 0)));
+		CHECK(rig->observer->count == 0);
+	}
+	processor->complete_and_publish();
+	CHECK(method_statistic(processor, "workers") == 2);
+	CHECK(method_statistic(processor, "failed") == 0);
+	CHECK(method_statistic(processor, "fallbacks") == 0);
+	CHECK(method_statistic(processor, "evaluate_calls") == 16);
+	CHECK(method_statistic(processor, "evaluate_borrowed_weight_calls") == 15);
+	CHECK(method_statistic(processor, "publish_eventless_calls") == 15);
+	CHECK(method_statistic(processor, "evaluate_eventful_instances") == 1);
+	CHECK(method_statistic(processor, "evaluate_unknown_event_traits") == 0);
+	CHECK(method_statistic(processor, "evaluate_owned_weight_copy_elements") > 0);
+	CHECK(method_statistic(processor, "evaluate_borrowed_weight_elements") > 0);
+	CHECK(method_statistic(processor, "evaluate_raw_weight_elements") == method_statistic(processor, "evaluate_owned_weight_copy_elements") + method_statistic(processor, "evaluate_borrowed_weight_elements"));
+	for (const Rig *rig : rigs.items) {
+		CHECK(rig->observer->count == 1);
+	}
+}
+#endif
+
+TEST_CASE("[SceneTree][CZAnimation] Inconsistent external graph advance fails borrowed publication without snapshot recovery") {
+	PhaseDiagnosticsEnvironment diagnostics(true);
+	PoseFastpathsEnvironment environment(true);
+	Rig rig;
+	rig.tree->set_deterministic(true);
+	rig.submit();
+	rig.processor->complete();
+	// Deliberately bypass the registered producer's ownership with a second
+	// direct Advance. The process-pass guard must fail, never read missing
+	// snapshots or claim this unsupported double advance as a valid frame.
+	rig.tree->advance(0.1);
+	CHECK(rig.observer->count == 1);
+	rig.processor->complete_and_publish();
+	CHECK(rig.observer->count == 1);
+	CHECK(method_statistic(rig.processor, "failed") == 1);
+	CHECK(method_statistic(rig.processor, "publish_eventless_calls") == 0);
+	CHECK(method_statistic(rig.processor, "evaluate_owned_weight_copy_elements") == 0);
+}
+
+TEST_CASE("[SceneTree][CZAnimation] Prepared BlendSpace map serves only real 1D and 2D graph nodes") {
+	for (bool two_dimensional : { false, true }) {
+		Rig original;
+		original.processor->unregister_tree(original.handle);
+		Rig batched;
+		for (Rig *rig : { &original, &batched }) {
+			Ref<AnimationNodeBlendTree> graph;
+			graph.instantiate();
+			Ref<AnimationNodeAnimation> move;
+			move.instantiate();
+			move->set_animation("Move");
+			Ref<AnimationNodeAnimation> still;
+			still.instantiate();
+			still->set_animation("Still");
+			if (two_dimensional) {
+				Ref<AnimationNodeBlendSpace2D> space;
+				space.instantiate();
+				space->set_auto_triangles(false);
+				space->add_blend_point(move, Vector2(), -1, "MoveOrigin");
+				space->add_blend_point(still, Vector2(1, 0), -1, "StillX");
+				Ref<AnimationNodeAnimation> third;
+				third.instantiate();
+				third->set_animation("Move");
+				space->add_blend_point(third, Vector2(0, 1), -1, "MoveY");
+				space->add_triangle(0, 1, 2);
+				space->set_sample_weight_interpolation_speed(2);
+				graph->add_node("Space", space);
+			} else {
+				Ref<AnimationNodeBlendSpace1D> space;
+				space.instantiate();
+				space->add_blend_point(move, 0, -1, "MoveZero");
+				space->add_blend_point(still, 1, -1, "StillOne");
+				space->set_sample_weight_interpolation_speed(2);
+				graph->add_node("Space", space);
+			}
+			graph->connect_node("output", 0, "Space");
+			rig->tree->set_root_animation_node(graph);
+		}
+		for (int step = 0; step < 4; step++) {
+			const real_t position = step % 2;
+			for (Rig *rig : { &original, &batched }) {
+				rig->tree->set("parameters/Space/blend_position", two_dimensional ? Variant(Vector2(position, 0)) : Variant(position));
+			}
+			original.tree->advance(0.1);
+			batched.submit();
+			batched.processor->complete();
+			CHECK(batched.observer->count == step);
+			batched.processor->complete_and_publish();
+			CHECK(batched.processor->was_evaluated(batched.handle));
+			CHECK(batched.observer->count == step + 1);
+			CHECK(batched.skeleton->get_bone_pose(0).is_equal_approx(original.skeleton->get_bone_pose(0)));
 		}
 	}
 }

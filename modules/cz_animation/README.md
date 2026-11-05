@@ -74,7 +74,7 @@ Prepare/Wait/Publish 是主线程 elapsed μs；SampleBlend/Interpolate/Matrix/S
 |submit_inline_us|Submit内整个inline batch循环；实际走异步提交时为0|
 |evaluate_total_us|当前提交各entry的完整Bridge.evaluate elapsed work总和，含TLS scope收尾和Player状态保存/恢复|
 |evaluate_graph_us|常规帧的_blend_init、_blend_pre_process与processed时的_blend_calc_total_weight|
-|evaluate_weights_us|常规实例容量、owned raw/normalized权重快照与指针重绑定|
+|evaluate_weights_us|常规实例容量、owned raw/normalized权重快照或eventless借用视图的零值判据与元数据准备|
 |evaluate_pose_us|完整Pose循环，包含采样、modifier/pawn求解、历史、显示展开及pack等|
 |evaluate_aux_blend_us|evaluate侧官方_blend_process，含track公共前缀/skip及root-motion/BlendShape/value等；不含publish事件侧第二遍|
 |evaluate_calls / evaluate_first_key_calls|当前提交的evaluate调用次数 / Player started零delta特殊分支次数|
@@ -105,15 +105,19 @@ configure_ik 空字典禁用求解。实际键包括 has_hand_target、hand_targ
 
 Pose fastpaths are enabled by default. `CZ_ANIM_DISABLE_POSE_FASTPATHS=1`, read once when a processor is constructed, selects the previous sampling/weight-copy/track-prefix flow for a controlled comparison. This internal diagnostic switch does not revert correctness fixes, change graph time, events, SIMD selection, LOD, or worker scheduling. It does not add a ClassDB or managed API.
 
-For deterministic mixing, the sampler reads each instance's owned raw weight snapshot directly; non-deterministic mixing still uses normalized weights. The owned raw snapshot remains alive through event publication. A sampled Pose/instance initializes its scratch pose and channel weights only when the first nonzero effective channel successfully interpolates. If no channel writes, it leaves the blended pose unchanged. Scratch contents are private and unspecified for such a call. Track order, the original near-zero test, and ordered quaternion interpolation remain unchanged; an instance is never skipped solely because its scalar weight is zero.
+For deterministic mixing, the sampler reads each instance's raw weights directly. Event-bearing/Player paths own a snapshot through event publication; the strict eventless Tree path described below borrows only during Evaluate. Non-deterministic mixing still uses owned normalized weights. A sampled Pose/instance initializes its scratch pose and channel weights only when the first nonzero effective channel successfully interpolates. If no channel writes, it leaves the blended pose unchanged. Scratch contents are private and unspecified for such a call. Track order, the original near-zero test, and ordered quaternion interpolation remain unchanged; an instance is never skipped solely because its scalar weight is zero.
 
 Within module evaluation/publication, early track skipping retains enabled/cache/index checks and the original non-deterministic zero-total-weight behavior. It updates root-motion classification before skipping a track, then computes weights only for surviving tracks. The official synchronous and module-disabled flows retain their original order. Root-motion path changes synchronize pending work and invalidate binding/reference/history caches; changing the local-root-motion option also synchronizes pending work.
 
 With `CZ_ANIM_PHASE_DIAGNOSTICS=1`, completed statistics additionally report actual animation instances, mixer track-count sums, raw weight elements (including Player first-key snapshots), normalized-copy elements, and sampler calls/zero-weight/no-written/empty-binding calls. These are counts, not memory-bus traffic or timing. They reset per Submit, include dirty publication re-evaluation, and are absent before completed publication or with diagnostics disabled. Existing phase timers include their diagnostic overhead; do not use an enabled diagnostic run as formal whole-frame acceptance evidence.
 
-Only deterministic fastpaths can additionally certify an instance's exact +/-0 weights for the union of all registered Poses' actual bone blend indices while copying its owned snapshot. Non-finite instance weights, nonzero/non-finite masked elements, invalid indices or an unprepared mask use normal sampling; non-deterministic and disabled-fastpaths flows do not use this certificate. Masks are built during existing binding reconstruction and unioned only after a binding change, never by a steady-frame animation-library rescan. Raw/first-key instances, auxiliary/root-motion/event passes and per-Pose evaluation remain intact.
+Only deterministic fastpaths can additionally certify an instance's exact +/-0 weights for the union of all registered Poses' actual bone blend indices while copying its owned snapshot or inspecting its current borrowed view. Non-finite instance weights, nonzero/non-finite masked elements, invalid indices or an unprepared mask use normal sampling; non-deterministic and disabled-fastpaths flows do not use this certificate. Masks are built during existing binding reconstruction and unioned only after a binding change, never by a steady-frame animation-library rescan. First-key and event-bearing instances remain owned; auxiliary/root-motion work and per-Pose evaluation remain intact.
 
 Completed phase diagnostics additionally expose `sample_certified_zero_weight_calls` (a subset of existing zero-weight/no-written calls, retaining the old call/empty-binding counts) and `zero_weight_mask_rebuilds` (actual union reconstructions, normally zero on unchanged warmed frames). These counts are not a performance promise; the new behavior regressions still require the matching unified native build/run.
+
+### 空闲同步入口
+
+没有 pending work 或仍在 Prepare 时，mixer 同步入口在 owner mutex 内直接识别既有空操作；没有 worker group 的 Pose 查询同样不再临时增加 Processor 引用。真正有待处理工作时仍保留 owner Ref pin，pending Tree 仍发布，Pose 查询仅等待 worker、不发布事件。此改动不改变 Player publication 回调中的 dirty 标记，也不改任务、采样或 API。native 回归通过公开 instance-binding reference callback 校准并观测空闲 1→2→1 引用边沿，另检查 pending 查询/发布行为；它不是托管 GCHandle 分配或性能实测证据。
 
 ### 纯骨骼实例的辅助轨道遍历
 
@@ -122,3 +126,15 @@ deterministic mixing、同 mixer TLS 且构造时 fastpaths 开启时，可进�
 证书附着于模块的每个 Pose binding，并在现有绑定重建扫描中生成；所有已注册 Pose 的交集随原零权重 mask 重建计算。没有新增稳定帧全库扫描。读取时核对 library/binding 版本与 Pose layout/dirty 状态；缓存失效会清空证书。原动画 cache 查找及缺失错误检查仍在 shortcut 之前。此 shortcut 不省略图求值、总权重、raw/first-key snapshot、SoA 采样、事件发布顺序或官方 apply/post-process，也不按实例权重为零跳过音频。
 
 阶段诊断开启且整批完成发布后，`evaluate_instance_track_skips` / `publish_instance_track_skips` 记录本帧实际省略的辅助轨道循环实例数，包含既有重算；Publish 值直接读取发布结束后的 State。Complete 尚未发布、回调重入中或诊断关闭时不输出这些字段。它们不是省略的 SoA 实例数、轨道数、CPU 时间或性能收益。新增首键/开关、事件和 cache 替换、root-motion 切换及多 Pose/LOD 行为断言仍待统一候选编译和运行；本次仅做源码与格式检查。
+
+### 本帧实例无事件 Tree 的 Evaluate 内权重视图
+
+已通过现有脚本/图节点/observer/表达式合法性校验的 native AnimationTree，在 deterministic mixing 且 fastpaths 开启，并且本次 Graph 产生的所有 AnimationInstance 的动画都没有 enabled METHOD/AUDIO 轨时，可以只在 Evaluate 内借用该 Tree 自己的 AnimationNodeInstance 权重。同一轮全库扫描缓存每个 Animation 的 eventless trait，方法名安全检查仍覆盖全部库；未参与本帧的事件 clip 不封死借用。Graph 成功后检查全部实际实例，包括零权重实例，任一事件或未知 trait 都使整帧 owned；零 key 事件轨和 safe method 名不能使实际事件实例变为无事件。Player/首键、非 deterministic、fastpaths 关闭、证书或图状态不确定时保留原 owned snapshot。逐动画 trait 顺带现有全库验证扫描生成，按 cache validity、track_map_version、animation_set_update_pass 与清缓存失效，稳定帧不新增整库扫描。
+
+借用分支不构造持久 AnimationInstance/Animation Ref 副本，也不保留图缓冲裸指针到 Publish；Pose 和辅助 root-motion/BlendShape/value 消费当前 official instances，多个 Pose 复用每实例的 owned 零值 bool。Evaluate 的 scope 收尾在所有返回路径清空这些 official instances。Publish 锁存本次求值模式，不重建事件实例列表；仍调用空列表的官方 _blend_process 保留固定 bookkeeping，再执行原 Pose.publish、apply、post、mixer_applied 和已排队图信号。其 `publish_instance_track_skips` 因实际没有实例遍历而为0，不能伪造为旧逻辑实例数。
+
+有写入时沿用写前发布/等待或 dirty entry 的 discard→prepare→evaluate。借用帧在 Publish 前发现 cache/set/map/root/process-pass 或图状态不符会失败，不会回落读取不存在的 owned snapshot，也不会把当前图的新权重冒充旧帧。任意未同步的外部线程资源改写不在既有工作线程合同内。Prepare 仍逐帧保留两遍动态安全检查；BlendSpace 历史 map 只预建实际1D/2D节点的条目，不再为其它节点执行无用 has/insert，这不是拓扑缓存。
+
+诊断开启且发布完成后，`evaluate_raw_weight_elements` 保留历史**逻辑 extent**（每实例 track_count，含 Player 首键），采用借用后不能再称实际 copies。新增 `evaluate_owned_weight_copy_elements` 是 owned raw 数组实际写入数（含默认1）；`evaluate_borrowed_weight_elements` 是按实例累计的实际可见源向量范围，别名可重复计入，非唯一存储/读取/复制数；null源计0，缺失元素的默认1不算源元素。`evaluate_zero_weight_elements_inspected` 计 exact-zero 谓词实际比较的 masked 元素（含隐含默认1）。`evaluate_borrowed_weight_calls` / `publish_eventless_calls` 分别计已处理的借用 Evaluate 次数及真正无快照 Publish 次数；dirty 重算可使它们不同于唯一 frame 数。另有 evaluate_eventful_instances / evaluate_unknown_event_traits，在候选 Tree 的实际实例判定中计事件/未知 trait 实例（含零权重）；诊断开启时扫描完整实例列表计数，关闭时遇首个拒绝即短路，不增加时钟或整库扫描。所有计数沿原诊断开关/完成点/逐Submit重置合同，不新增 ClassDB/托管ABI入口。
+
+新增行为回归覆盖 auxiliary/root-motion 与原始同步/owned 对照、unused method/audio/零key/库与enabled失效、实际Walk↔Work切换与仅Publish触发cue、零权重事件实例否决、实际音频主线程发布、dirty重算、发布回调换图、写前同步、16单位worker、首键owned与多Pose/LOD，另检查不一致的外部直接Advance安全失败。尚待匹配候选统一编译/运行；源码/格式检查不能代替测试通过，也不能预报单独优化或组合优化的性能收益。

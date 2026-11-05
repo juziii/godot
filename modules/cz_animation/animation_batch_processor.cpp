@@ -533,6 +533,13 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
 			evaluation_statistics.animation_instances += statistics.animation_instances;
 			evaluation_statistics.track_count_sum += statistics.track_count_sum;
 			evaluation_statistics.raw_weight_elements += statistics.raw_weight_elements;
+			evaluation_statistics.owned_weight_copy_elements += statistics.owned_weight_copy_elements;
+			evaluation_statistics.borrowed_weight_elements += statistics.borrowed_weight_elements;
+			evaluation_statistics.zero_weight_elements_inspected += statistics.zero_weight_elements_inspected;
+			evaluation_statistics.borrowed_weight_calls += statistics.borrowed_weight_calls;
+			evaluation_statistics.eventless_publish_calls += statistics.eventless_publish_calls;
+			evaluation_statistics.eventful_instances += statistics.eventful_instances;
+			evaluation_statistics.unknown_event_traits += statistics.unknown_event_traits;
 			evaluation_statistics.normalized_copy_elements += statistics.normalized_copy_elements;
 			evaluation_statistics.sample_calls += statistics.sample_calls;
 			evaluation_statistics.sample_zero_weight_calls += statistics.sample_zero_weight_calls;
@@ -608,6 +615,13 @@ Dictionary AnimationBatchProcessor::get_statistics() const {
 		result["evaluate_animation_instances"] = evaluation_statistics.animation_instances;
 		result["evaluate_track_count_sum"] = evaluation_statistics.track_count_sum;
 		result["evaluate_raw_weight_elements"] = evaluation_statistics.raw_weight_elements;
+		result["evaluate_owned_weight_copy_elements"] = evaluation_statistics.owned_weight_copy_elements;
+		result["evaluate_borrowed_weight_elements"] = evaluation_statistics.borrowed_weight_elements;
+		result["evaluate_zero_weight_elements_inspected"] = evaluation_statistics.zero_weight_elements_inspected;
+		result["evaluate_borrowed_weight_calls"] = evaluation_statistics.borrowed_weight_calls;
+		result["publish_eventless_calls"] = evaluation_statistics.eventless_publish_calls;
+		result["evaluate_eventful_instances"] = evaluation_statistics.eventful_instances;
+		result["evaluate_unknown_event_traits"] = evaluation_statistics.unknown_event_traits;
 		result["evaluate_normalized_copy_elements"] = evaluation_statistics.normalized_copy_elements;
 		result["sample_pose_instance_calls"] = evaluation_statistics.sample_calls;
 		result["sample_zero_bone_weight_calls"] = evaluation_statistics.sample_zero_weight_calls;
