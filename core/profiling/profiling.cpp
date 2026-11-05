@@ -36,6 +36,8 @@
 #include "core/os/mutex.h"
 #include "core/templates/paged_allocator.h"
 
+#include <tracy/TracyC.h>
+
 namespace tracy {
 static bool configured = false;
 
@@ -153,6 +155,54 @@ const tracy::SourceLocationData *intern_source_location(const void *p_function_p
 	return &_data->source_location_data;
 }
 } // namespace tracy
+
+#if defined(WINDOWS_ENABLED)
+#define GODOT_CSHARP_TRACY_EXPORT extern "C" __declspec(dllexport)
+#else
+#define GODOT_CSHARP_TRACY_EXPORT extern "C" __attribute__((visibility("default")))
+#endif
+
+GODOT_CSHARP_TRACY_EXPORT int32_t godot_csharp_tracy_bridge_version() {
+	return 1;
+}
+
+GODOT_CSHARP_TRACY_EXPORT const void *godot_csharp_tracy_source_location(const char *p_name, int32_t p_name_length) {
+	if (p_name == nullptr || p_name_length <= 0) {
+		return nullptr;
+	}
+
+	const StringName name = StringName(String::utf8(p_name, p_name_length));
+	static const StringName csharp_file = StringName("C#");
+	static const StringName csharp_function = StringName("ColonyZero");
+	const uintptr_t identity = name.hash() == 0 ? 1 : name.hash();
+	return tracy::intern_source_location(reinterpret_cast<const void *>(identity), csharp_file, csharp_function, name, 0, true);
+}
+
+GODOT_CSHARP_TRACY_EXPORT uint64_t godot_csharp_tracy_zone_begin(const void *p_source_location) {
+	if (p_source_location == nullptr) {
+		return 0;
+	}
+
+	const auto *source_location = reinterpret_cast<const ___tracy_source_location_data *>(p_source_location);
+	const TracyCZoneCtx context = ___tracy_emit_zone_begin(source_location, 1);
+	static_assert(sizeof(context) <= sizeof(uint64_t));
+	uint64_t token = 0;
+	memcpy(&token, &context, sizeof(context));
+	return token;
+}
+
+GODOT_CSHARP_TRACY_EXPORT void godot_csharp_tracy_zone_end(uint64_t p_token) {
+	if (p_token == 0) {
+		return;
+	}
+
+	TracyCZoneCtx context = {};
+	static_assert(sizeof(context) <= sizeof(uint64_t));
+	memcpy(&context, &p_token, sizeof(context));
+	___tracy_emit_zone_end(context);
+}
+
+#undef GODOT_CSHARP_TRACY_EXPORT
 
 void godot_init_profiler() {
 	MutexLock lock(tracy::TracyInternTable::mutex);
