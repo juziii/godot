@@ -2109,9 +2109,8 @@ void TextServerFallback::_font_set_texture_image(const RID &p_font_rid, const Ve
 	tex.texture_w = p_image->get_width();
 	tex.texture_h = p_image->get_height();
 
-	Ref<Image> img = p_image;
+	Ref<Image> img = p_image->duplicate();
 	if (fd->mipmaps && !img->has_mipmaps()) {
-		img = p_image->duplicate();
 		img->generate_mipmaps();
 	}
 	tex.texture = ImageTexture::create_from_image(img);
@@ -2496,13 +2495,12 @@ RID TextServerFallback::_font_get_glyph_texture_rid(const RID &p_font_rid, const
 	if (fgl.texture_idx != -1) {
 		if (ffsd->textures[fgl.texture_idx].dirty) {
 			ShelfPackTexture &tex = ffsd->textures.write[fgl.texture_idx];
-			Ref<Image> img = tex.image;
 			if (fgl.from_svg) {
 				// Same as the "fix alpha border" process option when importing SVGs
-				img->fix_alpha_edges();
+				tex.image->fix_alpha_edges();
 			}
+			Ref<Image> img = tex.image->duplicate();
 			if (fd->mipmaps && !img->has_mipmaps()) {
-				img = tex.image->duplicate();
 				img->generate_mipmaps();
 			}
 			if (tex.texture.is_null()) {
@@ -2546,13 +2544,12 @@ Size2 TextServerFallback::_font_get_glyph_texture_size(const RID &p_font_rid, co
 	if (fgl.texture_idx != -1) {
 		if (ffsd->textures[fgl.texture_idx].dirty) {
 			ShelfPackTexture &tex = ffsd->textures.write[fgl.texture_idx];
-			Ref<Image> img = tex.image;
 			if (fgl.from_svg) {
 				// Same as the "fix alpha border" process option when importing SVGs
-				img->fix_alpha_edges();
+				tex.image->fix_alpha_edges();
 			}
+			Ref<Image> img = tex.image->duplicate();
 			if (fd->mipmaps && !img->has_mipmaps()) {
-				img = tex.image->duplicate();
 				img->generate_mipmaps();
 			}
 			if (tex.texture.is_null()) {
@@ -2977,13 +2974,13 @@ void TextServerFallback::_font_draw_glyph(const RID &p_font_rid, const RID &p_ca
 #endif
 			if (ffsd->textures[fgl.texture_idx].dirty) {
 				ShelfPackTexture &tex = ffsd->textures.write[fgl.texture_idx];
-				Ref<Image> img = tex.image;
 				if (fgl.from_svg) {
 					// Same as the "fix alpha border" process option when importing SVGs
-					img->fix_alpha_edges();
+					tex.image->fix_alpha_edges();
 				}
+				// The atlas can change while its upload is queued on the rendering thread.
+				Ref<Image> img = tex.image->duplicate();
 				if (fd->mipmaps && !img->has_mipmaps()) {
-					img = tex.image->duplicate();
 					img->generate_mipmaps();
 				}
 				if (tex.texture.is_null()) {
@@ -3120,9 +3117,8 @@ void TextServerFallback::_font_draw_glyph_outline(const RID &p_font_rid, const R
 #endif
 			if (ffsd->textures[fgl.texture_idx].dirty) {
 				ShelfPackTexture &tex = ffsd->textures.write[fgl.texture_idx];
-				Ref<Image> img = tex.image;
+				Ref<Image> img = tex.image->duplicate();
 				if (fd->mipmaps && !img->has_mipmaps()) {
-					img = tex.image->duplicate();
 					img->generate_mipmaps();
 				}
 				if (tex.texture.is_null()) {
