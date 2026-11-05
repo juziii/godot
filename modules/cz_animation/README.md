@@ -83,7 +83,7 @@ Prepare/Wait/Publish 是主线程 elapsed μs；SampleBlend/Interpolate/Matrix/S
 
 graph/weights/pose/aux是evaluate_total的互斥子区间；旧SampleBlend/Interpolate/Matrix/SkinPack是其部分子工作，Matrix还可能来自prepare/capture，不能重复相加。四人inline、recomputed=0、无fallback/failed、evaluate_calls符合预期且first_key_calls=0时，才可分别用 `submit_total - prepare - submit_inline`、`submit_inline - evaluate_total` 和 `evaluate_total - graph - weights - pose - aux` 分析未单列开销。多worker的evaluate值是可重叠work sum，不能反减主线程Submit wall或称为CPU-core time。负残差须保留排查，不归零掩盖边界错误。
 
-这是独立诊断模式，有新增时钟观测成本；正式timing-only/P95应关闭它。GetStatistics不隐式等待/发布，未到上述完成点时新增阶段键缺失。新增三项native回归覆盖开关锁定/关闭缺失、完成后可见、逐Submit重置、真实Player dirty重算、空提交及worker汇总；在本次统一构建实际运行前，只能称测试已准备。
+这是独立诊断模式，有新增时钟观测成本；正式timing-only/P95应关闭它。GetStatistics不隐式等待/发布，未到上述完成点时新增阶段键缺失。对应native回归已随当前016统一构建通过，覆盖开关锁定/关闭缺失、完成后可见、逐Submit重置、真实Player dirty重算、空提交及worker汇总。
 
 ## 配置字典与空间
 
@@ -97,9 +97,9 @@ configure_ik 空字典禁用求解。实际键包括 has_hand_target、hand_targ
 
 ## 验证边界
 
-模块有50项启用的 native tests，加8项 PhysicalBone测试为58；源码还留两项 #if0 旧内部谓词档案，不能计为已运行测试。double/Tracy的66项还包含额外8项核心测试。Game/图形/平台验证与性能应分别列证据；单一原生通过不等同全部计划验收。运行API文档与测试数量的准确元数据应从本构建 ClassDB / doctool 提取，不能直接照抄旧核心布局。
+当前Windows native016统一筛选为104/104用例、106188/106188断言；double及Tracy各104/106188，CZ全关闭21/210，原声明LookAt missing_target warning保留。两项#if0旧内部谓词档案不计入运行数。对应冻结为native-frame-eventless-freeze-016.json；本次后续仅文档整理，不重编二进制。Game/图形/平台和性能证据仍分别列范围，原生通过不等于完整计划验收。macOS ARM64/NEON尚未实机运行。
 
-上述58/66是原稳定版已运行的数量。当前另增5项method证书/动画库写前同步行为回归，其中1项仅THREADS_ENABLED构建启用；本次改动尚待统一编译/运行，不能引用旧日志称新增用例已经通过。
+匹配45-callback SDK配套的Game015已执行1327项普通测试（1320通过、7个历史失败方法保留）及156项Godot逻辑测试。两条声明native ERROR使严格适配器仍返回false，原始结果保留；没有新增错误。真实CLR退出pin/join/drain有旧负对照1次和新正对照3次，不能据此宣称原稀发交错已精确复现或所有用户后台线程均受治理。
 
 ### Pose fastpaths and controlled comparison
 
@@ -113,7 +113,7 @@ With `CZ_ANIM_PHASE_DIAGNOSTICS=1`, completed statistics additionally report act
 
 Only deterministic fastpaths can additionally certify an instance's exact +/-0 weights for the union of all registered Poses' actual bone blend indices while copying its owned snapshot or inspecting its current borrowed view. Non-finite instance weights, nonzero/non-finite masked elements, invalid indices or an unprepared mask use normal sampling; non-deterministic and disabled-fastpaths flows do not use this certificate. Masks are built during existing binding reconstruction and unioned only after a binding change, never by a steady-frame animation-library rescan. First-key and event-bearing instances remain owned; auxiliary/root-motion work and per-Pose evaluation remain intact.
 
-Completed phase diagnostics additionally expose `sample_certified_zero_weight_calls` (a subset of existing zero-weight/no-written calls, retaining the old call/empty-binding counts) and `zero_weight_mask_rebuilds` (actual union reconstructions, normally zero on unchanged warmed frames). These counts are not a performance promise; the new behavior regressions still require the matching unified native build/run.
+Completed phase diagnostics additionally expose `sample_certified_zero_weight_calls` (a subset of existing zero-weight/no-written calls, retaining the old call/empty-binding counts) and `zero_weight_mask_rebuilds` (actual union reconstructions, normally zero on unchanged warmed frames). These counts are not a performance promise. The behavior regressions passed in the matching native016 unified build/run.
 
 ### 空闲同步入口
 
@@ -125,7 +125,7 @@ deterministic mixing、同 mixer TLS 且构造时 fastpaths 开启时，可进�
 
 证书附着于模块的每个 Pose binding，并在现有绑定重建扫描中生成；所有已注册 Pose 的交集随原零权重 mask 重建计算。没有新增稳定帧全库扫描。读取时核对 library/binding 版本与 Pose layout/dirty 状态；缓存失效会清空证书。原动画 cache 查找及缺失错误检查仍在 shortcut 之前。此 shortcut 不省略图求值、总权重、raw/first-key snapshot、SoA 采样、事件发布顺序或官方 apply/post-process，也不按实例权重为零跳过音频。
 
-阶段诊断开启且整批完成发布后，`evaluate_instance_track_skips` / `publish_instance_track_skips` 记录本帧实际省略的辅助轨道循环实例数，包含既有重算；Publish 值直接读取发布结束后的 State。Complete 尚未发布、回调重入中或诊断关闭时不输出这些字段。它们不是省略的 SoA 实例数、轨道数、CPU 时间或性能收益。新增首键/开关、事件和 cache 替换、root-motion 切换及多 Pose/LOD 行为断言仍待统一候选编译和运行；本次仅做源码与格式检查。
+阶段诊断开启且整批完成发布后，`evaluate_instance_track_skips` / `publish_instance_track_skips` 记录本帧实际省略的辅助轨道循环实例数，包含既有重算；Publish 值直接读取发布结束后的 State。Complete 尚未发布、回调重入中或诊断关闭时不输出这些字段。它们不是省略的 SoA 实例数、轨道数、CPU 时间或性能收益。首键/开关、事件和cache替换、root-motion切换及多Pose/LOD行为断言已随native016通过。
 
 ### 本帧实例无事件 Tree 的 Evaluate 内权重视图
 
@@ -137,4 +137,6 @@ deterministic mixing、同 mixer TLS 且构造时 fastpaths 开启时，可进�
 
 诊断开启且发布完成后，`evaluate_raw_weight_elements` 保留历史**逻辑 extent**（每实例 track_count，含 Player 首键），采用借用后不能再称实际 copies。新增 `evaluate_owned_weight_copy_elements` 是 owned raw 数组实际写入数（含默认1）；`evaluate_borrowed_weight_elements` 是按实例累计的实际可见源向量范围，别名可重复计入，非唯一存储/读取/复制数；null源计0，缺失元素的默认1不算源元素。`evaluate_zero_weight_elements_inspected` 计 exact-zero 谓词实际比较的 masked 元素（含隐含默认1）。`evaluate_borrowed_weight_calls` / `publish_eventless_calls` 分别计已处理的借用 Evaluate 次数及真正无快照 Publish 次数；dirty 重算可使它们不同于唯一 frame 数。另有 evaluate_eventful_instances / evaluate_unknown_event_traits，在候选 Tree 的实际实例判定中计事件/未知 trait 实例（含零权重）；诊断开启时扫描完整实例列表计数，关闭时遇首个拒绝即短路，不增加时钟或整库扫描。所有计数沿原诊断开关/完成点/逐Submit重置合同，不新增 ClassDB/托管ABI入口。
 
-新增行为回归覆盖 auxiliary/root-motion 与原始同步/owned 对照、unused method/audio/零key/库与enabled失效、实际Walk↔Work切换与仅Publish触发cue、零权重事件实例否决、实际音频主线程发布、dirty重算、发布回调换图、写前同步、16单位worker、首键owned与多Pose/LOD，另检查不一致的外部直接Advance安全失败。尚待匹配候选统一编译/运行；源码/格式检查不能代替测试通过，也不能预报单独优化或组合优化的性能收益。
+新增行为回归覆盖auxiliary/root-motion与原始同步/owned对照、unused method/audio/零key/库与enabled失效、实际Walk↔Work切换与仅Publish触发cue、零权重事件实例否决、实际音频主线程发布、dirty重算、发布回调换图、写前同步、16单位worker、首键owned与多Pose/LOD，另检查不一致的外部直接Advance安全失败；均随native016统一构建通过。
+
+2026-11-05按用户时间要求收尾：当前专用crowd整帧54组有效，64/256所有模式三轮通过原5%门槛；4人分段LOD有两项超限（LOD1 r1=1.137456、LOD3 r1=1.053980）。详细CPU阶段仅完成11/45，后续和预注册同窗口4人18组取消，不能宣布完整性能验收。历史模型/插值/深度/空PhysicalBone数据按其原冻结版本保留。完整交接在Game/docs/WIP，不发布主Editor或改共享资产。
