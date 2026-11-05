@@ -159,6 +159,8 @@ public:
 	void set_action_set_active(const String &p_action_set, bool p_active);
 	Array get_action_sets() const;
 
+	Size2 get_recommended_target_size() const;
+
 	double get_render_target_size_multiplier() const;
 	void set_render_target_size_multiplier(double multiplier);
 
@@ -242,6 +244,17 @@ public:
 	/** User presence. */
 	bool is_user_presence_supported() const;
 	bool is_user_present() const;
+
+	/** View configuration */
+	enum ViewConfiguration {
+		VIEW_CONFIGURATION_MONO = 0,
+		VIEW_CONFIGURATION_STEREO = 1,
+		VIEW_CONFIGURATION_STEREO_WITH_INSET = 2,
+		VIEW_CONFIGURATION_UNSET = 254,
+		VIEW_CONFIGURATION_UNKNOWN = 255,
+	};
+
+	ViewConfiguration get_active_view_configuration() const;
 
 	/** Hand tracking. */
 	enum Hand {
@@ -349,6 +362,7 @@ public:
 };
 
 VARIANT_ENUM_CAST(OpenXRInterface::SessionState)
+VARIANT_ENUM_CAST(OpenXRInterface::ViewConfiguration)
 VARIANT_ENUM_CAST(OpenXRInterface::Hand)
 VARIANT_ENUM_CAST(OpenXRInterface::HandMotionRange)
 VARIANT_ENUM_CAST(OpenXRInterface::HandTrackedSource)

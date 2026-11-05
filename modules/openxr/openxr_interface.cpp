@@ -69,10 +69,15 @@ void OpenXRInterface::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("is_user_presence_supported"), &OpenXRInterface::is_user_presence_supported);
 	ClassDB::bind_method(D_METHOD("is_user_present"), &OpenXRInterface::is_user_present);
 
+	// View configuration
+	ClassDB::bind_method(D_METHOD("get_active_view_configuration"), &OpenXRInterface::get_active_view_configuration);
+
 	// Display refresh rate
 	ClassDB::bind_method(D_METHOD("get_display_refresh_rate"), &OpenXRInterface::get_display_refresh_rate);
 	ClassDB::bind_method(D_METHOD("set_display_refresh_rate", "refresh_rate"), &OpenXRInterface::set_display_refresh_rate);
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "display_refresh_rate"), "set_display_refresh_rate", "get_display_refresh_rate");
+
+	ClassDB::bind_method(D_METHOD("get_recommended_target_size"), &OpenXRInterface::get_recommended_target_size);
 
 	// Render Target size multiplier
 	ClassDB::bind_method(D_METHOD("get_render_target_size_multiplier"), &OpenXRInterface::get_render_target_size_multiplier);
@@ -144,6 +149,12 @@ void OpenXRInterface::_bind_methods() {
 	BIND_ENUM_CONSTANT(SESSION_STATE_STOPPING);
 	BIND_ENUM_CONSTANT(SESSION_STATE_LOSS_PENDING);
 	BIND_ENUM_CONSTANT(SESSION_STATE_EXITING);
+
+	BIND_ENUM_CONSTANT(VIEW_CONFIGURATION_MONO);
+	BIND_ENUM_CONSTANT(VIEW_CONFIGURATION_STEREO);
+	BIND_ENUM_CONSTANT(VIEW_CONFIGURATION_STEREO_WITH_INSET);
+	BIND_ENUM_CONSTANT(VIEW_CONFIGURATION_UNSET);
+	BIND_ENUM_CONSTANT(VIEW_CONFIGURATION_UNKNOWN);
 
 	BIND_ENUM_CONSTANT(HAND_LEFT);
 	BIND_ENUM_CONSTANT(HAND_RIGHT);
@@ -982,6 +993,14 @@ double OpenXRInterface::get_render_target_size_multiplier() const {
 	}
 }
 
+Size2 OpenXRInterface::get_recommended_target_size() const {
+	if (openxr_api == nullptr) {
+		return Size2();
+	} else {
+		return openxr_api->get_recommended_target_size();
+	}
+}
+
 void OpenXRInterface::set_render_target_size_multiplier(double multiplier) {
 	if (openxr_api == nullptr) {
 		return;
@@ -1050,13 +1069,18 @@ Size2 OpenXRInterface::get_render_target_size() {
 	if (openxr_api == nullptr) {
 		return Size2();
 	} else {
-		return openxr_api->get_recommended_target_size();
+		return openxr_api->get_render_target_size();
 	}
 }
 
 uint32_t OpenXRInterface::get_view_count() {
-	// TODO: set this based on our configuration and the active spatial containers.
-	return 2;
+	if (openxr_api == nullptr) {
+		return 2;
+	} else {
+		// We return our primary view count here,
+		// this controls our primary view!
+		return openxr_api->get_primary_view_count();
+	}
 }
 
 void OpenXRInterface::_set_default_pos(Transform3D &r_transform, double p_world_scale, uint64_t p_eye) {
@@ -1133,7 +1157,7 @@ Projection OpenXRInterface::get_projection_for_view(uint32_t p_view, double p_as
 
 Rect2i OpenXRInterface::get_render_region() {
 	if (openxr_api) {
-		return openxr_api->get_render_region();
+		return openxr_api->get_combined_render_region();
 	} else {
 		return Rect2i();
 	}
@@ -1505,6 +1529,24 @@ bool OpenXRInterface::is_user_present() const {
 	}
 }
 
+/** View configuration */
+OpenXRInterface::ViewConfiguration OpenXRInterface::get_active_view_configuration() const {
+	if (!openxr_api || !openxr_api->is_initialized()) {
+		return VIEW_CONFIGURATION_UNSET;
+	} else {
+		switch (openxr_api->get_view_configuration()) {
+			case XR_VIEW_CONFIGURATION_TYPE_PRIMARY_MONO:
+				return VIEW_CONFIGURATION_MONO;
+			case XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO:
+				return VIEW_CONFIGURATION_STEREO;
+			case XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO_WITH_FOVEATED_INSET:
+				return VIEW_CONFIGURATION_STEREO_WITH_INSET;
+			default:
+				return VIEW_CONFIGURATION_UNKNOWN;
+		}
+	}
+}
+
 /** Hand tracking. */
 void OpenXRInterface::set_motion_range(const Hand p_hand, const HandMotionRange p_motion_range) {
 	ERR_FAIL_INDEX(p_hand, HAND_MAX);
@@ -1649,6 +1691,9 @@ Vector3 OpenXRInterface::get_hand_joint_angular_velocity(Hand p_hand, HandJoints
 }
 
 RID OpenXRInterface::get_vrs_texture() {
+	// Note, vrs_mode == VRS_XR should not be used with foveated inset.
+	// Not sure where to best check for this (yet).
+
 	if (!openxr_api) {
 		return RID();
 	}

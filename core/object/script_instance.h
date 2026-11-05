@@ -86,7 +86,7 @@ public:
 	// Managed languages can reject an instance already queued for finalization.
 	virtual bool refcount_prepare_cached_reference() { return true; }
 
-	virtual Ref<Script> get_script() const = 0;
+	virtual Script *get_script() const = 0;
 
 	virtual bool is_placeholder() const { return false; }
 

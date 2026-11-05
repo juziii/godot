@@ -41,6 +41,7 @@
 #include "editor/file_system/editor_file_system.h"
 #include "editor/file_system/editor_paths.h"
 #include "editor/gui/editor_file_dialog.h"
+#include "editor/gui/editor_toaster.h"
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "scene/gui/line_edit.h"
@@ -269,7 +270,6 @@ const HashMap<EditorBuildProfile::BuildOption, LocalVector<EditorBuildProfile::B
 // Should also contain classes not derived from either `Resource` or `Node`.
 const HashMap<EditorBuildProfile::BuildOption, LocalVector<String>> EditorBuildProfile::build_option_classes = {
 	{ BUILD_OPTION_2D, {
-			"Curve2D",
 			"Node2D",
 			"OccluderPolygon2D",
 			"SkeletonModificationStack2D",
@@ -451,7 +451,7 @@ String EditorBuildProfile::get_build_option_name(BuildOption p_build_option) {
 		TTRC("SIL Graphite Fonts"),
 		TTRC("Multi-channel Signed Distance Field Font Rendering"),
 	};
-	return TTRGET(build_option_names[p_build_option]);
+	return TTR(build_option_names[p_build_option]);
 }
 
 String EditorBuildProfile::get_build_option_description(BuildOption p_build_option) {
@@ -490,7 +490,7 @@ String EditorBuildProfile::get_build_option_description(BuildOption p_build_opti
 		TTRC("Multi-channel signed distance field font rendering support using msdfgen library (pre-rendered MSDF fonts can be used even if this option is disabled)."),
 	};
 
-	return TTRGET(build_option_descriptions[p_build_option]);
+	return TTR(build_option_descriptions[p_build_option]);
 }
 
 String EditorBuildProfile::get_build_option_identifier(BuildOption p_build_option) {
@@ -528,7 +528,7 @@ String EditorBuildProfile::get_build_option_category_name(BuildOptionCategory p_
 		TTRC("Text Rendering and Font Options:"),
 	};
 
-	return TTRGET(build_option_subcategories[p_build_option_category]);
+	return TTR(build_option_subcategories[p_build_option_category]);
 }
 
 Error EditorBuildProfile::save_to_file(const String &p_path) {
@@ -609,7 +609,7 @@ Error EditorBuildProfile::load_from_file(const String &p_path) {
 			for (int i = 0; i < BUILD_OPTION_MAX; i++) {
 				String f = build_option_identifiers[i];
 				if (f == key) {
-					build_options_disabled[i] = true;
+					build_options_disabled[i] = !build_option_disabled_by_default[i];
 					break;
 				}
 			}
@@ -1230,7 +1230,7 @@ void EditorBuildProfileManager::_class_list_item_selected() {
 		description_bit->parse_symbol("class|" + md.operator String() + "|");
 	} else if (md.get_type() == Variant::INT) {
 		String build_option_description = EditorBuildProfile::get_build_option_description(EditorBuildProfile::BuildOption((int)md));
-		description_bit->set_custom_text(TTR(item->get_text(0)), String(), TTRGET(build_option_description));
+		description_bit->set_custom_text(TTR(item->get_text(0)), String(), TTR(build_option_description));
 	}
 }
 
@@ -1356,7 +1356,12 @@ bool EditorBuildProfileManager::_import_profile(const String &p_path) {
 	Error err = profile->load_from_file(p_path);
 	String basefile = p_path.get_file();
 	if (err != OK) {
-		EditorNode::get_singleton()->show_warning(vformat(TTR("File '%s' format is invalid, import aborted."), basefile));
+		// Avoid throwing an error if this is called when the dialog is still hidden, like in the ready notification.
+		if (is_visible()) {
+			EditorNode::get_singleton()->show_warning(vformat(TTR("File '%s' format is invalid, import aborted."), basefile));
+		} else {
+			EditorToaster::get_singleton()->popup_str(vformat(TTR("Can't load build profile. File '%s' is invalid."), basefile), EditorToaster::SEVERITY_ERROR);
+		}
 		return false;
 	}
 
