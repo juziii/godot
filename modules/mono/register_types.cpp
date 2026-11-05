@@ -43,6 +43,12 @@ Ref<ResourceFormatSaverCSharpScript> resource_saver_cs;
 
 MonoBind::GodotSharp *_godotsharp = nullptr;
 
+void prepare_mono_for_shutdown() {
+	if (script_language_cs) {
+		script_language_cs->prepare_for_shutdown();
+	}
+}
+
 void initialize_mono_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
@@ -72,6 +78,7 @@ void uninitialize_mono_module(ModuleInitializationLevel p_level) {
 	ScriptServer::unregister_language(script_language_cs);
 
 	memdelete(script_language_cs);
+	script_language_cs = nullptr;
 
 	if constexpr (GD_IS_CLASS_ENABLED(CSharpScript)) {
 		ResourceLoader::remove_resource_format_loader(resource_loader_cs);

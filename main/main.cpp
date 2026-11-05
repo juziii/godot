@@ -147,6 +147,10 @@
 
 #include "modules/modules_enabled.gen.h" // For mono.
 
+#ifdef MODULE_MONO_ENABLED
+#include "modules/mono/register_types.h"
+#endif
+
 #if defined(MODULE_MONO_ENABLED) && defined(TOOLS_ENABLED)
 #include "modules/mono/editor/bindings_generator.h"
 #endif
@@ -4955,6 +4959,15 @@ static uint64_t physics_process_max = 0;
 static uint64_t process_max = 0;
 static uint64_t navigation_process_max = 0;
 
+static bool _prepare_shutdown_if_exiting(bool p_exit) {
+#ifdef MODULE_MONO_ENABLED
+	if (p_exit) {
+		prepare_mono_for_shutdown();
+	}
+#endif
+	return p_exit;
+}
+
 // Return false means iterating further, returning true means `OS::run`
 // will terminate the program. In case of failure, the OS exit code needs
 // to be set explicitly here (defaults to EXIT_SUCCESS).
@@ -5212,7 +5225,7 @@ bool Main::iteration() {
 #endif
 
 	if (fixed_fps != -1) {
-		return exit;
+		return _prepare_shutdown_if_exiting(exit);
 	}
 
 	SceneTree *scene_tree = SceneTree::get_singleton();
@@ -5227,11 +5240,13 @@ bool Main::iteration() {
 		// Only relevant when running the editor.
 		if (!editor) {
 			OS::get_singleton()->set_exit_code(EXIT_FAILURE);
+			_prepare_shutdown_if_exiting(true);
 			ERR_FAIL_V_MSG(true,
 					"Command line option --build-solutions was passed, but no project is being edited. Aborting.");
 		}
 		if (!EditorNode::get_singleton()->call_build()) {
 			OS::get_singleton()->set_exit_code(EXIT_FAILURE);
+			_prepare_shutdown_if_exiting(true);
 			ERR_FAIL_V_MSG(true,
 					"Command line option --build-solutions was passed, but the build callback failed. Aborting.");
 		}
@@ -5244,7 +5259,7 @@ bool Main::iteration() {
 	}
 #endif
 
-	return exit;
+	return _prepare_shutdown_if_exiting(exit);
 }
 
 void Main::force_redraw() {
@@ -5265,6 +5280,10 @@ void Main::cleanup(bool p_force) {
 	if (!p_force) {
 		ERR_FAIL_COND(!_start_success);
 	}
+
+	// Also cover failed setup or hosts which did not run the normal iteration.
+	// The normal path prepared before the platform finalized its main loop.
+	_prepare_shutdown_if_exiting(true);
 
 	// Printing in the usual way can become problematic during/after cleanup.
 	CoreGlobals::print_ready = false;

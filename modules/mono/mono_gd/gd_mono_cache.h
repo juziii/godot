@@ -121,7 +121,8 @@ struct ManagedCallbacks {
 	using FuncGCHandleBridge_AllocStrongGCHandle = GCHandleIntPtr(GD_CLR_STDCALL *)(GCHandleIntPtr, bool *);
 	using FuncGCHandleBridge_GCHandleIsTargetCollectible = bool(GD_CLR_STDCALL *)(GCHandleIntPtr);
 	using FuncDebuggingUtils_GetCurrentStackInfo = void(GD_CLR_STDCALL *)(Vector<ScriptLanguage::StackInfo> *);
-	using FuncDisposablesTracker_OnGodotShuttingDown = void(GD_CLR_STDCALL *)();
+	using FuncDisposablesTracker_OnGodotShuttingDown = bool(GD_CLR_STDCALL *)();
+	using FuncDisposablesTracker_PrepareForShutdown = bool(GD_CLR_STDCALL *)();
 	using FuncGD_OnCoreApiAssemblyLoaded = void(GD_CLR_STDCALL *)(bool);
 
 	FuncSignalAwaiter_SignalCallback SignalAwaiter_SignalCallback;
@@ -168,6 +169,7 @@ struct ManagedCallbacks {
 	FuncDisposablesTracker_OnGodotShuttingDown DisposablesTracker_OnGodotShuttingDown;
 	FuncGD_OnCoreApiAssemblyLoaded GD_OnCoreApiAssemblyLoaded;
 	FuncGCHandleBridge_AllocStrongGCHandle GCHandleBridge_AllocStrongGCHandle;
+	FuncDisposablesTracker_PrepareForShutdown DisposablesTracker_PrepareForShutdown;
 };
 
 extern ManagedCallbacks managed_callbacks;

@@ -137,13 +137,34 @@ void CSharpLanguage::finish() {
 	finalize();
 }
 
-void CSharpLanguage::finalize() {
-	if (finalized) {
+void CSharpLanguage::prepare_for_shutdown() {
+	if (shutdown_prepared || shutdown_preparing || finalized) {
 		return;
 	}
+	if (!gdmono || !gdmono->is_runtime_initialized() || !GDMonoCache::godot_api_cache_updated) {
+		return;
+	}
+	DEV_ASSERT(Thread::is_main_thread());
+	shutdown_preparing = true;
+	// This callback only pins tracker targets and joins pending finalizers. It
+	// runs before native scene teardown, without either binding mutex held.
+	const bool prepared = GDMonoCache::managed_callbacks.DisposablesTracker_PrepareForShutdown();
+	shutdown_preparing = false;
+	CRASH_COND_MSG(!prepared, ".NET shutdown preparation failed; refusing unprotected native teardown.");
+	shutdown_prepared = true;
+}
+
+void CSharpLanguage::finalize() {
+	if (finalized || shutdown_draining) {
+		return;
+	}
+	ERR_FAIL_COND_MSG(shutdown_preparing, "Cannot finalize C# while shutdown preparation is still in progress.");
+	prepare_for_shutdown(); // Fallback for hosts which did not run Main::iteration().
+	shutdown_draining = true;
 
 	if (gdmono && gdmono->is_runtime_initialized() && GDMonoCache::godot_api_cache_updated) {
-		GDMonoCache::managed_callbacks.DisposablesTracker_OnGodotShuttingDown();
+		const bool disposed = GDMonoCache::managed_callbacks.DisposablesTracker_OnGodotShuttingDown();
+		CRASH_COND_MSG(!disposed, ".NET shutdown disposal failed; refusing to release bindings and the runtime host.");
 	}
 
 	finalizing = true;
@@ -187,6 +208,7 @@ void CSharpLanguage::finalize() {
 
 	finalizing = false;
 	finalized = true;
+	shutdown_draining = false;
 }
 
 Vector<String> CSharpLanguage::get_reserved_words() const {

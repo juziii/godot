@@ -34,3 +34,4 @@
 
 void initialize_mono_module(ModuleInitializationLevel p_level);
 void uninitialize_mono_module(ModuleInitializationLevel p_level);
+void prepare_mono_for_shutdown();

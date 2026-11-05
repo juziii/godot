@@ -53,9 +53,10 @@ namespace Godot.Bridge
         public delegate* unmanaged<IntPtr, void> GCHandleBridge_FreeGCHandle;
         public delegate* unmanaged<IntPtr, godot_bool> GCHandleBridge_GCHandleIsTargetCollectible;
         public delegate* unmanaged<void*, void> DebuggingUtils_GetCurrentStackInfo;
-        public delegate* unmanaged<void> DisposablesTracker_OnGodotShuttingDown;
+        public delegate* unmanaged<godot_bool> DisposablesTracker_OnGodotShuttingDown;
         public delegate* unmanaged<godot_bool, void> GD_OnCoreApiAssemblyLoaded;
         public delegate* unmanaged<IntPtr, godot_bool*, IntPtr> GCHandleBridge_AllocStrongGCHandle;
+        public delegate* unmanaged<godot_bool> DisposablesTracker_PrepareForShutdown;
         // @formatter:on
 
         public static ManagedCallbacks Create()
@@ -107,6 +108,7 @@ namespace Godot.Bridge
                 DisposablesTracker_OnGodotShuttingDown = &DisposablesTracker.OnGodotShuttingDown,
                 GD_OnCoreApiAssemblyLoaded = &GD.OnCoreApiAssemblyLoaded,
                 GCHandleBridge_AllocStrongGCHandle = &GCHandleBridge.AllocStrongGCHandle,
+                DisposablesTracker_PrepareForShutdown = &DisposablesTracker.PrepareForShutdown,
                 // @formatter:on
             };
         }

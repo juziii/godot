@@ -476,6 +476,9 @@ class CSharpLanguage : public ScriptLanguage {
 
 	bool finalizing = false;
 	bool finalized = false;
+	bool shutdown_preparing = false;
+	bool shutdown_prepared = false;
+	bool shutdown_draining = false;
 
 	GDMono *gdmono = nullptr;
 	SelfList<CSharpScript>::List script_list;
@@ -536,6 +539,7 @@ public:
 		return lang_idx;
 	}
 	void set_language_index(int p_idx);
+	void prepare_for_shutdown();
 
 	_FORCE_INLINE_ static CSharpLanguage *get_singleton() {
 		return singleton;
