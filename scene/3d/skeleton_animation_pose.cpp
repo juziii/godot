@@ -184,7 +184,7 @@ bool SkeletonAnimationPose::capture(Skeleton3D *p_skeleton) {
 	}
 	p_skeleton->_find_modifiers();
 	modifiers.clear();
-	int ti = 0, ci = 0;
+	int ti = 0, ci = 0, ri = 0, li = 0;
 	for (ObjectID id : p_skeleton->modifiers) {
 		if (!p_skeleton->modifiers_enabled) { break; }
 		auto *mod = Object::cast_to<SkeletonModifier3D>(ObjectDB::get_instance(id));
@@ -261,6 +261,59 @@ bool SkeletonAnimationPose::capture(Skeleton3D *p_skeleton) {
 				in.pole_id = pole->get_instance_id();
 			}
 			m.count = ti - m.begin;
+		} else if (auto *rotation_offset = Object::cast_to<BoneRotationOffsetModifier3D>(mod)) {
+			m.kind = Modifier::ROTATION_OFFSET;
+			m.rotation_offset = rotation_offset->get_rotation_offset();
+			m.rotation_space = rotation_offset->get_rotation_space();
+			m.use_initial_global_pose = rotation_offset->is_using_initial_global_pose();
+			m.begin = ri;
+			const PackedFloat32Array &weights = rotation_offset->get_rotation_weights();
+			const Vector<BoneRotationOffsetModifier3D::Target> &targets = rotation_offset->_get_targets(p_skeleton);
+			for (const BoneRotationOffsetModifier3D::Target &target : targets) {
+				if (ri == int(rotation_offsets.size())) {
+					rotation_offsets.resize(ri + 1);
+				}
+				RotationOffsetInput &input = rotation_offsets[ri++];
+				input.bone = target.bone;
+				input.depth = target.depth;
+				input.rotation = rotation_offset->get_bone_rotation_offset(target.name_index);
+				input.weight = target.name_index < weights.size() ? weights[target.name_index] : 1.0f;
+			}
+			m.count = ri - m.begin;
+		} else if (auto *look_at = Object::cast_to<LookAtModifier3D>(mod)) {
+			if (!Math::is_zero_approx(look_at->get_duration())) {
+				return fail("LookAtModifier3D time interpolation requires synchronous processing (duration must be zero).");
+			}
+			if (look_at->bone < 0 || look_at->bone >= count) {
+				continue;
+			}
+			m.kind = Modifier::LOOK_AT;
+			m.begin = li;
+			m.count = 1;
+			if (li == int(look_ats.size())) {
+				look_ats.resize(li + 1);
+			}
+			LookAtInput &in = look_ats[li++];
+			if (in.modifier_id != id) {
+				in.target_id = ObjectID();
+				in.origin_id = ObjectID();
+			}
+			in.modifier_id = id;
+			in.solver = look_at->capture_solver();
+			in.bone = look_at->bone;
+			in.origin_bone = look_at->origin_bone;
+			in.origin_from = look_at->origin_from;
+			in.origin_offset = look_at->origin_offset;
+			auto *target = capture_target(look_at, look_at->target_node, in.target_path, in.target_id);
+			in.has_target = target != nullptr;
+			in.target = target ? target->get_global_transform_interpolated().origin : Vector3();
+			in.has_external_origin = false;
+			if (in.origin_from == LookAtModifier3D::ORIGIN_FROM_EXTERNAL_NODE) {
+				if (auto *origin = capture_target(look_at, look_at->origin_external_node, in.origin_path, in.origin_id)) {
+					in.has_external_origin = true;
+					in.external_origin = origin->get_global_transform_interpolated();
+				}
+			}
 		} else if (auto *copy = Object::cast_to<CopyTransformModifier3D>(mod)) {
 			if (m.influence < 1 && copy->get_setting_count() > 1) { return fail("Multi-setting partial influence requires synchronous processing."); }
 			m.kind = Modifier::COPY;
@@ -600,6 +653,29 @@ void SkeletonAnimationPose::solve_copy(CopyInput &r_input) {
 	CopyTransformModifier3D::copy_pose(this, &s, s.apply_bone, destination, s.amount);
 }
 
+void SkeletonAnimationPose::solve_look_at(LookAtInput &r_input) {
+	const int bone = r_input.bone;
+	const Transform3D bone_rest = r_input.solver.relative ? get_local_pose(bone) : get_bone_rest(bone);
+	const int parent = get_bone_parent(bone);
+	Transform3D pose_world = world_interpolated;
+	if (attachment_source.is_valid() && attachment_bone >= 0 && attachment_bone < attachment_source->get_bone_count()) {
+		pose_world = attachment_source->world_interpolated * attachment_source->get_global_pose(attachment_bone) * attachment_scale_transform;
+		if (attachment_disable_scale) {
+			pose_world.basis.orthonormalize();
+		}
+		pose_world = pose_world * attachment_offset;
+	}
+	Transform3D bone_space = parent >= 0 ? pose_world * get_global_pose(parent) : pose_world;
+	bone_space.translate_local(bone_rest.origin);
+	Transform3D origin = bone_space;
+	if (r_input.origin_from == LookAtModifier3D::ORIGIN_FROM_SPECIFIC_BONE && r_input.origin_bone >= 0 && r_input.origin_bone < get_bone_count()) {
+		origin = pose_world * get_global_pose(r_input.origin_bone);
+	} else if (r_input.origin_from == LookAtModifier3D::ORIGIN_FROM_EXTERNAL_NODE && r_input.has_external_origin) {
+		origin = r_input.external_origin;
+	}
+	set_bone_pose_rotation(bone, r_input.solver.solve(get_bone_rest(bone), get_local_pose(bone), get_bone_pose_rotation(bone), bone_space, origin.translated_local(r_input.origin_offset), r_input.has_target, r_input.target));
+}
+
 void SkeletonAnimationPose::evaluate() {
 	if (!fallback_reason.is_empty()) {
 		return;
@@ -608,7 +684,7 @@ void SkeletonAnimationPose::evaluate() {
 		Transform3D source_rest = copy_source->world * copy_source->get_bone_global_rest(copy_source_bone);
 		Transform3D target_rest = world * get_bone_global_rest(copy_target_bone);
 		Transform3D rest_offset = source_rest.affine_inverse() * target_rest;
-		Transform3D source_pose = copy_source->world * copy_source->get_base_global_pose(copy_source_bone);
+		Transform3D source_pose = copy_source->world * copy_source->get_global_pose(copy_source_bone);
 		set_bone_global_pose(copy_target_bone, world.affine_inverse() * source_pose * rest_offset);
 	}
 	update_globals();
@@ -625,7 +701,7 @@ void SkeletonAnimationPose::evaluate() {
 		b.base_global = b.global;
 	}
 	for (const Modifier &m : modifiers) {
-		if (m.influence < 1) {
+		if (m.influence < 1 && m.kind != Modifier::ROTATION_OFFSET) {
 			for (auto &b : bones) {
 				b.before_modifier = b.local;
 				b.modified = false;
@@ -642,11 +718,36 @@ void SkeletonAnimationPose::evaluate() {
 					solve_copy(copies[i]);
 				}
 				break;
+			case Modifier::LOOK_AT:
+				solve_look_at(look_ats[m.begin]);
+				break;
+			case Modifier::ROTATION_OFFSET: {
+				if (m.use_initial_global_pose) {
+					rotation_offset_initial_global_rotations.resize(bones.size());
+					for (int i = m.begin; i < m.begin + m.count; i++) {
+						const int bone = rotation_offsets[i].bone;
+						rotation_offset_initial_global_rotations[bone] = bones[bone].global.basis.get_rotation_quaternion();
+					}
+					for (int i = m.begin; i < m.begin + m.count; i++) {
+						const RotationOffsetInput &input = rotation_offsets[i];
+						BoneRotationOffsetModifier3D::apply_from_initial_global_pose(this, input.bone, input.rotation, CLAMP(input.weight * m.influence, 0.0f, 1.0f), rotation_offset_initial_global_rotations[input.bone]);
+					}
+				} else {
+					for (int i = m.begin; i < m.begin + m.count; i++) {
+						const RotationOffsetInput &input = rotation_offsets[i];
+						BoneRotationOffsetModifier3D::apply(this, input.bone, input.rotation, m.rotation_space, CLAMP(input.weight * m.influence, 0.0f, 1.0f));
+					}
+				}
+				// Grip targets consumed by subsequent IK modifiers must come from the
+				// rotated pose, just as they do in synchronous modifier processing.
+				update_globals();
+				pawn_pose.regenerate_grip_target();
+			} break;
 			case Modifier::AIM:
 				pawn_pose.solve_aim();
 				break;
 		}
-		if (m.influence < 1) {
+		if (m.influence < 1 && m.kind != Modifier::ROTATION_OFFSET) {
 			for (int i = 0; i < int(bones.size()); i++) {
 				auto &b = bones[i];
 				if (b.modified && b.before_modifier != b.local) {
@@ -655,7 +756,9 @@ void SkeletonAnimationPose::evaluate() {
 				}
 			}
 		}
-		update_globals();
+		if (m.kind != Modifier::ROTATION_OFFSET) {
+			update_globals();
+		}
 	}
 	}
 	store_sample();
@@ -726,9 +829,18 @@ bool SkeletonAnimationPose::publish() {
 				}
 			}
 		}
+		if (m.kind == Modifier::LOOK_AT) {
+			if (auto *look_at = Object::cast_to<LookAtModifier3D>(ObjectDB::get_instance(m.id))) {
+				look_at->publish_solver(look_ats[m.begin].solver);
+			}
+		}
 		if (auto *mod = ObjectDB::get_instance(m.id)) {
-			publish_stats.modifier_signals++;
-			mod->emit_signal(SNAME("modification_processed"));
+			// Capture normally excludes connected modifiers. Recheck on main in
+			// case a listener was added while the detached pose was evaluating.
+			if (mod->has_connections(SNAME("modification_processed"))) {
+				publish_stats.modifier_signals++;
+				mod->emit_signal(SNAME("modification_processed"));
+			}
 		}
 	}
 	}
@@ -743,6 +855,7 @@ void SkeletonAnimationPose::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_aim_input", "hip_weight", "muzzle", "has_grip", "grip", "target", "up"), &SkeletonAnimationPose::set_aim_input);
 	ClassDB::bind_method(D_METHOD("set_ik_hand_input", "has_target", "target", "weights"), &SkeletonAnimationPose::set_ik_hand_input);
 	ClassDB::bind_method(D_METHOD("set_ik_ground_input", "left_hit", "left_position", "left_normal", "right_hit", "right_position", "right_normal"), &SkeletonAnimationPose::set_ik_ground_input);
+	ClassDB::bind_method(D_METHOD("set_ik_ground_motion_input", "left_hit", "left_position", "left_normal", "left_smoothed_normal", "right_hit", "right_position", "right_normal", "right_smoothed_normal"), &SkeletonAnimationPose::set_ik_ground_motion_input);
 	ClassDB::bind_method(D_METHOD("supports_interpolation"), &SkeletonAnimationPose::supports_interpolation);
 	ClassDB::bind_method(D_METHOD("capture_current"), &SkeletonAnimationPose::capture_current);
 	ClassDB::bind_method(D_METHOD("release"), &SkeletonAnimationPose::release);
@@ -767,11 +880,22 @@ void SkeletonAnimationPose::_bind_methods() {
 
 void SkeletonAnimationPose::set_target(ObjectID p_id, const Transform3D &p_target, bool p_position_only) {
 	if (!p_id.is_valid()) { return; }
-	GeneratedTarget generated;
-	generated.id = p_id;
-	generated.transform = p_target;
-	generated.position_only = p_position_only;
-	generated_targets.push_back(generated);
+	bool updated = false;
+	for (GeneratedTarget &generated : generated_targets) {
+		if (generated.id == p_id) {
+			generated.transform = p_target;
+			generated.position_only = p_position_only;
+			updated = true;
+			break;
+		}
+	}
+	if (!updated) {
+		GeneratedTarget generated;
+		generated.id = p_id;
+		generated.transform = p_target;
+		generated.position_only = p_position_only;
+		generated_targets.push_back(generated);
+	}
 	for (auto &in : two_bone) {
 		if (in.target_id == p_id) { in.target = p_target.origin; }
 		if (in.pole_id == p_id) { in.pole = p_target.origin; }
@@ -810,4 +934,8 @@ void SkeletonAnimationPose::set_ik_hand_input(bool p_has_target, const Transform
 
 void SkeletonAnimationPose::set_ik_ground_input(bool p_left_hit, const Vector3 &p_left_position, const Vector3 &p_left_normal, bool p_right_hit, const Vector3 &p_right_position, const Vector3 &p_right_normal) {
 	pawn_pose.set_ik_ground_input(p_left_hit, p_left_position, p_left_normal, p_right_hit, p_right_position, p_right_normal);
+}
+
+void SkeletonAnimationPose::set_ik_ground_motion_input(bool p_left_hit, const Vector3 &p_left_position, const Vector3 &p_left_normal, const Vector3 &p_left_smoothed_normal, bool p_right_hit, const Vector3 &p_right_position, const Vector3 &p_right_normal, const Vector3 &p_right_smoothed_normal) {
+	pawn_pose.set_ik_ground_motion_input(p_left_hit, p_left_position, p_left_normal, p_left_smoothed_normal, p_right_hit, p_right_position, p_right_normal, p_right_smoothed_normal);
 }

@@ -44,27 +44,29 @@ class PawnAnimationPose {
 	struct AimInput {
 		ObjectID modifier_id, grip_target_id, elbow_pole_id;
 		int aim = -1, hand = -1, hips = -1, chest = -1, upper_chest = -1;
-		int left_leg = -1, right_leg = -1, left_arm = -1, left_elbow = -1;
+		int left_leg = -1, right_leg = -1, left_arm = -1, left_elbow = -1, left_hand = -1;
 		real_t hip_weight = 0;
 		Transform3D hand_to_muzzle, hand_to_grip, muzzle, grip;
-		Vector3 target, up = Vector3(0, 1, 0), elbow_pole;
-		bool has_grip = false;
+		Vector3 target, up = Vector3(0, 1, 0), elbow_pole, arm_rest_pole = Vector3(0, 0, 1), hand_to_elbow_pole;
+		bool has_grip = false, has_elbow_pole = false;
 		real_t error_degrees = 0;
 	} aim;
 	struct GroundInput {
 		bool hit = false;
 		Vector3 position, normal;
+		Vector3 smoothed_normal;
 	};
 	struct IKInput {
 		bool configured = false, has_hand_target = false;
 		Transform3D hand_target_world;
 		real_t hand_weight = 0, left_weight = 0, right_weight = 0;
-		int hips = -1, left_upper_arm = -1, left_lower_arm = -1;
+		int hips = -1, left_upper_arm = -1, left_lower_arm = -1, left_hand = -1;
 		int left_foot = -1, right_foot = -1, left_toes = -1, right_toes = -1;
 		int left_upper_leg = -1, left_lower_leg = -1, right_upper_leg = -1, right_lower_leg = -1;
 		Vector3 arm_rest_pole, left_rest_pole, right_rest_pole;
 		real_t left_length = 0, right_length = 0, reach_epsilon = 0;
-		real_t maximum_slope = 0, sole_offset = 0, pelvis_drop = 0, pelvis_raise = 0;
+		real_t maximum_slope = 0, sole_offset = 0, foot_source_stance_calibration = 0, pelvis_drop = 0, pelvis_raise = 0;
+		bool ground_motion_contact = false;
 		GroundInput left_ground, right_ground;
 		ObjectID hand_target, elbow_pole, pelvis_target, left_target, left_pole, right_target, right_pole;
 	} ik;
@@ -74,15 +76,18 @@ class PawnAnimationPose {
 	void generate_ik_targets();
 	bool create_foot_target(const Transform3D &p_pose, const GroundInput &p_ground, int p_toes, Transform3D &r_target);
 	static Vector3 calculate_pole(const Vector3 &p_root, const Vector3 &p_middle, const Vector3 &p_target, const Vector3 &p_rest);
+	static Vector3 calculate_arm_pole(const Vector3 &p_root, const Vector3 &p_middle, const Vector3 &p_hand, const Vector3 &p_target, const Vector3 &p_rest);
 
 public:
-	explicit PawnAnimationPose(SkeletonAnimationPose &p_pose) : pose(p_pose) {}
+	explicit PawnAnimationPose(SkeletonAnimationPose &p_pose) :
+			pose(p_pose) {}
 	bool is_aim_modifier(ObjectID p_id) const { return p_id == aim.modifier_id; }
 	bool has_aim_bones() const { return aim.aim >= 0 && aim.hand >= 0; }
 	bool validate_aim_bones(int p_count) const;
 	bool validate_ik_bones(int p_count) const;
 	void reset_frame() { aim_evaluated = false; }
 	void generate_targets();
+	void regenerate_grip_target() { generate_grip_target(); }
 	void solve_aim();
 	uint32_t publish_targets();
 	Transform3D get_aim_muzzle() const { return aim.muzzle; }
@@ -92,4 +97,5 @@ public:
 	void set_aim_input(real_t p_hip_weight, const Transform3D &p_muzzle, bool p_has_grip, const Transform3D &p_grip, const Vector3 &p_target, const Vector3 &p_up);
 	void set_ik_hand_input(bool p_has_target, const Transform3D &p_target, const Vector3 &p_weights);
 	void set_ik_ground_input(bool p_left_hit, const Vector3 &p_left_position, const Vector3 &p_left_normal, bool p_right_hit, const Vector3 &p_right_position, const Vector3 &p_right_normal);
+	void set_ik_ground_motion_input(bool p_left_hit, const Vector3 &p_left_position, const Vector3 &p_left_normal, const Vector3 &p_left_smoothed_normal, bool p_right_hit, const Vector3 &p_right_position, const Vector3 &p_right_normal, const Vector3 &p_right_smoothed_normal);
 };

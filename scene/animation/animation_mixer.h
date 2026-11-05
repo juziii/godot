@@ -313,6 +313,7 @@ protected:
 	RootMotionCache root_motion_cache;
 	AHashMap<Animation::TrackCacheID, TrackCache *, HashHasher> track_cache;
 	AHashMap<Ref<Animation>, LocalVector<TrackCache *>> animation_track_num_to_track_cache;
+	AHashMap<Ref<Animation>, bool> animation_transform_only_cache;
 	HashSet<TrackCache *> playing_caches;
 	Vector<Node *> playing_audio_stream_players;
 
@@ -473,6 +474,10 @@ public:
 	void get_animation_list(LocalVector<StringName> *p_animations) const;
 	const Ref<Animation> &get_animation(const StringName &p_name) const;
 	const Ref<Animation> &get_animation_or_null(const StringName &p_name) const;
+	bool is_animation_transform_only(const Ref<Animation> &p_animation) const;
+	static _FORCE_INLINE_ bool should_skip_unblended_animation(bool p_is_blended, bool p_is_transform_only) {
+		return !p_is_blended && p_is_transform_only;
+	}
 	bool has_animation(const StringName &p_name) const;
 	StringName find_animation(const Ref<Animation> &p_animation) const;
 

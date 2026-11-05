@@ -235,6 +235,7 @@
 #include "scene/3d/audio_stream_player_3d.h"
 #include "scene/3d/bone_attachment_3d.h"
 #include "scene/3d/bone_constraint_3d.h"
+#include "scene/3d/bone_rotation_offset_modifier_3d.h"
 #include "scene/3d/bone_space_adjuster_3d.h"
 #include "scene/3d/bone_twist_disperser_3d.h"
 #include "scene/3d/camera_3d.h"
@@ -713,6 +714,7 @@ void register_scene_types() {
 	GDREGISTER_CLASS(SpringBoneCollisionPlane3D);
 	GDREGISTER_VIRTUAL_CLASS(BoneConstraint3D);
 	GDREGISTER_CLASS(CopyTransformModifier3D);
+	GDREGISTER_CLASS(BoneRotationOffsetModifier3D);
 	GDREGISTER_CLASS(ConvertTransformModifier3D);
 	GDREGISTER_CLASS(AimModifier3D);
 	GDREGISTER_ABSTRACT_CLASS(IKModifier3D);

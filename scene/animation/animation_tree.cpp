@@ -35,11 +35,60 @@
 #include "core/profiling/profiling.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "core/os/thread.h"
 #include "scene/animation/animation_blend_tree.h"
 #include "scene/animation/animation_player.h"
 
 thread_local AnimationNode::ProcessState *AnimationNode::tls_process_state = nullptr;
 thread_local AnimationNodeInstance *AnimationNode::current_instance = nullptr;
+
+void AnimationNodeInstance::interpolate_blend_space_weights(LocalVector<float> &r_weights, float p_speed, double p_delta, bool p_seek) {
+	if (p_speed <= 0.0f) {
+		blend_space_weights.clear();
+		return;
+	}
+	if (blend_space_weights.size() != r_weights.size()) {
+		blend_space_weights = r_weights;
+	} else if (p_seek) {
+		for (uint32_t i = 0; i < r_weights.size(); i++) {
+			blend_space_weights[i] = r_weights[i];
+		}
+	} else if (p_delta <= 0.0) {
+		// Do not normalize or otherwise modify retained state on a frozen frame.
+		return;
+	} else {
+		const float step = p_speed * p_delta;
+		for (uint32_t i = 0; i < r_weights.size(); i++) {
+			blend_space_weights[i] = Math::move_toward(blend_space_weights[i], r_weights[i], step);
+		}
+	}
+
+	float total_weight = 0.0f;
+	for (uint32_t i = 0; i < blend_space_weights.size(); i++) {
+		total_weight += blend_space_weights[i];
+	}
+	if (total_weight > CMP_EPSILON) {
+		for (uint32_t i = 0; i < blend_space_weights.size(); i++) {
+			blend_space_weights[i] /= total_weight;
+		}
+	} else {
+		blend_space_weights = r_weights;
+	}
+}
+
+double AnimationNodeInstance::resolve_blend_space_cycle_duration(const LocalVector<float> &p_weights, const LocalVector<double> &p_lengths, double p_override, double &r_effective_duration) {
+	double weighted_length = 0.0;
+	double total_weight = 0.0;
+	const uint32_t count = MIN(p_weights.size(), p_lengths.size());
+	for (uint32_t i = 0; i < count; i++) {
+		if (p_weights[i] > 0.0f && p_lengths[i] > CMP_EPSILON) {
+			weighted_length += p_weights[i] * p_lengths[i];
+			total_weight += p_weights[i];
+		}
+	}
+	r_effective_duration = total_weight > CMP_EPSILON ? weighted_length / total_weight : 0.0;
+	return p_override > CMP_EPSILON ? p_override : r_effective_duration;
+}
 
 void AnimationNode::get_parameter_list(LocalVector<PropertyInfo> *r_list) const {
 	Array parameters;
@@ -177,86 +226,112 @@ AnimationNode::NodeTimeInfo AnimationNode::_blend_node(ProcessState &p_process_s
 
 	if ((int64_t)p_other.track_weights.size() != blend_count) {
 		p_other.track_weights.resize(blend_count);
+		// A resized vector may contain uninitialized entries; the next all-zero input must clear it.
+		p_other.all_track_weights_zero = blend_count == 0;
 	}
 
 	real_t *blendw = p_other.track_weights.ptr();
 	const real_t *blendr = p_instance.track_weights.ptr();
 
 	bool any_valid = false;
+	bool fast_zero = p_instance.all_track_weights_zero && Math::is_finite(p_playback_info.weight);
+	if (fast_zero && p_filter == FILTER_STOP && has_filter() && is_filter_enabled()) {
+		// FILTER_STOP turns filtered tracks into full-weight contributions, even under a zero parent.
+		fast_zero = false;
+	}
 
-	if (has_filter() && is_filter_enabled() && p_filter != FILTER_IGNORE) {
-		_update_filter_cache(p_process_state, p_instance);
-		// All to zero by default.
-		memset(blendw, 0, sizeof(real_t) * blend_count);
-
-		for (const int idx : p_instance.filtered_track_indices_cache) {
-			blendw[idx] = 1.0; // Filtered goes to one.
-		}
-
-		switch (p_filter) {
-			case FILTER_IGNORE:
-				break; // Will not happen anyway.
-			case FILTER_PASS: {
-				// Values filtered pass, the rest don't.
-				for (int i = 0; i < blend_count; i++) {
-					if (blendw[i] == 0) { // Not filtered, does not pass.
-						continue;
-					}
-
-					blendw[i] = blendr[i] * p_playback_info.weight;
-					if (!Math::is_zero_approx(blendw[i])) {
-						any_valid = true;
-					}
-				}
-
-			} break;
-			case FILTER_STOP: {
-				// Values filtered don't pass, the rest are blended.
-
-				for (int i = 0; i < blend_count; i++) {
-					if (blendw[i] > 0) { // Filtered, does not pass.
-						continue;
-					}
-
-					blendw[i] = blendr[i] * p_playback_info.weight;
-					if (!Math::is_zero_approx(blendw[i])) {
-						any_valid = true;
-					}
-				}
-
-			} break;
-			case FILTER_BLEND: {
-				// Filtered values are blended, the rest are passed without blending.
-
-				for (int i = 0; i < blend_count; i++) {
-					if (blendw[i] == 1.0) {
-						blendw[i] = blendr[i] * p_playback_info.weight; // Filtered, blend.
-					} else {
-						blendw[i] = blendr[i]; // Not filtered, do not blend.
-					}
-
-					if (!Math::is_zero_approx(blendw[i])) {
-						any_valid = true;
-					}
-				}
-
-			} break;
+	if (fast_zero) {
+		// The destination buffer is reused across frames. Clear it once on a nonzero -> zero transition.
+		if (!p_other.all_track_weights_zero) {
+			if (blend_count > 0) {
+				memset(blendw, 0, sizeof(real_t) * blend_count);
+			}
+			p_other.all_track_weights_zero = true;
 		}
 	} else {
-		for (int i = 0; i < blend_count; i++) {
-			// Regular blend.
-			blendw[i] = blendr[i] * p_playback_info.weight;
-			if (!Math::is_zero_approx(blendw[i])) {
-				any_valid = true;
+		bool all_weights_zero = true;
+		if (has_filter() && is_filter_enabled() && p_filter != FILTER_IGNORE) {
+			_update_filter_cache(p_process_state, p_instance);
+			// All to zero by default.
+			memset(blendw, 0, sizeof(real_t) * blend_count);
+
+			for (const int idx : p_instance.filtered_track_indices_cache) {
+				blendw[idx] = 1.0; // Filtered goes to one.
+			}
+
+			switch (p_filter) {
+				case FILTER_IGNORE:
+					break; // Will not happen anyway.
+				case FILTER_PASS: {
+					// Values filtered pass, the rest don't.
+					for (int i = 0; i < blend_count; i++) {
+						if (blendw[i] == 0) { // Not filtered, does not pass.
+							continue;
+						}
+
+						blendw[i] = blendr[i] * p_playback_info.weight;
+						all_weights_zero &= blendw[i] == 0.0;
+						if (!Math::is_zero_approx(blendw[i])) {
+							any_valid = true;
+						}
+					}
+
+				} break;
+				case FILTER_STOP: {
+					// Values filtered don't pass, the rest are blended.
+
+					for (int i = 0; i < blend_count; i++) {
+						if (blendw[i] > 0) { // Filtered, does not pass.
+							all_weights_zero = false;
+							continue;
+						}
+
+						blendw[i] = blendr[i] * p_playback_info.weight;
+						all_weights_zero &= blendw[i] == 0.0;
+						if (!Math::is_zero_approx(blendw[i])) {
+							any_valid = true;
+						}
+					}
+
+				} break;
+				case FILTER_BLEND: {
+					// Filtered values are blended, the rest are passed without blending.
+
+					for (int i = 0; i < blend_count; i++) {
+						if (blendw[i] == 1.0) {
+							blendw[i] = blendr[i] * p_playback_info.weight; // Filtered, blend.
+						} else {
+							blendw[i] = blendr[i]; // Not filtered, do not blend.
+						}
+						all_weights_zero &= blendw[i] == 0.0;
+
+						if (!Math::is_zero_approx(blendw[i])) {
+							any_valid = true;
+						}
+					}
+
+				} break;
+			}
+		} else {
+			for (int i = 0; i < blend_count; i++) {
+				// Regular blend.
+				blendw[i] = blendr[i] * p_playback_info.weight;
+				all_weights_zero &= blendw[i] == 0.0;
+				if (!Math::is_zero_approx(blendw[i])) {
+					any_valid = true;
+				}
 			}
 		}
+		p_other.all_track_weights_zero = all_weights_zero;
 	}
 
 	if (r_activity) {
 		*r_activity = 0;
 #ifdef ENABLE_ACTIVITY_TRACKING
-		for (int i = 0; i < blend_count; i++) {
-			*r_activity = MAX(*r_activity, Math::abs(blendw[i]));
+		if (!fast_zero) {
+			for (int i = 0; i < blend_count; i++) {
+				*r_activity = MAX(*r_activity, Math::abs(blendw[i]));
+			}
 		}
 #endif
 	}
@@ -702,6 +777,7 @@ bool AnimationTree::_blend_pre_process(double p_delta, int p_track_count, const 
 		for (int i = 0; i < p_track_count; i++) {
 			src_blendsw[i] = 1.0; // By default all go to 1 for the root input.
 		}
+		instance.all_track_weights_zero = p_track_count == 0;
 		instance.blended = true;
 		instance.path = SNAME(Animation::PARAMETERS_BASE_PATH.ascii().get_data());
 	}
@@ -1069,6 +1145,60 @@ void AnimationTree::_validate_property(PropertyInfo &p_property) const {
 	}
 }
 
+bool AnimationTree::_is_parameter_property_writable(const Pair<Variant, bool> &p_property) const {
+	return !(is_inside_tree() && p_property.second);
+}
+
+bool AnimationTree::_can_assign_parameter_property(const Pair<Variant, bool> &p_property, const Variant &p_value) const {
+	const Variant::Type property_type = p_property.first.get_type();
+	const Variant::Type value_type = p_value.get_type();
+	return property_type == Variant::NIL || value_type == Variant::NIL || property_type == value_type || Animation::needs_type_cast(p_property.first, p_value);
+}
+
+void AnimationTree::_assign_parameter_property(Pair<Variant, bool> &p_property, const Variant &p_value) {
+	Variant &prop = p_property.first;
+	if (Animation::needs_type_cast(prop, p_value)) {
+		Variant value = p_value;
+		if (Animation::validate_type_match(prop, value)) {
+			prop = value;
+		}
+	} else {
+		prop = p_value;
+	}
+}
+
+bool AnimationTree::set_parameter_group(const TypedArray<StringName> &p_parameter_names, const Variant &p_value) {
+	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), false, "AnimationTree parameters can only be set from the main thread.");
+	if (p_parameter_names.is_empty()) {
+		return true;
+	}
+
+	finish_pending_animation();
+	_update_properties();
+
+	// Validate every target before changing any value so a bad path cannot leave a partial group update.
+	for (int i = 0; i < p_parameter_names.size(); i++) {
+		const StringName parameter_name = p_parameter_names[i];
+		const Pair<Variant, bool> *property = property_map.getptr(parameter_name);
+		ERR_FAIL_NULL_V_MSG(property, false, vformat("AnimationTree parameter '%s' does not exist.", parameter_name));
+		ERR_FAIL_COND_V_MSG(!_is_parameter_property_writable(*property), false, vformat("AnimationTree parameter '%s' is read-only.", parameter_name));
+		ERR_FAIL_COND_V_MSG(!_can_assign_parameter_property(*property, p_value), false, vformat("AnimationTree parameter '%s' cannot accept the provided value.", parameter_name));
+	}
+
+	for (int i = 0; i < p_parameter_names.size(); i++) {
+		const StringName parameter_name = p_parameter_names[i];
+		Pair<Variant, bool> *property = property_map.getptr(parameter_name);
+		CRASH_COND(property == nullptr);
+		_assign_parameter_property(*property, p_value);
+
+		if (String(parameter_name).ends_with("/observer")) {
+			batch_graph_checked = false;
+		}
+	}
+
+	return true;
+}
+
 bool AnimationTree::_set(const StringName &p_name, const Variant &p_value) {
 	finish_pending_animation();
 #ifndef DISABLE_DEPRECATED
@@ -1081,22 +1211,14 @@ bool AnimationTree::_set(const StringName &p_name, const Variant &p_value) {
 	_update_properties();
 
 	if (Pair<Variant, bool> *property_ptr = property_map.getptr(p_name)) {
-		Pair<Variant, bool> *&pair = property_ptr;
-		if (is_inside_tree() && pair->second) {
+		if (!_is_parameter_property_writable(*property_ptr)) {
 			return false; // Prevent to set property by user.
 		}
 
-		if (String(p_name).ends_with("/observer")) { batch_graph_checked = false; }
-		Variant &prop = pair->first;
-		// Only copy variant if needed.
-		if (Animation::needs_type_cast(prop, p_value)) {
-			Variant value = p_value;
-			if (Animation::validate_type_match(prop, value)) {
-				prop = value;
-			}
-		} else {
-			prop = p_value;
+		if (String(p_name).ends_with("/observer")) {
+			batch_graph_checked = false;
 		}
+		_assign_parameter_property(*property_ptr, p_value);
 
 		return true;
 	}
@@ -1161,6 +1283,7 @@ String AnimationTree::get_editor_error_message() const {
 void AnimationTree::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_tree_root", "animation_node"), &AnimationTree::set_root_animation_node);
 	ClassDB::bind_method(D_METHOD("get_tree_root"), &AnimationTree::get_root_animation_node);
+	ClassDB::bind_method(D_METHOD("set_parameter_group", "parameter_names", "value"), &AnimationTree::set_parameter_group);
 
 	ClassDB::bind_method(D_METHOD("set_advance_expression_base_node", "path"), &AnimationTree::set_advance_expression_base_node);
 	ClassDB::bind_method(D_METHOD("get_advance_expression_base_node"), &AnimationTree::get_advance_expression_base_node);

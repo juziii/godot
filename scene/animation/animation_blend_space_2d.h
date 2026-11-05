@@ -80,6 +80,8 @@ protected:
 
 	StringName blend_position = "blend_position";
 	StringName closest = "closest";
+	StringName cycle_duration_override = "cycle_duration_override";
+	StringName effective_cycle_duration = "effective_cycle_duration";
 	Vector2 max_space = Vector2(1, 1);
 	Vector2 min_space = Vector2(-1, -1);
 	Vector2 snap = Vector2(0.1, 0.1);
@@ -107,6 +109,7 @@ protected:
 	void _queue_auto_triangles();
 
 	SyncMode sync_mode = SYNC_MODE_NONE;
+	float sample_weight_interpolation_speed = 0.0f;
 	double cyclic_length = 0.0;
 	double inverted_cycle_length = 0.0; // Cached 1/cyclic_length.
 	LocalVector<double> cached_lengths;
@@ -132,6 +135,7 @@ public:
 
 	virtual void get_parameter_list(LocalVector<PropertyInfo> *r_list) const override;
 	virtual Variant get_parameter_default_value(const StringName &p_parameter) const override;
+	virtual bool is_parameter_read_only(const StringName &p_parameter) const override;
 
 	virtual void get_child_nodes(LocalVector<ChildNode> *r_child_nodes) override;
 
@@ -182,6 +186,8 @@ public:
 
 	void set_cyclic_length(double p_length);
 	double get_cyclic_length() const;
+	void set_sample_weight_interpolation_speed(float p_speed);
+	float get_sample_weight_interpolation_speed() const;
 
 #ifndef DISABLE_DEPRECATED
 	void set_use_sync(bool p_sync); // Compat: maps to SYNC_MODE_INDEPENDENT or SYNC_MODE_NONE.

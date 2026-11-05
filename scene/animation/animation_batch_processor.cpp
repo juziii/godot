@@ -430,11 +430,17 @@ void AnimationBatchProcessor::finish_for_dependency(AnimationMixer *p_mixer) {
 }
 
 void AnimationBatchProcessor::finish_pending_frames() {
-    // Publication callbacks may change bones; never recursively publish that frame.
-    for (int i = int(active_processors.size()) - 1; i >= 0; --i) {
-        AnimationBatchProcessor *processor = active_processors[i];
-        if (!processor->publishing && !processor->preparing && !processor->mutation_depth) { processor->complete_and_publish(); }
-    }
+	// Detached scenes can be instantiated on worker threads. They may set up
+	// their Skeleton3D before entering the SceneTree, but must not inspect or
+	// publish the main-thread-owned processor list.
+	if (!Thread::is_main_thread()) {
+		return;
+	}
+	// Publication callbacks may change bones; never recursively publish that frame.
+	for (int i = int(active_processors.size()) - 1; i >= 0; --i) {
+		AnimationBatchProcessor *processor = active_processors[i];
+		if (!processor->publishing && !processor->preparing && !processor->mutation_depth) { processor->complete_and_publish(); }
+	}
 }
 
 Dictionary AnimationBatchProcessor::get_statistics() const {
