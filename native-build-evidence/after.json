@@ -1,0 +1,33 @@
+{
+  "utc": "2026-10-23T12:23:42.6161070Z",
+  "files": [
+    {
+      "path": "bin/godot.windows.editor.x86_64.mono.exe",
+      "Algorithm": "SHA256",
+      "Hash": "17992AD36DA4889EDA01063951A5D3DB1668C51BBA0702F956907263A6BAC935",
+      "Length": 173111808,
+      "LastWriteTimeUtc": "2026-10-23T12:23:33.1851498Z"
+    },
+    {
+      "path": "bin/godot.windows.editor.x86_64.mono.console.exe",
+      "Algorithm": "SHA256",
+      "Hash": "F67129585C2B94353C6BB87D1811887A805DD5829DDDA5B60E814D8322AFD3AB",
+      "Length": 298496,
+      "LastWriteTimeUtc": "2026-10-23T12:23:34.7847073Z"
+    },
+    {
+      "path": "bin/GodotSharp/Api/Debug/GodotSharp.dll",
+      "Algorithm": "SHA256",
+      "Hash": "67F7AD17BB80B723AEE7DD48FF71EDBCE4CCBEA514D9C7993D86DD85D439A7A8",
+      "Length": 6465024,
+      "LastWriteTimeUtc": "2026-10-14T05:10:34.3355692Z"
+    },
+    {
+      "path": "bin/GodotSharp/Api/Release/GodotSharp.dll",
+      "Algorithm": "SHA256",
+      "Hash": "21614D2887AE27BCEB096755849D17560C4CC8D16E1609A1BA63576207DC352A",
+      "Length": 6024192,
+      "LastWriteTimeUtc": "2026-10-14T05:10:49.1509258Z"
+    }
+  ]
+}

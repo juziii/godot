@@ -1,0 +1,5 @@
+scons=C:\Users\Administrator\AppData\Local\Programs\Python\Python310\Scripts\scons.exe
+args=platform=windows target=editor arch=x86_64 module_mono_enabled=yes profiler=none accesskit=no d3d12=no -j16
+startedUtc=2026-10-23T11:33:19.0232285Z
+exitCode=0
+finishedUtc=2026-10-23T11:34:29.1511754Z

@@ -1,0 +1,31 @@
+{
+  "utc": "2026-10-23T12:22:49.0052650Z",
+  "head": "74546a70e3f78ac7556b967064ef4806e4608985",
+  "command": "scons=C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python310\\Scripts\\scons.exe\nargs=platform=windows target=editor arch=x86_64 module_mono_enabled=yes profiler=none accesskit=no d3d12=no -j16\nstartedUtc=2026-10-23T11:33:19.0232285Z\nexitCode=0\nfinishedUtc=2026-10-23T11:34:29.1511754Z\r\n",
+  "files": [
+    {
+      "path": "bin/godot.windows.editor.x86_64.mono.exe",
+      "Algorithm": "SHA256",
+      "Hash": "6AB0B1EF5DC2FD083B3F2ABEDA3DA24EE3E203E0566381E292D83B49F8848406",
+      "Length": null
+    },
+    {
+      "path": "bin/godot.windows.editor.x86_64.mono.console.exe",
+      "Algorithm": "SHA256",
+      "Hash": "8544F66E209C67EDDFB586C640DCDCB124991D2EBA0B28E221639C801AEADDFD",
+      "Length": null
+    },
+    {
+      "path": "bin/GodotSharp/Api/Debug/GodotSharp.dll",
+      "Algorithm": "SHA256",
+      "Hash": "67F7AD17BB80B723AEE7DD48FF71EDBCE4CCBEA514D9C7993D86DD85D439A7A8",
+      "Length": null
+    },
+    {
+      "path": "bin/GodotSharp/Api/Release/GodotSharp.dll",
+      "Algorithm": "SHA256",
+      "Hash": "21614D2887AE27BCEB096755849D17560C4CC8D16E1609A1BA63576207DC352A",
+      "Length": null
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "utc": "2026-10-23T12:23:37.9119862Z",
+  "exitCode": 0,
+  "command": "scons platform=windows target=editor arch=x86_64 module_mono_enabled=yes profiler=none accesskit=no d3d12=no -j16"
+}
