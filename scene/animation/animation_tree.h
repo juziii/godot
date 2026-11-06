@@ -357,7 +357,9 @@ struct AnimationNodeInstance {
 	X(8, CURRENT_STATE, current_state, Variant::STRING, String) \
 	/* AnimationNodeBlendSpace1D and AnimationNodeBlendSpace2D, \
 	We currently cannot do blend_position, due to type same name but different type */ \
-	X(4, CLOSEST, closest, Variant::INT, int)
+	X(4, CLOSEST, closest, Variant::INT, int) \
+	X(5, CYCLE_DURATION_OVERRIDE, cycle_duration_override, Variant::FLOAT, double) \
+	X(6, EFFECTIVE_CYCLE_DURATION, effective_cycle_duration, Variant::FLOAT, double)
 
 	enum Slot : uint8_t {
 #define SLOT_ENUM(index, e, _member, _variant_type, _native_type) SLOT_##e = index,
@@ -494,6 +496,20 @@ private:
 	mutable bool properties_dirty = true;
 	mutable bool validation_dirty = true;
 
+	struct BlendSpaceCycleSync {
+		TypedArray<StringName> override_parameters;
+		TypedArray<StringName> source_parameters;
+		PackedFloat32Array source_weights;
+		double inverse_weight_sum = 1.0;
+		LocalVector<const Variant *> source_values;
+		HashSet<StringName> bound_overrides;
+		Variant duration = 1.0;
+	};
+	mutable BlendSpaceCycleSync blend_space_cycle_sync;
+	AnimationNodeInstance *_get_blend_space_parameter_instance(const StringName &p_path, const StringName &p_parameter) const;
+	void _bind_blend_space_cycle_sync() const;
+	void _update_blend_space_cycle_sync();
+
 	void _update_properties() const;
 	bool _is_parameter_property_writable(const Pair<Variant, bool> &p_property) const;
 	bool _can_assign_parameter_property(const Pair<Variant, bool> &p_property, const Variant &p_value) const;
@@ -577,6 +593,9 @@ public:
 	void set_root_animation_node(const Ref<AnimationRootNode> &p_animation_node);
 	Ref<AnimationRootNode> get_root_animation_node() const;
 	bool set_parameter_group(const TypedArray<StringName> &p_parameter_names, const Variant &p_value);
+	bool configure_blend_space_cycle_sync(const TypedArray<StringName> &p_override_parameters, const TypedArray<StringName> &p_source_parameters, const PackedFloat32Array &p_source_weights, double p_initial_duration);
+	bool set_blend_space_cycle_sync_weights(const PackedFloat32Array &p_source_weights);
+	void clear_blend_space_cycle_sync();
 
 	void set_advance_expression_base_node(const NodePath &p_path);
 	NodePath get_advance_expression_base_node() const;

@@ -32,10 +32,12 @@
 #include "animation_tree.compat.inc"
 
 #include "core/config/engine.h"
-#include "core/profiling/profiling.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
 #include "core/os/thread.h"
+#include "core/profiling/profiling.h"
+#include "scene/animation/animation_blend_space_1d.h"
+#include "scene/animation/animation_blend_space_2d.h"
 #include "scene/animation/animation_blend_tree.h"
 #include "scene/animation/animation_player.h"
 
@@ -739,7 +741,9 @@ Ref<AnimationRootNode> AnimationTree::get_root_animation_node() const {
 
 bool AnimationTree::_blend_pre_process(double p_delta, int p_track_count, const AHashMap<NodePath, int> &p_track_map) {
 	GodotProfileZone("Animation.Graph");
-	if (!is_batch_evaluating()) { _update_properties(); } // Binding happens on the main thread.
+	if (!is_batch_evaluating()) {
+		_update_properties();
+	} // Binding happens on the main thread.
 
 	if (root_animation_node.is_null()) {
 		process_state = AnimationNode::ProcessState();
@@ -784,6 +788,7 @@ bool AnimationTree::_blend_pre_process(double p_delta, int p_track_count, const 
 
 	// Process.
 	{
+		_update_blend_space_cycle_sync();
 		PlaybackInfo pi;
 		pi.delta = p_delta;
 
@@ -862,6 +867,7 @@ void AnimationTree::_node_updated(const ObjectID &p_oid) {
 }
 
 void AnimationTree::_animation_node_renamed(const ObjectID &p_oid, const String &p_old_name, const String &p_new_name) {
+	finish_pending_animation();
 	//print_line("Node: " + ObjectDB::get_instance(p_oid)->get_class() + " (" + itos(p_oid) + ") renamed: " + p_old_name + " -> " + p_new_name);
 	for (const StringName &pp : instance_paths[p_oid]) {
 		String parent_path = pp;
@@ -886,6 +892,7 @@ void AnimationTree::_animation_node_renamed(const ObjectID &p_oid, const String 
 }
 
 void AnimationTree::_animation_node_removed(const ObjectID &p_oid, const StringName &p_node) {
+	finish_pending_animation();
 	for (const StringName &parent_path : instance_paths[p_oid]) {
 		String base_path = String(parent_path) + String(p_node) + "/";
 
@@ -1002,6 +1009,7 @@ void AnimationTree::_update_properties() const {
 		}
 	}
 
+	_bind_blend_space_cycle_sync();
 	properties_dirty = false;
 
 	const_cast<AnimationTree *>(this)->notify_property_list_changed();
@@ -1167,6 +1175,136 @@ void AnimationTree::_assign_parameter_property(Pair<Variant, bool> &p_property, 
 	}
 }
 
+AnimationNodeInstance *AnimationTree::_get_blend_space_parameter_instance(const StringName &p_path, const StringName &p_parameter) const {
+	const String path = p_path;
+	const String parameter = p_parameter;
+	if (!path.ends_with("/" + parameter)) {
+		return nullptr;
+	}
+	AnimationNodeInstance *instance = instance_map.getptr(path.substr(0, path.length() - parameter.length()));
+	if (!instance || (!Object::cast_to<AnimationNodeBlendSpace1D>(instance->resource.ptr()) && !Object::cast_to<AnimationNodeBlendSpace2D>(instance->resource.ptr()))) {
+		return nullptr;
+	}
+	return instance;
+}
+
+void AnimationTree::_bind_blend_space_cycle_sync() const {
+	BlendSpaceCycleSync &sync = blend_space_cycle_sync;
+	sync.bound_overrides.clear();
+	sync.source_values.clear();
+	if (sync.override_parameters.is_empty()) {
+		return;
+	}
+
+	// Graph edits can remove or rename members. Bind only a complete, current group.
+	LocalVector<AnimationNodeInstance *> members;
+	for (int i = 0; i < sync.override_parameters.size(); i++) {
+		AnimationNodeInstance *instance = _get_blend_space_parameter_instance(sync.override_parameters[i], SNAME("cycle_duration_override"));
+		if (!instance) {
+			return;
+		}
+		members.push_back(instance);
+	}
+	for (int i = 0; i < sync.source_parameters.size(); i++) {
+		AnimationNodeInstance *instance = _get_blend_space_parameter_instance(sync.source_parameters[i], SNAME("effective_cycle_duration"));
+		if (!instance) {
+			sync.source_values.clear();
+			return;
+		}
+		sync.source_values.push_back(&instance->get_parameter(SNAME("effective_cycle_duration")));
+	}
+	for (uint32_t i = 0; i < members.size(); i++) {
+		members[i]->property_ptrs[SNAME("cycle_duration_override")] = &sync.duration;
+		members[i]->maybe_bind_slot_property(SNAME("cycle_duration_override"), &sync.duration);
+		sync.bound_overrides.insert(sync.override_parameters[i]);
+	}
+}
+
+void AnimationTree::_update_blend_space_cycle_sync() {
+	BlendSpaceCycleSync &sync = blend_space_cycle_sync;
+	if (sync.source_values.is_empty()) {
+		return;
+	}
+	GodotProfileZone("Animation.BlendSpaceCycleSync");
+	// Read the previous evaluation before any source overwrites its effective duration.
+	// All followers then consume the same value, regardless of graph traversal order.
+	const double previous_duration = sync.duration;
+	const float *weights = sync.source_weights.ptr();
+	double duration = 0.0;
+	for (uint32_t i = 0; i < sync.source_values.size(); i++) {
+		if (weights[i] == 0.0f) {
+			continue;
+		}
+		double source_duration = *sync.source_values[i];
+		if (!Math::is_finite(source_duration) || source_duration <= 0.0) {
+			source_duration = previous_duration;
+		}
+		duration += source_duration * weights[i];
+	}
+	duration *= sync.inverse_weight_sum;
+	if (Math::is_finite(duration) && duration > 0.0) {
+		sync.duration = duration;
+	}
+}
+
+bool AnimationTree::configure_blend_space_cycle_sync(const TypedArray<StringName> &p_override_parameters, const TypedArray<StringName> &p_source_parameters, const PackedFloat32Array &p_source_weights, double p_initial_duration) {
+	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), false, "BlendSpace cycle sync must be configured from the main thread.");
+	ERR_FAIL_COND_V(p_override_parameters.is_empty() || p_source_parameters.is_empty(), false);
+	ERR_FAIL_COND_V(p_source_weights.size() != p_source_parameters.size(), false);
+	ERR_FAIL_COND_V(!Math::is_finite(p_initial_duration) || p_initial_duration <= 0.0, false);
+	double weight_sum = 0.0;
+	for (int i = 0; i < p_source_weights.size(); i++) {
+		ERR_FAIL_COND_V(!Math::is_finite(p_source_weights[i]) || p_source_weights[i] < 0.0f, false);
+		weight_sum += p_source_weights[i];
+	}
+	ERR_FAIL_COND_V(weight_sum <= 0.0, false);
+	finish_pending_animation();
+	_update_properties();
+	for (int i = 0; i < p_override_parameters.size(); i++) {
+		ERR_FAIL_NULL_V_MSG(_get_blend_space_parameter_instance(p_override_parameters[i], SNAME("cycle_duration_override")), false, "Invalid BlendSpace cycle override parameter.");
+	}
+	for (int i = 0; i < p_source_parameters.size(); i++) {
+		ERR_FAIL_NULL_V_MSG(_get_blend_space_parameter_instance(p_source_parameters[i], SNAME("effective_cycle_duration")), false, "Invalid BlendSpace effective cycle parameter.");
+	}
+	clear_blend_space_cycle_sync();
+	blend_space_cycle_sync.override_parameters = p_override_parameters.duplicate();
+	blend_space_cycle_sync.source_parameters = p_source_parameters.duplicate();
+	blend_space_cycle_sync.source_weights = p_source_weights;
+	blend_space_cycle_sync.inverse_weight_sum = 1.0 / weight_sum;
+	blend_space_cycle_sync.duration = p_initial_duration;
+	_bind_blend_space_cycle_sync();
+	return true;
+}
+
+bool AnimationTree::set_blend_space_cycle_sync_weights(const PackedFloat32Array &p_source_weights) {
+	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), false, "BlendSpace cycle sync weights must be set from the main thread.");
+	ERR_FAIL_COND_V(p_source_weights.is_empty() || p_source_weights.size() != blend_space_cycle_sync.source_parameters.size(), false);
+	double weight_sum = 0.0;
+	for (int i = 0; i < p_source_weights.size(); i++) {
+		ERR_FAIL_COND_V(!Math::is_finite(p_source_weights[i]) || p_source_weights[i] < 0.0f, false);
+		weight_sum += p_source_weights[i];
+	}
+	ERR_FAIL_COND_V(weight_sum <= 0.0, false);
+	finish_pending_animation();
+	blend_space_cycle_sync.source_weights = p_source_weights;
+	blend_space_cycle_sync.inverse_weight_sum = 1.0 / weight_sum;
+	return true;
+}
+
+void AnimationTree::clear_blend_space_cycle_sync() {
+	ERR_FAIL_COND_MSG(!Thread::is_main_thread(), "BlendSpace cycle sync must be cleared from the main thread.");
+	finish_pending_animation();
+	_update_properties();
+	for (const StringName &path : blend_space_cycle_sync.bound_overrides) {
+		Pair<Variant, bool> *property = property_map.getptr(path);
+		property->first = blend_space_cycle_sync.duration;
+		AnimationNodeInstance *instance = _get_blend_space_parameter_instance(path, SNAME("cycle_duration_override"));
+		instance->property_ptrs[SNAME("cycle_duration_override")] = &property->first;
+		instance->maybe_bind_slot_property(SNAME("cycle_duration_override"), &property->first);
+	}
+	blend_space_cycle_sync = BlendSpaceCycleSync();
+}
+
 bool AnimationTree::set_parameter_group(const TypedArray<StringName> &p_parameter_names, const Variant &p_value) {
 	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), false, "AnimationTree parameters can only be set from the main thread.");
 	if (p_parameter_names.is_empty()) {
@@ -1182,6 +1320,7 @@ bool AnimationTree::set_parameter_group(const TypedArray<StringName> &p_paramete
 		const Pair<Variant, bool> *property = property_map.getptr(parameter_name);
 		ERR_FAIL_NULL_V_MSG(property, false, vformat("AnimationTree parameter '%s' does not exist.", parameter_name));
 		ERR_FAIL_COND_V_MSG(!_is_parameter_property_writable(*property), false, vformat("AnimationTree parameter '%s' is read-only.", parameter_name));
+		ERR_FAIL_COND_V_MSG(blend_space_cycle_sync.bound_overrides.has(parameter_name), false, "Cycle overrides are controlled by the configured BlendSpace cycle sync.");
 		ERR_FAIL_COND_V_MSG(!_can_assign_parameter_property(*property, p_value), false, vformat("AnimationTree parameter '%s' cannot accept the provided value.", parameter_name));
 	}
 
@@ -1211,7 +1350,7 @@ bool AnimationTree::_set(const StringName &p_name, const Variant &p_value) {
 	_update_properties();
 
 	if (Pair<Variant, bool> *property_ptr = property_map.getptr(p_name)) {
-		if (!_is_parameter_property_writable(*property_ptr)) {
+		if (!_is_parameter_property_writable(*property_ptr) || blend_space_cycle_sync.bound_overrides.has(p_name)) {
 			return false; // Prevent to set property by user.
 		}
 
@@ -1237,7 +1376,7 @@ bool AnimationTree::_get(const StringName &p_name, Variant &r_ret) const {
 	_update_properties();
 
 	if (const Pair<Variant, bool> *p = property_map.getptr(p_name)) {
-		r_ret = p->first;
+		r_ret = blend_space_cycle_sync.bound_overrides.has(p_name) ? blend_space_cycle_sync.duration : p->first;
 		return true;
 	}
 
@@ -1284,6 +1423,9 @@ void AnimationTree::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_tree_root", "animation_node"), &AnimationTree::set_root_animation_node);
 	ClassDB::bind_method(D_METHOD("get_tree_root"), &AnimationTree::get_root_animation_node);
 	ClassDB::bind_method(D_METHOD("set_parameter_group", "parameter_names", "value"), &AnimationTree::set_parameter_group);
+	ClassDB::bind_method(D_METHOD("configure_blend_space_cycle_sync", "override_parameters", "source_parameters", "source_weights", "initial_duration"), &AnimationTree::configure_blend_space_cycle_sync);
+	ClassDB::bind_method(D_METHOD("set_blend_space_cycle_sync_weights", "source_weights"), &AnimationTree::set_blend_space_cycle_sync_weights);
+	ClassDB::bind_method(D_METHOD("clear_blend_space_cycle_sync"), &AnimationTree::clear_blend_space_cycle_sync);
 
 	ClassDB::bind_method(D_METHOD("set_advance_expression_base_node", "path"), &AnimationTree::set_advance_expression_base_node);
 	ClassDB::bind_method(D_METHOD("get_advance_expression_base_node"), &AnimationTree::get_advance_expression_base_node);

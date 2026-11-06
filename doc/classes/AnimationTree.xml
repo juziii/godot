@@ -12,6 +12,30 @@
 		<link title="Third Person Shooter (TPS) Demo">https://godotengine.org/asset-library/asset/2710</link>
 	</tutorials>
 	<methods>
+		<method name="clear_blend_space_cycle_sync">
+			<return type="void" />
+			<description>
+				Clears the cycle sync configuration and restores independent override parameters, initialized to the last shared duration. Must be called from the main thread.
+			</description>
+		</method>
+		<method name="configure_blend_space_cycle_sync">
+			<return type="bool" />
+			<param index="0" name="override_parameters" type="Array[StringName]" />
+			<param index="1" name="source_parameters" type="Array[StringName]" />
+			<param index="2" name="source_weights" type="PackedFloat32Array" />
+			<param index="3" name="initial_duration" type="float" />
+			<description>
+				Configures one shared cycle duration for this tree. Targets must be [AnimationNodeBlendSpace1D] or [AnimationNodeBlendSpace2D] [code]cycle_duration_override[/code] parameter paths; sources must be [code]effective_cycle_duration[/code] parameter paths. Before each graph evaluation, the weighted mean of the sources' previous evaluation values becomes the shared override. Invalid source durations use the previous shared duration. Weights must be finite, nonnegative, match the source count, and have a positive sum; [param initial_duration] must be finite and positive.
+				Members read the shared value directly without per-member writes. While configured, member overrides can be read with [method Object.get] but cannot be written individually. Graph property rebuilds rebind the group; if a member or source is missing, the whole group remains unbound until the paths are valid or reconfigured. Configuration is per tree, is not serialized, and must be restored by the caller when loading a scene. Must be called from the main thread; pending batch animation finishes before the configuration changes. Returns [code]false[/code] without changing the group if arguments are invalid.
+			</description>
+		</method>
+		<method name="set_blend_space_cycle_sync_weights">
+			<return type="bool" />
+			<param index="0" name="source_weights" type="PackedFloat32Array" />
+			<description>
+				Updates the weights of the configured cycle sync sources. The same weight validation as [method configure_blend_space_cycle_sync] applies. Must be called from the main thread; pending batch animation finishes before weights change. Returns [code]false[/code] without changing weights if arguments are invalid.
+			</description>
+		</method>
 		<method name="set_parameter_group">
 			<return type="bool" />
 			<param index="0" name="parameter_names" type="Array[StringName]" />
