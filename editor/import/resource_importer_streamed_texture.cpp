@@ -92,6 +92,11 @@ void ResourceImporterStreamedTexture::get_import_options(const String &p_path, L
 	r_options->push_back(ImportOption(PropertyInfo(Variant::INT, "roughness/mode", PROPERTY_HINT_ENUM, "Detect,Disabled,Red,Green,Blue,Alpha,Gray"), 0));
 	r_options->push_back(ImportOption(PropertyInfo(Variant::STRING, "roughness/src_normal", PROPERTY_HINT_FILE, "*.bmp,*.exr,*.jpeg,*.jpg,*.hdr,*.png,*.svg,*.tga,*.webp"), ""));
 
+	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, "process/fix_alpha_border"), true));
+	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, "process/premult_alpha"), false));
+	r_options->push_back(ImportOption(PropertyInfo(Variant::BOOL, "process/normal_map_invert_y"), false));
+	r_options->push_back(ImportOption(PropertyInfo(Variant::INT, "process/size_limit", PROPERTY_HINT_RANGE, "0,16383,1"), 1024));
+
 	r_options->push_back(ImportOption(PropertyInfo(Variant::INT, "streaming/min_lod_override", PROPERTY_HINT_ENUM, "Settings,0,1,2,3,4,5,6,7,8,9,10,11,12,13"), 0));
 	r_options->push_back(ImportOption(PropertyInfo(Variant::INT, "streaming/max_lod_override", PROPERTY_HINT_ENUM, "Settings,0,1,2,3,4,5,6,7,8,9,10,11,12,13"), 0));
 }
@@ -117,6 +122,9 @@ Error ResourceImporterStreamedTexture::import(ResourceUID::ID p_source_id, const
 	Image::CompressSource comp_source = srgb_friendly_pack ? Image::COMPRESS_SOURCE_SRGB : Image::COMPRESS_SOURCE_GENERIC;
 
 	err = ImageLoader::load_image(p_source_file, image);
+	if (err != OK || image.is_null() || image->is_empty()) {
+		return ERR_CANT_OPEN;
+	}
 
 	// Roughness.
 	const int roughness = p_options["roughness/mode"];
@@ -140,6 +148,37 @@ Error ResourceImporterStreamedTexture::import(ResourceUID::ID p_source_id, const
 		comp_source = Image::COMPRESS_SOURCE_NORMAL;
 	}
 
+	// Match the ordinary texture importer's processing order before building the mip chain.
+	const int size_limit = p_options.has("process/size_limit") ? int(p_options["process/size_limit"]) : 1024;
+	if (size_limit > 0 && (image->get_width() > size_limit || image->get_height() > size_limit)) {
+		if (image->get_width() >= image->get_height()) {
+			const int new_height = MAX(1, image->get_height() * size_limit / image->get_width());
+			image->resize(size_limit, new_height, Image::INTERPOLATE_CUBIC);
+		} else {
+			const int new_width = MAX(1, image->get_width() * size_limit / image->get_height());
+			image->resize(new_width, size_limit, Image::INTERPOLATE_CUBIC);
+		}
+		if (force_normal) {
+			image->normalize();
+		}
+	}
+
+	const bool fix_alpha_border = !p_options.has("process/fix_alpha_border") || bool(p_options["process/fix_alpha_border"]);
+	if (fix_alpha_border) {
+		image->fix_alpha_edges();
+	}
+	if (p_options.has("process/premult_alpha") && bool(p_options["process/premult_alpha"])) {
+		image->premultiply_alpha();
+	}
+	if (p_options.has("process/normal_map_invert_y") && bool(p_options["process/normal_map_invert_y"])) {
+		for (int x = 0; x < image->get_width(); x++) {
+			for (int y = 0; y < image->get_height(); y++) {
+				const Color color = image->get_pixel(x, y);
+				image->set_pixel(x, y, Color(color.r, 1 - color.g, color.b, color.a));
+			}
+		}
+	}
+
 	// Load the normal image.
 	Ref<Image> normal_image;
 	Image::RoughnessChannel roughness_channel = Image::ROUGHNESS_CHANNEL_R;
@@ -158,10 +197,6 @@ Error ResourceImporterStreamedTexture::import(ResourceUID::ID p_source_id, const
 	// Generate roughness mipmaps from normal texture.
 	if (image->has_mipmaps() && normal_image.is_valid()) {
 		image->generate_mipmap_roughness(roughness_channel, normal_image);
-	}
-
-	if (err != OK || image.is_null() || image->is_empty()) {
-		return ERR_CANT_OPEN;
 	}
 
 	// Detect used channels for optimal compression (after image is fully loaded/processed).
