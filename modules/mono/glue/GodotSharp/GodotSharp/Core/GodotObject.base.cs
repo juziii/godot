@@ -18,6 +18,8 @@ namespace Godot
         private static readonly Dictionary<Type, StringName?> _nativeNames = new Dictionary<Type, StringName?>();
 
         internal IntPtr NativePtr;
+        // Zero retains the separate CSharpInstance disposal protocol.
+        internal ulong NativeInstanceBindingGeneration;
         private bool _memoryOwn;
 
         private WeakReference<GodotObject>? _weakReferenceToSelf;
@@ -121,25 +123,33 @@ namespace Godot
 
             if (NativePtr != IntPtr.Zero)
             {
-                IntPtr gcHandleToFree = NativeFuncs.godotsharp_internal_object_get_associated_gchandle(NativePtr);
-
-                if (gcHandleToFree != IntPtr.Zero)
+                if (NativeInstanceBindingGeneration != 0)
                 {
-                    object? target = GCHandle.FromIntPtr(gcHandleToFree).Target;
-                    // The GC handle may have been replaced in another thread. Release it only if
-                    // it's associated to this managed instance, or if the target is no longer alive.
-                    if (target != this && target != null)
-                        gcHandleToFree = IntPtr.Zero;
-                }
-
-                if (_memoryOwn)
-                {
-                    NativeFuncs.godotsharp_internal_refcounted_disposed(NativePtr, gcHandleToFree,
-                        (!disposing).ToGodotBool());
+                    NativeFuncs.godotsharp_internal_instance_binding_disposed(NativePtr,
+                        NativeInstanceBindingGeneration, _memoryOwn.ToGodotBool());
                 }
                 else
                 {
-                    NativeFuncs.godotsharp_internal_object_disposed(NativePtr, gcHandleToFree);
+                    IntPtr gcHandleToFree = NativeFuncs.godotsharp_internal_object_get_associated_gchandle(NativePtr);
+
+                    if (gcHandleToFree != IntPtr.Zero)
+                    {
+                        object? target = GCHandle.FromIntPtr(gcHandleToFree).Target;
+                        // The GC handle may have been replaced in another thread. Release it only if
+                        // it's associated to this managed instance, or if the target is no longer alive.
+                        if (target != this && target != null)
+                            gcHandleToFree = IntPtr.Zero;
+                    }
+
+                    if (_memoryOwn)
+                    {
+                        NativeFuncs.godotsharp_internal_refcounted_disposed(NativePtr, gcHandleToFree,
+                            (!disposing).ToGodotBool());
+                    }
+                    else
+                    {
+                        NativeFuncs.godotsharp_internal_object_disposed(NativePtr, gcHandleToFree);
+                    }
                 }
 
                 NativePtr = IntPtr.Zero;

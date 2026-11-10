@@ -1108,13 +1108,11 @@ void CSharpLanguage::release_script_gchandle_thread_safe(GCHandleIntPtr p_gchand
 }
 
 void CSharpLanguage::release_binding_gchandle_thread_safe(GCHandleIntPtr p_gchandle_to_free, CSharpScriptBinding &r_script_binding) {
+	MutexLock lock(get_singleton()->script_gchandle_release_mutex);
 	MonoGCHandleData &gchandle = r_script_binding.gchandle;
-	if (!gchandle.is_released() && gchandle.get_intptr() == p_gchandle_to_free) { // Do not lock unnecessarily
-		MutexLock lock(get_singleton()->script_gchandle_release_mutex);
-		if (!gchandle.is_released() && gchandle.get_intptr() == p_gchandle_to_free) {
-			gchandle.release();
-			r_script_binding.inited = false; // Here too, to be thread safe
-		}
+	if (!gchandle.is_released() && gchandle.get_intptr() == p_gchandle_to_free) {
+		gchandle.release();
+		r_script_binding.inited = false;
 	}
 }
 
@@ -1156,33 +1154,26 @@ bool CSharpLanguage::setup_csharp_script_binding(CSharpScriptBinding &r_script_b
 	ERR_FAIL_COND_V_MSG(!parent_is_object_class, false,
 			"Type inherits from native type '" + type_name + "', so it can't be instantiated in object of type: '" + p_object->get_class() + "'.");
 
-#ifdef DEBUG_ENABLED
-	CRASH_COND(!r_script_binding.gchandle.is_released());
-#endif // DEBUG_ENABLED
+	ERR_FAIL_COND_V(r_script_binding.generation == UINT64_MAX, false);
+	uint64_t generation = r_script_binding.generation + 1;
 
 	GCHandleIntPtr strong_gchandle =
 			GDMonoCache::managed_callbacks.ScriptManagerBridge_CreateManagedForGodotObjectBinding(
-					&type_name, p_object);
+					&type_name, p_object, generation);
 
 	ERR_FAIL_NULL_V(strong_gchandle.value, false);
 
-	r_script_binding.inited = true;
+	// Do not retire the previous wrapper's handle until creation succeeds.
+	if (!r_script_binding.gchandle.is_released()) {
+		r_script_binding.gchandle.release();
+	}
+	r_script_binding.generation = generation;
 	r_script_binding.type_name = type_name;
 	r_script_binding.gchandle = MonoGCHandleData(strong_gchandle, gdmono::GCHandleType::STRONG_HANDLE);
 	r_script_binding.owner = p_object;
-
-	// Tie managed to unmanaged
-	RefCounted *rc = Object::cast_to<RefCounted>(p_object);
-
-	if (rc) {
-		// Unsafe refcount increment. The managed instance also counts as a reference.
-		// This way if the unmanaged world has no references to our owner
-		// but the managed instance is alive, the refcount will be 1 instead of 0.
-		// See: godot_icall_RefCounted_Dtor(MonoObject *p_obj, Object *p_ptr)
-
-		rc->reference();
-		CSharpLanguage::get_singleton()->post_unsafe_reference(rc);
-	}
+	r_script_binding.inited = true;
+	// The caller supplies the new wrapper's native reference, acquired outside
+	// both binding locks so reference callbacks cannot invert the Object lock.
 
 	return true;
 }
@@ -1202,6 +1193,7 @@ void *CSharpLanguage::_instance_binding_create_callback(void *, void *p_instance
 	}
 
 	CSharpScriptBinding script_binding;
+	script_binding.owner = static_cast<Object *>(p_instance);
 
 	return (void *)csharp_lang->insert_script_binding((Object *)p_instance, script_binding);
 }
@@ -1228,6 +1220,7 @@ void CSharpLanguage::_instance_binding_free_callback(void *, void *, void *p_bin
 
 		CSharpScriptBinding &script_binding = data->value();
 
+		MutexLock handle_lock(csharp_lang->script_gchandle_release_mutex);
 		if (script_binding.inited && !script_binding.gchandle.is_released()) {
 			// Set the native instance field to IntPtr.Zero, if not yet garbage collected.
 			// This is done to avoid trying to dispose the native instance from Dispose(bool).
@@ -1252,6 +1245,7 @@ GDExtensionBool CSharpLanguage::_instance_binding_reference_callback(void *p_tok
 
 	CSharpScriptBinding &script_binding = ((RBMap<Object *, CSharpScriptBinding>::Element *)p_binding)->get();
 
+	MutexLock handle_lock(CSharpLanguage::get_singleton()->script_gchandle_release_mutex);
 	RefCounted *rc_owner = Object::cast_to<RefCounted>(script_binding.owner);
 
 #ifdef DEBUG_ENABLED
@@ -1327,25 +1321,102 @@ void *CSharpLanguage::get_instance_binding(Object *p_object) {
 }
 
 void *CSharpLanguage::get_instance_binding_with_setup(Object *p_object) {
+	void *binding = nullptr;
+	GCHandleIntPtr temporary = _get_instance_binding_managed(p_object, &binding);
+	if (!temporary.value) {
+		return nullptr;
+	}
+	MonoGCHandleData::free_gchandle(temporary);
+	return binding;
+}
+
+GCHandleIntPtr CSharpLanguage::get_instance_binding_managed(Object *p_object) {
+	void *binding = nullptr;
+	return _get_instance_binding_managed(p_object, &binding);
+}
+
+GCHandleIntPtr CSharpLanguage::_get_instance_binding_managed(Object *p_object, void **r_binding) {
+	// Object's binary instance-binding lock precedes language_bind_mutex, then
+	// script_gchandle_release_mutex. Never call reference/unreference while
+	// holding either language lock: their callbacks acquire the Object lock.
 	void *binding = get_instance_binding(p_object);
+	ERR_FAIL_NULL_V(binding, { nullptr });
+	*r_binding = binding;
+	CSharpLanguage *language = get_singleton();
+	CSharpScriptBinding &script_binding = ((RBMap<Object *, CSharpScriptBinding>::Element *)binding)->value();
+	auto copy_target = [&](bool &r_target_alive) -> GCHandleIntPtr {
+		r_target_alive = false;
+		if (!script_binding.inited || script_binding.gchandle.is_released()) {
+			return { nullptr };
+		}
+		return GDMonoCache::managed_callbacks.GCHandleBridge_AllocStrongGCHandle(
+				script_binding.gchandle.get_intptr(), &r_target_alive);
+	};
 
-	// Initially this was in `_instance_binding_create_callback`. However, after the new instance
-	// binding re-write it was resulting in a deadlock in `_instance_binding_reference`, as
-	// `setup_csharp_script_binding` may call `reference()`. It was moved here outside to fix that.
-
-	if (binding) {
-		CSharpScriptBinding &script_binding = ((RBMap<Object *, CSharpScriptBinding>::Element *)binding)->value();
-
-		if (!script_binding.inited) {
-			MutexLock lock(CSharpLanguage::get_singleton()->get_language_bind_mutex());
-
-			if (!script_binding.inited) { // Another thread may have set it up
-				CSharpLanguage::get_singleton()->setup_csharp_script_binding(script_binding, p_object);
-			}
+	{
+		MutexLock binding_lock(language->language_bind_mutex);
+		MutexLock handle_lock(language->script_gchandle_release_mutex);
+		bool target_alive = false;
+		GCHandleIntPtr temporary = copy_target(target_alive);
+		if (target_alive) {
+			// A failed strong-handle allocation must not replace a live wrapper.
+			return temporary;
 		}
 	}
 
-	return binding;
+	RefCounted *rc = Object::cast_to<RefCounted>(p_object);
+	bool owns_reference = rc != nullptr;
+	if (rc && !rc->reference()) {
+		return { nullptr };
+	}
+	GCHandleIntPtr temporary = { nullptr };
+	{
+		MutexLock binding_lock(language->language_bind_mutex);
+		MutexLock handle_lock(language->script_gchandle_release_mutex);
+		// A finalizer or another lookup may have changed the binding while the
+		// reference was acquired. Inspect the current target, never a stale handle.
+		bool target_alive = false;
+		temporary = copy_target(target_alive);
+		if (!target_alive && language->setup_csharp_script_binding(script_binding, p_object)) {
+			if (rc) {
+				language->post_unsafe_reference(rc);
+				owns_reference = false; // Transferred to this wrapper's Dispose.
+			}
+			temporary = copy_target(target_alive);
+		}
+	}
+	if (owns_reference && rc->unreference()) {
+		memdelete(rc);
+	}
+	return temporary;
+}
+
+void CSharpLanguage::dispose_instance_binding(Object *p_object, uint64_t p_generation, bool p_ref_counted) {
+	DEV_ASSERT(p_generation != 0);
+	RefCounted *rc = Object::cast_to<RefCounted>(p_object);
+	ERR_FAIL_COND(p_ref_counted != (rc != nullptr));
+	void *binding = get_existing_instance_binding(p_object);
+	if (binding) {
+		CSharpLanguage *language = get_singleton();
+		MutexLock binding_lock(language->language_bind_mutex);
+		MutexLock handle_lock(language->script_gchandle_release_mutex);
+		CSharpScriptBinding &script_binding = ((RBMap<Object *, CSharpScriptBinding>::Element *)binding)->value();
+		if (script_binding.inited && script_binding.generation == p_generation) {
+			if (!script_binding.gchandle.is_released()) {
+				script_binding.gchandle.release();
+			}
+			script_binding.inited = false;
+		}
+	}
+	if (rc) {
+		// Every wrapper releases exactly its own unsafe reference. A pending old
+		// finalizer must not clear the replacement wrapper, even if this decrement
+		// changes the replacement's strong handle to a weak one.
+		get_singleton()->pre_unsafe_unreference(rc);
+		if (rc->unreference()) {
+			memdelete(rc);
+		}
+	}
 }
 
 void *CSharpLanguage::get_existing_instance_binding(Object *p_object) {
@@ -1358,7 +1429,7 @@ void *CSharpLanguage::get_existing_instance_binding(Object *p_object) {
 bool CSharpLanguage::has_instance_binding(Object *p_object) {
 	return p_object->has_instance_binding(get_singleton());
 }
-void CSharpLanguage::tie_native_managed_to_unmanaged(GCHandleIntPtr p_gchandle_intptr, Object *p_unmanaged, const StringName *p_native_name, bool p_ref_counted) {
+uint64_t CSharpLanguage::tie_native_managed_to_unmanaged(GCHandleIntPtr p_gchandle_intptr, Object *p_unmanaged, const StringName *p_native_name, bool p_ref_counted) {
 	// This method should not fail
 
 	CRASH_COND(!p_unmanaged);
@@ -1396,11 +1467,15 @@ void CSharpLanguage::tie_native_managed_to_unmanaged(GCHandleIntPtr p_gchandle_i
 
 	void *binding = CSharpLanguage::get_singleton()->get_instance_binding(p_unmanaged);
 
+	MutexLock binding_lock(get_singleton()->language_bind_mutex);
+	MutexLock handle_lock(get_singleton()->script_gchandle_release_mutex);
 	CSharpScriptBinding &script_binding = ((RBMap<Object *, CSharpScriptBinding>::Element *)binding)->value();
+	script_binding.generation = 1;
 	script_binding.inited = true;
 	script_binding.type_name = *p_native_name;
 	script_binding.gchandle = gchandle;
 	script_binding.owner = p_unmanaged;
+	return script_binding.generation;
 }
 
 void CSharpLanguage::tie_user_managed_to_unmanaged(GCHandleIntPtr p_gchandle_intptr, Object *p_unmanaged, Ref<CSharpScript> *p_script, bool p_ref_counted) {
@@ -2606,14 +2681,26 @@ CSharpInstance *CSharpScript::_create_instance(const Variant **p_args, int p_arg
 	if (CSharpLanguage::has_instance_binding(p_owner)) {
 		void *data = CSharpLanguage::get_existing_instance_binding(p_owner);
 		CRASH_COND(data == nullptr);
-
-		CSharpScriptBinding &script_binding = ((RBMap<Object *, CSharpScriptBinding>::Element *)data)->get();
-		if (script_binding.inited && !script_binding.gchandle.is_released()) {
-			GDMonoCache::managed_callbacks.CSharpInstanceBridge_CallDispose(
-					script_binding.gchandle.get_intptr(), /* okIfNull */ true);
-
-			script_binding.gchandle.release(); // Just in case
-			script_binding.inited = false;
+		GCHandleIntPtr temporary = { nullptr };
+		{
+			MutexLock binding_lock(CSharpLanguage::get_singleton()->language_bind_mutex);
+			MutexLock handle_lock(CSharpLanguage::get_singleton()->script_gchandle_release_mutex);
+			CSharpScriptBinding &script_binding = ((RBMap<Object *, CSharpScriptBinding>::Element *)data)->get();
+			if (script_binding.inited && !script_binding.gchandle.is_released()) {
+				bool target_alive = false;
+				temporary = GDMonoCache::managed_callbacks.GCHandleBridge_AllocStrongGCHandle(
+						script_binding.gchandle.get_intptr(), &target_alive);
+				// A live wrapper must be disposed before attaching the script.
+				ERR_FAIL_COND_V(target_alive && !temporary.value, nullptr);
+				script_binding.gchandle.release();
+				script_binding.inited = false;
+			}
+		}
+		if (temporary.value) {
+			// Dispose may decrement the native reference and reacquire Object's
+			// binding lock. It must run after both language locks are released.
+			GDMonoCache::managed_callbacks.CSharpInstanceBridge_CallDispose(temporary, /* okIfNull */ true);
+			MonoGCHandleData::free_gchandle(temporary);
 		}
 	}
 
