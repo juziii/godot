@@ -492,6 +492,18 @@ private:
 	mutable AHashMap<ObjectID, HashSet<StringName>> instance_paths;
 	LocalVector<Pair<Variant, bool> *> parameter_group_write_targets; // Per-call scratch for set_parameter_group; not a cross-frame binding cache.
 
+	struct BoundParameterGroup {
+		Vector<StringName> parameter_names;
+		LocalVector<Pair<Variant, bool> *> targets;
+		uint64_t resolved_generation = 0;
+		bool has_observer = false;
+	};
+	mutable uint64_t parameter_generation = 1; // Bumped before the parameter table can move or drop elements.
+	HashMap<int64_t, BoundParameterGroup> bound_parameter_groups;
+	int64_t next_parameter_group = 1;
+
+	bool _resolve_bound_parameter_group(BoundParameterGroup &r_group);
+
 	mutable bool properties_dirty = true;
 	mutable bool validation_dirty = true;
 
@@ -578,6 +590,9 @@ public:
 	void set_root_animation_node(const Ref<AnimationRootNode> &p_animation_node);
 	Ref<AnimationRootNode> get_root_animation_node() const;
 	bool set_parameter_group(const TypedArray<StringName> &p_parameter_names, const Variant &p_value);
+	int64_t bind_parameter_group(const TypedArray<StringName> &p_parameter_names);
+	bool set_bound_parameter_group(int64_t p_group, const Variant &p_value);
+	void unbind_parameter_group(int64_t p_group);
 
 	void set_advance_expression_base_node(const NodePath &p_path);
 	NodePath get_advance_expression_base_node() const;
