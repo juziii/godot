@@ -35,6 +35,7 @@
 #include "core/profiling/profiling.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "core/os/os.h"
 #include "core/os/thread.h"
 #include "scene/animation/animation_blend_tree.h"
 #include "scene/animation/animation_player.h"
@@ -1175,6 +1176,39 @@ bool AnimationTree::set_parameter_group(const TypedArray<StringName> &p_paramete
 
 	finish_pending_animation();
 	_update_properties();
+
+	// Numeric and Vector2 assignments cannot release resources or run callbacks, so the
+	// resolved targets can be reused for the write pass. Other Variant types keep the
+	// original double lookup: their writes may reenter and invalidate the scratch array.
+	static const bool single_lookup_enabled = OS::get_singleton()->get_environment("GODOT_ANIM_PARAMETER_GROUP_SINGLE_LOOKUP") != "0";
+	const Variant::Type value_type = p_value.get_type();
+	if (single_lookup_enabled && (value_type == Variant::FLOAT || value_type == Variant::VECTOR2)) {
+		parameter_group_write_targets.resize(p_parameter_names.size());
+		bool fast_path = true;
+		for (int i = 0; i < p_parameter_names.size(); i++) {
+			const StringName parameter_name = p_parameter_names[i];
+			Pair<Variant, bool> *property = property_map.getptr(parameter_name);
+			ERR_FAIL_NULL_V_MSG(property, false, vformat("AnimationTree parameter '%s' does not exist.", parameter_name));
+			ERR_FAIL_COND_V_MSG(!_is_parameter_property_writable(*property), false, vformat("AnimationTree parameter '%s' is read-only.", parameter_name));
+			ERR_FAIL_COND_V_MSG(!_can_assign_parameter_property(*property, p_value), false, vformat("AnimationTree parameter '%s' cannot accept the provided value.", parameter_name));
+			const Variant::Type property_type = property->first.get_type();
+			if (property_type != Variant::NIL && property_type != Variant::FLOAT && property_type != Variant::VECTOR2) {
+				fast_path = false;
+				break;
+			}
+			parameter_group_write_targets[i] = property;
+		}
+		if (fast_path) {
+			for (int i = 0; i < p_parameter_names.size(); i++) {
+				_assign_parameter_property(*parameter_group_write_targets[i], p_value);
+
+				if (String(p_parameter_names[i]).ends_with("/observer")) {
+					batch_graph_checked = false;
+				}
+			}
+			return true;
+		}
+	}
 
 	// Validate every target before changing any value so a bad path cannot leave a partial group update.
 	for (int i = 0; i < p_parameter_names.size(); i++) {

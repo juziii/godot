@@ -490,6 +490,7 @@ private:
 	mutable AHashMap<StringName, Pair<Variant, bool>> property_map; // Property value and read-only flag.
 	mutable AHashMap<StringName, AnimationNodeInstance> instance_map;
 	mutable AHashMap<ObjectID, HashSet<StringName>> instance_paths;
+	LocalVector<Pair<Variant, bool> *> parameter_group_write_targets; // Per-call scratch for set_parameter_group; not a cross-frame binding cache.
 
 	mutable bool properties_dirty = true;
 	mutable bool validation_dirty = true;
