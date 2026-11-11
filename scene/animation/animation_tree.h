@@ -502,18 +502,7 @@ private:
 	HashMap<int64_t, BoundParameterGroup> bound_parameter_groups;
 	int64_t next_parameter_group = 1;
 
-	struct BlendSpaceCycleSync2D {
-		Vector<StringName> source_parameters; // Four corners in blend order: (0,0) (1,0) (0,1) (1,1).
-		Pair<Variant, bool> *sources[4] = {};
-		int64_t target_group = 0;
-		uint64_t resolved_generation = 0;
-	};
-	HashMap<int64_t, BlendSpaceCycleSync2D> blend_space_cycle_syncs;
-	int64_t next_blend_space_cycle_sync = 1;
-
 	bool _resolve_bound_parameter_group(BoundParameterGroup &r_group);
-	bool _write_bound_parameter_group(BoundParameterGroup &r_group, const Variant &p_value);
-	bool _resolve_blend_space_cycle_sync_sources(BlendSpaceCycleSync2D &r_binding);
 
 	mutable bool properties_dirty = true;
 	mutable bool validation_dirty = true;
@@ -604,9 +593,6 @@ public:
 	int64_t bind_parameter_group(const TypedArray<StringName> &p_parameter_names);
 	bool set_bound_parameter_group(int64_t p_group, const Variant &p_value);
 	void unbind_parameter_group(int64_t p_group);
-	int64_t bind_blend_space_cycle_sync_2d(const TypedArray<StringName> &p_source_parameters, int64_t p_target_group);
-	float sync_blend_space_cycle_duration_2d(int64_t p_binding, const Vector2 &p_blend, float p_previous_duration, bool p_force_write = false);
-	void unbind_blend_space_cycle_sync_2d(int64_t p_binding);
 
 	void set_advance_expression_base_node(const NodePath &p_path);
 	NodePath get_advance_expression_base_node() const;

@@ -1283,41 +1283,6 @@ int64_t AnimationTree::bind_parameter_group(const TypedArray<StringName> &p_para
 	return handle;
 }
 
-bool AnimationTree::_write_bound_parameter_group(BoundParameterGroup &r_group, const Variant &p_value) {
-	if (r_group.resolved_generation != parameter_generation) {
-		if (!_resolve_bound_parameter_group(r_group)) {
-			r_group.resolved_generation = 0;
-			return false;
-		}
-		r_group.resolved_generation = parameter_generation;
-	}
-
-	// Writes through cached pointers must stay on types whose assignment cannot
-	// release resources or run callbacks; re-check cheap flags every call.
-	const Variant::Type value_type = p_value.get_type();
-	ERR_FAIL_COND_V_MSG(value_type != Variant::INT && value_type != Variant::FLOAT && value_type != Variant::VECTOR2, false,
-			"AnimationTree bound parameter groups only accept numeric and Vector2 values.");
-	for (uint32_t i = 0; i < r_group.targets.size(); i++) {
-		Pair<Variant, bool> *property = r_group.targets[i];
-		const Variant::Type property_type = property->first.get_type();
-		ERR_FAIL_COND_V_MSG(property_type != Variant::NIL && property_type != Variant::FLOAT && property_type != Variant::VECTOR2, false,
-				vformat("AnimationTree bound parameter '%s' no longer holds a numeric value.", r_group.parameter_names[i]));
-		ERR_FAIL_COND_V_MSG(!_is_parameter_property_writable(*property), false,
-				vformat("AnimationTree parameter '%s' is read-only.", r_group.parameter_names[i]));
-		ERR_FAIL_COND_V_MSG(!_can_assign_parameter_property(*property, p_value), false,
-				vformat("AnimationTree parameter '%s' cannot accept the provided value.", r_group.parameter_names[i]));
-	}
-
-	for (uint32_t i = 0; i < r_group.targets.size(); i++) {
-		_assign_parameter_property(*r_group.targets[i], p_value);
-	}
-	if (r_group.has_observer) {
-		batch_graph_checked = false;
-	}
-
-	return true;
-}
-
 bool AnimationTree::set_bound_parameter_group(int64_t p_group, const Variant &p_value) {
 	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), false, "AnimationTree parameters can only be set from the main thread.");
 	ERR_FAIL_COND_V_MSG(p_group <= 0, false, "AnimationTree parameter group handle is invalid.");
@@ -1327,112 +1292,44 @@ bool AnimationTree::set_bound_parameter_group(int64_t p_group, const Variant &p_
 
 	BoundParameterGroup *group = bound_parameter_groups.getptr(p_group);
 	ERR_FAIL_NULL_V_MSG(group, false, vformat("AnimationTree parameter group '%d' does not exist.", p_group));
-	return _write_bound_parameter_group(*group, p_value);
+
+	if (group->resolved_generation != parameter_generation) {
+		if (!_resolve_bound_parameter_group(*group)) {
+			group->resolved_generation = 0;
+			return false;
+		}
+		group->resolved_generation = parameter_generation;
+	}
+
+	// Writes through cached pointers must stay on types whose assignment cannot
+	// release resources or run callbacks; re-check cheap flags every call.
+	const Variant::Type value_type = p_value.get_type();
+	ERR_FAIL_COND_V_MSG(value_type != Variant::INT && value_type != Variant::FLOAT && value_type != Variant::VECTOR2, false,
+			"AnimationTree bound parameter groups only accept numeric and Vector2 values.");
+	for (uint32_t i = 0; i < group->targets.size(); i++) {
+		Pair<Variant, bool> *property = group->targets[i];
+		const Variant::Type property_type = property->first.get_type();
+		ERR_FAIL_COND_V_MSG(property_type != Variant::NIL && property_type != Variant::FLOAT && property_type != Variant::VECTOR2, false,
+				vformat("AnimationTree bound parameter '%s' no longer holds a numeric value.", group->parameter_names[i]));
+		ERR_FAIL_COND_V_MSG(!_is_parameter_property_writable(*property), false,
+				vformat("AnimationTree parameter '%s' is read-only.", group->parameter_names[i]));
+		ERR_FAIL_COND_V_MSG(!_can_assign_parameter_property(*property, p_value), false,
+				vformat("AnimationTree parameter '%s' cannot accept the provided value.", group->parameter_names[i]));
+	}
+
+	for (uint32_t i = 0; i < group->targets.size(); i++) {
+		_assign_parameter_property(*group->targets[i], p_value);
+	}
+	if (group->has_observer) {
+		batch_graph_checked = false;
+	}
+
+	return true;
 }
 
 void AnimationTree::unbind_parameter_group(int64_t p_group) {
 	ERR_FAIL_COND_MSG(!Thread::is_main_thread(), "AnimationTree parameters can only be unbound from the main thread.");
 	bound_parameter_groups.erase(p_group);
-}
-
-bool AnimationTree::_resolve_blend_space_cycle_sync_sources(BlendSpaceCycleSync2D &r_binding) {
-	for (int i = 0; i < 4; i++) {
-		const StringName &parameter_name = r_binding.source_parameters[i];
-		Pair<Variant, bool> *property = property_map.getptr(parameter_name);
-		if (property == nullptr) {
-			return false;
-		}
-		const Variant::Type property_type = property->first.get_type();
-		if (property_type != Variant::NIL && property_type != Variant::FLOAT) {
-			return false;
-		}
-		r_binding.sources[i] = property;
-	}
-	return true;
-}
-
-int64_t AnimationTree::bind_blend_space_cycle_sync_2d(const TypedArray<StringName> &p_source_parameters, int64_t p_target_group) {
-	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), 0, "AnimationTree blend-space cycle sync can only be bound from the main thread.");
-	ERR_FAIL_COND_V_MSG(p_source_parameters.size() != 4, 0, "AnimationTree blend-space cycle sync requires four source parameters.");
-	ERR_FAIL_COND_V_MSG(p_target_group <= 0, 0, "AnimationTree blend-space cycle sync target group handle is invalid.");
-
-	finish_pending_animation();
-	_update_properties();
-
-	ERR_FAIL_COND_V_MSG(!bound_parameter_groups.has(p_target_group), 0,
-			vformat("AnimationTree parameter group '%d' does not exist.", p_target_group));
-
-	BlendSpaceCycleSync2D binding;
-	binding.source_parameters.resize(4);
-	for (int i = 0; i < 4; i++) {
-		binding.source_parameters.write[i] = p_source_parameters[i];
-	}
-	if (!_resolve_blend_space_cycle_sync_sources(binding)) {
-		return 0;
-	}
-	binding.target_group = p_target_group;
-	binding.resolved_generation = parameter_generation;
-
-	const int64_t handle = next_blend_space_cycle_sync++;
-	blend_space_cycle_syncs[handle] = binding;
-	return handle;
-}
-
-float AnimationTree::sync_blend_space_cycle_duration_2d(int64_t p_binding, const Vector2 &p_blend, float p_previous_duration, bool p_force_write) {
-	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), -1.0f, "AnimationTree blend-space cycle sync can only run on the main thread.");
-	ERR_FAIL_COND_V_MSG(p_binding <= 0, -1.0f, "AnimationTree blend-space cycle sync handle is invalid.");
-
-	finish_pending_animation();
-	_update_properties();
-
-	BlendSpaceCycleSync2D *binding = blend_space_cycle_syncs.getptr(p_binding);
-	ERR_FAIL_NULL_V_MSG(binding, -1.0f, vformat("AnimationTree blend-space cycle sync '%d' does not exist.", p_binding));
-
-	if (binding->resolved_generation != parameter_generation) {
-		if (!_resolve_blend_space_cycle_sync_sources(*binding)) {
-			binding->resolved_generation = 0;
-			return -1.0f;
-		}
-		binding->resolved_generation = parameter_generation;
-	}
-	BoundParameterGroup *target_group = bound_parameter_groups.getptr(binding->target_group);
-	ERR_FAIL_NULL_V_MSG(target_group, -1.0f, vformat("AnimationTree parameter group '%d' does not exist.", binding->target_group));
-
-	// Each corner independently falls back to the previous duration when its
-	// source is absent, non-finite, or non-positive; the float cast below may
-	// still overflow, so the final candidate check stays mandatory.
-	float sources[4];
-	for (int i = 0; i < 4; i++) {
-		sources[i] = p_previous_duration;
-		const Variant &value = binding->sources[i]->first;
-		if (value.get_type() == Variant::FLOAT) {
-			const double duration = value;
-			if (Math::is_finite(duration) && duration > 0.0) {
-				sources[i] = (float)duration;
-			}
-		}
-	}
-
-	// Float lerp keeps the managed Mathf.Lerp order: from + ((to - from) * weight).
-	const float x = p_blend.x;
-	const float y = p_blend.y;
-	const float low = x <= 0.0f ? sources[0] : (x >= 1.0f ? sources[1] : sources[0] + ((sources[1] - sources[0]) * x));
-	const float high = x <= 0.0f ? sources[2] : (x >= 1.0f ? sources[3] : sources[2] + ((sources[3] - sources[2]) * x));
-	const float candidate = y <= 0.0f ? low : (y >= 1.0f ? high : low + ((high - low) * y));
-
-	const float result = (Math::is_finite(candidate) && candidate > 0.0f) ? candidate : p_previous_duration;
-	if (!Math::is_finite(result) || result <= 0.0f) {
-		return 0.0f;
-	}
-	if ((p_force_write || result != p_previous_duration) && !_write_bound_parameter_group(*target_group, result)) {
-		return -1.0f;
-	}
-	return result;
-}
-
-void AnimationTree::unbind_blend_space_cycle_sync_2d(int64_t p_binding) {
-	ERR_FAIL_COND_MSG(!Thread::is_main_thread(), "AnimationTree blend-space cycle sync can only be unbound from the main thread.");
-	blend_space_cycle_syncs.erase(p_binding);
 }
 
 bool AnimationTree::_set(const StringName &p_name, const Variant &p_value) {
@@ -1523,9 +1420,6 @@ void AnimationTree::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("bind_parameter_group", "parameter_names"), &AnimationTree::bind_parameter_group);
 	ClassDB::bind_method(D_METHOD("set_bound_parameter_group", "group", "value"), &AnimationTree::set_bound_parameter_group);
 	ClassDB::bind_method(D_METHOD("unbind_parameter_group", "group"), &AnimationTree::unbind_parameter_group);
-	ClassDB::bind_method(D_METHOD("bind_blend_space_cycle_sync_2d", "source_parameters", "target_group"), &AnimationTree::bind_blend_space_cycle_sync_2d);
-	ClassDB::bind_method(D_METHOD("sync_blend_space_cycle_duration_2d", "binding", "blend", "previous_duration", "force_write"), &AnimationTree::sync_blend_space_cycle_duration_2d, DEFVAL(false));
-	ClassDB::bind_method(D_METHOD("unbind_blend_space_cycle_sync_2d", "binding"), &AnimationTree::unbind_blend_space_cycle_sync_2d);
 
 	ClassDB::bind_method(D_METHOD("set_advance_expression_base_node", "path"), &AnimationTree::set_advance_expression_base_node);
 	ClassDB::bind_method(D_METHOD("get_advance_expression_base_node"), &AnimationTree::get_advance_expression_base_node);
