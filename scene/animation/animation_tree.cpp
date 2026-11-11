@@ -35,6 +35,7 @@
 #include "core/profiling/profiling.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "core/os/os.h"
 #include "core/os/thread.h"
 #include "scene/animation/animation_blend_tree.h"
 #include "scene/animation/animation_player.h"
@@ -960,6 +961,10 @@ void AnimationTree::_update_properties() const {
 		return;
 	}
 
+	// The rebuild below may insert into property_map; bound parameter group
+	// pointers resolve against the previous table and must be rebound.
+	parameter_generation++;
+
 	// if properties are dirty, so is the validation state.
 	validation_dirty = true;
 	properties.clear();
@@ -1176,6 +1181,39 @@ bool AnimationTree::set_parameter_group(const TypedArray<StringName> &p_paramete
 	finish_pending_animation();
 	_update_properties();
 
+	// Numeric and Vector2 assignments cannot release resources or run callbacks, so the
+	// resolved targets can be reused for the write pass. Other Variant types keep the
+	// original double lookup: their writes may reenter and invalidate the scratch array.
+	static const bool single_lookup_enabled = OS::get_singleton()->get_environment("GODOT_ANIM_PARAMETER_GROUP_SINGLE_LOOKUP") != "0";
+	const Variant::Type value_type = p_value.get_type();
+	if (single_lookup_enabled && (value_type == Variant::FLOAT || value_type == Variant::VECTOR2)) {
+		parameter_group_write_targets.resize(p_parameter_names.size());
+		bool fast_path = true;
+		for (int i = 0; i < p_parameter_names.size(); i++) {
+			const StringName parameter_name = p_parameter_names[i];
+			Pair<Variant, bool> *property = property_map.getptr(parameter_name);
+			ERR_FAIL_NULL_V_MSG(property, false, vformat("AnimationTree parameter '%s' does not exist.", parameter_name));
+			ERR_FAIL_COND_V_MSG(!_is_parameter_property_writable(*property), false, vformat("AnimationTree parameter '%s' is read-only.", parameter_name));
+			ERR_FAIL_COND_V_MSG(!_can_assign_parameter_property(*property, p_value), false, vformat("AnimationTree parameter '%s' cannot accept the provided value.", parameter_name));
+			const Variant::Type property_type = property->first.get_type();
+			if (property_type != Variant::NIL && property_type != Variant::FLOAT && property_type != Variant::VECTOR2) {
+				fast_path = false;
+				break;
+			}
+			parameter_group_write_targets[i] = property;
+		}
+		if (fast_path) {
+			for (int i = 0; i < p_parameter_names.size(); i++) {
+				_assign_parameter_property(*parameter_group_write_targets[i], p_value);
+
+				if (String(p_parameter_names[i]).ends_with("/observer")) {
+					batch_graph_checked = false;
+				}
+			}
+			return true;
+		}
+	}
+
 	// Validate every target before changing any value so a bad path cannot leave a partial group update.
 	for (int i = 0; i < p_parameter_names.size(); i++) {
 		const StringName parameter_name = p_parameter_names[i];
@@ -1197,6 +1235,101 @@ bool AnimationTree::set_parameter_group(const TypedArray<StringName> &p_paramete
 	}
 
 	return true;
+}
+
+bool AnimationTree::_resolve_bound_parameter_group(BoundParameterGroup &r_group) {
+	const uint32_t count = r_group.parameter_names.size();
+	r_group.targets.resize(count);
+	r_group.has_observer = false;
+	for (uint32_t i = 0; i < count; i++) {
+		const StringName &parameter_name = r_group.parameter_names[i];
+		Pair<Variant, bool> *property = property_map.getptr(parameter_name);
+		if (property == nullptr) {
+			return false;
+		}
+		const Variant::Type property_type = property->first.get_type();
+		if (property_type != Variant::NIL && property_type != Variant::FLOAT && property_type != Variant::VECTOR2) {
+			return false;
+		}
+		r_group.targets[i] = property;
+		if (String(parameter_name).ends_with("/observer")) {
+			r_group.has_observer = true;
+		}
+	}
+	return true;
+}
+
+int64_t AnimationTree::bind_parameter_group(const TypedArray<StringName> &p_parameter_names) {
+	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), 0, "AnimationTree parameters can only be bound from the main thread.");
+	if (p_parameter_names.is_empty()) {
+		return 0;
+	}
+
+	finish_pending_animation();
+	_update_properties();
+
+	BoundParameterGroup group;
+	group.parameter_names.resize(p_parameter_names.size());
+	for (int i = 0; i < p_parameter_names.size(); i++) {
+		group.parameter_names.write[i] = p_parameter_names[i];
+	}
+	if (!_resolve_bound_parameter_group(group)) {
+		return 0;
+	}
+	group.resolved_generation = parameter_generation;
+
+	const int64_t handle = next_parameter_group++;
+	bound_parameter_groups[handle] = group;
+	return handle;
+}
+
+bool AnimationTree::set_bound_parameter_group(int64_t p_group, const Variant &p_value) {
+	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), false, "AnimationTree parameters can only be set from the main thread.");
+	ERR_FAIL_COND_V_MSG(p_group <= 0, false, "AnimationTree parameter group handle is invalid.");
+
+	finish_pending_animation();
+	_update_properties();
+
+	BoundParameterGroup *group = bound_parameter_groups.getptr(p_group);
+	ERR_FAIL_NULL_V_MSG(group, false, vformat("AnimationTree parameter group '%d' does not exist.", p_group));
+
+	if (group->resolved_generation != parameter_generation) {
+		if (!_resolve_bound_parameter_group(*group)) {
+			group->resolved_generation = 0;
+			return false;
+		}
+		group->resolved_generation = parameter_generation;
+	}
+
+	// Writes through cached pointers must stay on types whose assignment cannot
+	// release resources or run callbacks; re-check cheap flags every call.
+	const Variant::Type value_type = p_value.get_type();
+	ERR_FAIL_COND_V_MSG(value_type != Variant::INT && value_type != Variant::FLOAT && value_type != Variant::VECTOR2, false,
+			"AnimationTree bound parameter groups only accept numeric and Vector2 values.");
+	for (uint32_t i = 0; i < group->targets.size(); i++) {
+		Pair<Variant, bool> *property = group->targets[i];
+		const Variant::Type property_type = property->first.get_type();
+		ERR_FAIL_COND_V_MSG(property_type != Variant::NIL && property_type != Variant::FLOAT && property_type != Variant::VECTOR2, false,
+				vformat("AnimationTree bound parameter '%s' no longer holds a numeric value.", group->parameter_names[i]));
+		ERR_FAIL_COND_V_MSG(!_is_parameter_property_writable(*property), false,
+				vformat("AnimationTree parameter '%s' is read-only.", group->parameter_names[i]));
+		ERR_FAIL_COND_V_MSG(!_can_assign_parameter_property(*property, p_value), false,
+				vformat("AnimationTree parameter '%s' cannot accept the provided value.", group->parameter_names[i]));
+	}
+
+	for (uint32_t i = 0; i < group->targets.size(); i++) {
+		_assign_parameter_property(*group->targets[i], p_value);
+	}
+	if (group->has_observer) {
+		batch_graph_checked = false;
+	}
+
+	return true;
+}
+
+void AnimationTree::unbind_parameter_group(int64_t p_group) {
+	ERR_FAIL_COND_MSG(!Thread::is_main_thread(), "AnimationTree parameters can only be unbound from the main thread.");
+	bound_parameter_groups.erase(p_group);
 }
 
 bool AnimationTree::_set(const StringName &p_name, const Variant &p_value) {
@@ -1284,6 +1417,9 @@ void AnimationTree::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_tree_root", "animation_node"), &AnimationTree::set_root_animation_node);
 	ClassDB::bind_method(D_METHOD("get_tree_root"), &AnimationTree::get_root_animation_node);
 	ClassDB::bind_method(D_METHOD("set_parameter_group", "parameter_names", "value"), &AnimationTree::set_parameter_group);
+	ClassDB::bind_method(D_METHOD("bind_parameter_group", "parameter_names"), &AnimationTree::bind_parameter_group);
+	ClassDB::bind_method(D_METHOD("set_bound_parameter_group", "group", "value"), &AnimationTree::set_bound_parameter_group);
+	ClassDB::bind_method(D_METHOD("unbind_parameter_group", "group"), &AnimationTree::unbind_parameter_group);
 
 	ClassDB::bind_method(D_METHOD("set_advance_expression_base_node", "path"), &AnimationTree::set_advance_expression_base_node);
 	ClassDB::bind_method(D_METHOD("get_advance_expression_base_node"), &AnimationTree::get_advance_expression_base_node);

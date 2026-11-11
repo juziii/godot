@@ -43,6 +43,7 @@
 #ifndef _3D_DISABLED
 #include "scene/animation/animation_batch_processor.h"
 #include "scene/3d/skeleton_animation_pose.h"
+#include "scene/3d/transform_batch_processor.h"
 #endif
 #include "scene/animation/animation_node_extension.h"
 #include "scene/animation/animation_node_state_machine.h"
@@ -610,6 +611,7 @@ void register_scene_types() {
 #ifndef _3D_DISABLED
 	GDREGISTER_CLASS(AnimationBatchProcessor);
 	GDREGISTER_CLASS(SkeletonAnimationPose);
+	GDREGISTER_CLASS(TransformBatchProcessor);
 #endif
 	GDREGISTER_CLASS(AnimationPlayer);
 	GDREGISTER_CLASS(AnimationTree);
