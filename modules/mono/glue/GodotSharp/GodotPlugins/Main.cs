@@ -54,10 +54,11 @@ namespace GodotPlugins
                 string pluginPath,
                 ICollection<string> sharedAssemblies,
                 AssemblyLoadContext mainLoadContext,
-                bool isCollectible
+                bool isCollectible,
+                bool loadFromFile
             )
             {
-                var context = new PluginLoadContext(pluginPath, sharedAssemblies, mainLoadContext, isCollectible);
+                var context = new PluginLoadContext(pluginPath, sharedAssemblies, mainLoadContext, isCollectible, loadFromFile);
                 var reference = new WeakReference(context, trackResurrection: true);
                 var wrapper = new PluginLoadContextWrapper(context, reference);
                 var assembly = context.LoadFromAssemblyName(assemblyName);
@@ -148,7 +149,8 @@ namespace GodotPlugins
 
                 string assemblyPath = new(nAssemblyPath);
 
-                (var projectAssembly, _projectLoadContext) = LoadPlugin(assemblyPath, isCollectible: _editorHint);
+                bool loadFromFile = !_editorHint && Environment.GetEnvironmentVariable("GODOT_DOTNET_LOAD_FROM_FILE") == "1";
+                (var projectAssembly, _projectLoadContext) = LoadPlugin(assemblyPath, isCollectible: _editorHint, loadFromFile);
 
                 string loadedAssemblyPath = _projectLoadContext.AssemblyLoadedPath ?? assemblyPath;
                 *outLoadedAssemblyPath = Marshaling.ConvertStringToNative(loadedAssemblyPath);
@@ -200,7 +202,7 @@ namespace GodotPlugins
             }
         }
 
-        private static (Assembly, PluginLoadContextWrapper) LoadPlugin(string assemblyPath, bool isCollectible)
+        private static (Assembly, PluginLoadContextWrapper) LoadPlugin(string assemblyPath, bool isCollectible, bool loadFromFile = false)
         {
             string assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
 
@@ -214,7 +216,7 @@ namespace GodotPlugins
             }
 
             return PluginLoadContextWrapper.CreateAndLoadFromAssemblyName(
-                new AssemblyName(assemblyName), assemblyPath, sharedAssemblies, MainLoadContext, isCollectible);
+                new AssemblyName(assemblyName), assemblyPath, sharedAssemblies, MainLoadContext, isCollectible, loadFromFile);
         }
 
         [UnmanagedCallersOnly]
