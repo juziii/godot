@@ -11,16 +11,18 @@ namespace GodotPlugins
         private readonly AssemblyDependencyResolver _resolver;
         private readonly ICollection<string> _sharedAssemblies;
         private readonly AssemblyLoadContext _mainLoadContext;
+        private readonly bool _loadFromFile;
 
         public string? AssemblyLoadedPath { get; private set; }
 
         public PluginLoadContext(string pluginPath, ICollection<string> sharedAssemblies,
-            AssemblyLoadContext mainLoadContext, bool isCollectible)
+            AssemblyLoadContext mainLoadContext, bool isCollectible, bool loadFromFile)
             : base(isCollectible)
         {
             _resolver = new AssemblyDependencyResolver(pluginPath);
             _sharedAssemblies = sharedAssemblies;
             _mainLoadContext = mainLoadContext;
+            _loadFromFile = loadFromFile;
 
             if (string.IsNullOrEmpty(AppContext.BaseDirectory))
             {
@@ -55,6 +57,11 @@ namespace GodotPlugins
             if (assemblyPath != null)
             {
                 AssemblyLoadedPath = assemblyPath;
+
+                // File loading preserves ReadyToRun code, but locks the DLL on Windows.
+                // It is opt-in for runtime projects with a dedicated output directory.
+                if (_loadFromFile)
+                    return LoadFromAssemblyPath(assemblyPath);
 
                 // Load in memory to prevent locking the file
                 using var assemblyFile = File.Open(assemblyPath, FileMode.Open, FileAccess.Read, FileShare.Read);
