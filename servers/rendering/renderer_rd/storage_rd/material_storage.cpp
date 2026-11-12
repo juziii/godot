@@ -2509,6 +2509,12 @@ void MaterialStorage::material_free(RID p_rid) {
 	material_set_shader(p_rid, RID()); //clean up shader
 	material->dependency.deleted_notify(p_rid);
 
+	// Unlink before destruction under the same mutex used to queue updates.
+	{
+		MutexLock lock(material_update_list_mutex);
+		material->update_element.remove_from_list();
+	}
+
 	material_owner.free(p_rid);
 }
 
