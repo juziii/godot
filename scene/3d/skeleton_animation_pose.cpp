@@ -168,17 +168,29 @@ bool SkeletonAnimationPose::capture(Skeleton3D *p_skeleton) {
 			b.parent = source.parent;
 			b.rest = source.rest;
 			b.global_rest = source.global_rest;
+			b.rest_position = source.rest.origin;
+			b.rest_rotation = source.rest.basis.get_rotation_quaternion();
+			b.rest_scale = source.rest.basis.get_scale();
 			b.offset = source.nested_set_offset;
 			b.span = source.nested_set_span;
 			order[b.offset] = i;
 		}
 		b.enabled = source.enabled;
 		b.skin_scale = source.skin_scale;
-		b.local = p_skeleton->get_bone_pose(i);
-		b.position = source.pose_position;
-		b.rotation = source.pose_rotation;
-		b.scale = source.pose_scale;
-		b.global = source.global_pose;
+		if (is_bone_masked(i)) {
+			// Masked bones stay at rest so skipped transform tracks cannot leave a stale pose.
+			b.local = source.rest;
+			b.position = b.rest_position;
+			b.rotation = b.rest_rotation;
+			b.scale = b.rest_scale;
+			b.global = source.global_rest;
+		} else {
+			b.local = p_skeleton->get_bone_pose(i);
+			b.position = source.pose_position;
+			b.rotation = source.pose_rotation;
+			b.scale = source.pose_scale;
+			b.global = source.global_pose;
+		}
 		b.modified = false;
 		dirty[i] = false;
 	}
@@ -433,6 +445,34 @@ bool SkeletonAnimationPose::prepare_frame(bool p_sample, bool p_display, bool p_
 	generated_targets.clear();
 	pawn_pose.reset_frame();
 	return !sample_requested || capture(skeleton);
+}
+
+void SkeletonAnimationPose::set_bone_mask(const PackedByteArray &p_mask) {
+	ERR_FAIL_COND(!Thread::is_main_thread());
+	bone_mask.clear();
+	if (p_mask.is_empty()) {
+		return;
+	}
+	// Mask indices follow the skeleton's bone order; it stays valid even before capture.
+	bone_mask.resize(p_mask.size());
+	uint8_t *mask = bone_mask.ptr();
+	for (int i = 0; i < p_mask.size(); i++) {
+		mask[i] = p_mask[i] ? 1 : 0;
+	}
+	const int limit = MIN(int(p_mask.size()), int(bones.size()));
+	// Blend no longer writes masked bones; pin them to rest immediately so the pose
+	// is valid until the next capture writes rest components again.
+	for (int i = 0; i < limit; i++) {
+		if (!mask[i]) {
+			continue;
+		}
+		BonePose &b = bones[i];
+		b.position = b.rest_position;
+		b.rotation = b.rest_rotation;
+		b.scale = b.rest_scale;
+		b.local = b.rest;
+		b.global = b.parent < 0 ? b.rest : bones[b.parent].global * b.rest;
+	}
 }
 
 void SkeletonAnimationPose::store_sample() {
@@ -862,6 +902,7 @@ void SkeletonAnimationPose::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_bone_count"), &SkeletonAnimationPose::get_bone_count);
 	ClassDB::bind_method(D_METHOD("get_base_local_pose", "bone"), &SkeletonAnimationPose::get_base_local_pose);
 	ClassDB::bind_method(D_METHOD("get_base_global_pose", "bone"), &SkeletonAnimationPose::get_base_global_pose);
+	ClassDB::bind_method(D_METHOD("set_bone_mask", "mask"), &SkeletonAnimationPose::set_bone_mask);
 	ClassDB::bind_method(D_METHOD("capture", "skeleton"), &SkeletonAnimationPose::capture);
 	ClassDB::bind_method(D_METHOD("configure_copy_source", "source", "source_bone", "target_bone"), &SkeletonAnimationPose::configure_copy_source);
 	ClassDB::bind_method(D_METHOD("configure_ik", "input"), &SkeletonAnimationPose::configure_ik);

@@ -1339,7 +1339,13 @@ void AnimationMixer::_blend_process(double p_delta, bool p_update_only) {
 				continue; // No path, but avoid error spamming.
 			}
 #ifndef _3D_DISABLED
-			if (batch_evaluating && !batch_sample_pose && track->type == Animation::TYPE_POSITION_3D && !track->root_motion) { continue; }
+			if (batch_evaluating && track->type == Animation::TYPE_POSITION_3D && !track->root_motion) {
+				TrackCacheTransform *t = static_cast<TrackCacheTransform *>(track);
+				if (!batch_sample_pose) { continue; }
+				// Distant-LOD bone mask: skip transform-track sampling for reduced bones.
+				SkeletonAnimationPose *pose = _get_batch_pose(t->skeleton_id);
+				if (pose && pose->is_bone_masked(t->bone_idx)) { continue; }
+			}
 #endif
 			int blend_idx = track->blend_idx;
 			ERR_CONTINUE(blend_idx < 0 || blend_idx >= track_count);
@@ -2032,7 +2038,7 @@ void AnimationMixer::_blend_apply() {
 				root_motion_scale_accumulator = t->scale;
 			} else {
 				SkeletonAnimationPose *pose = _get_batch_pose(t->skeleton_id);
-				if (pose && batch_sample_pose) { pose->set_bone_components(t->bone_idx, t->loc, t->rot, t->scale, (t->loc_used ? 1 : 0) | (t->rot_used ? 2 : 0) | (t->scale_used ? 4 : 0)); }
+				if (pose && batch_sample_pose && !pose->is_bone_masked(t->bone_idx)) { pose->set_bone_components(t->bone_idx, t->loc, t->rot, t->scale, (t->loc_used ? 1 : 0) | (t->rot_used ? 2 : 0) | (t->scale_used ? 4 : 0)); }
 			}
 		}
 		return;

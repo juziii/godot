@@ -16,6 +16,7 @@ void AnimationBatchProcessor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("unregister_animation", "handle"), &AnimationBatchProcessor::unregister_animation);
     ClassDB::bind_method(D_METHOD("queue_update", "handle", "delta"), &AnimationBatchProcessor::queue_update);
     ClassDB::bind_method(D_METHOD("queue_update_with_options", "handle", "delta", "sample_pose", "display_pose", "exact_pose", "display_time", "interval"), &AnimationBatchProcessor::queue_update_with_options);
+    ClassDB::bind_method(D_METHOD("queue_updates_batch", "handles", "deltas", "flags", "times", "intervals"), &AnimationBatchProcessor::queue_updates_batch);
     ClassDB::bind_method(D_METHOD("submit", "batch_size", "max_workers"), &AnimationBatchProcessor::submit, DEFVAL(8), DEFVAL(8));
     ClassDB::bind_method(D_METHOD("complete_batch", "handle"), &AnimationBatchProcessor::complete_batch);
     ClassDB::bind_method(D_METHOD("complete"), &AnimationBatchProcessor::complete);
@@ -129,6 +130,20 @@ bool AnimationBatchProcessor::queue_update_with_options(int64_t p_handle, double
     entry->interval = p_interval;
     entry->queued = true;
     return true;
+}
+
+int64_t AnimationBatchProcessor::queue_updates_batch(const PackedInt64Array &p_handles, const PackedFloat64Array &p_deltas, const PackedByteArray &p_flags, const PackedFloat64Array &p_times, const PackedFloat64Array &p_intervals) {
+    ERR_FAIL_COND_V(!Thread::is_main_thread() || pending || publishing, 0);
+    const int64_t count = p_handles.size();
+    ERR_FAIL_COND_V(p_deltas.size() < count || p_flags.size() < count || p_times.size() < count || p_intervals.size() < count, 0);
+    int64_t queued = 0;
+    for (int64_t i = 0; i < count; i++) {
+        const uint8_t flags = p_flags[i];
+        if (queue_update_with_options(p_handles[i], p_deltas[i], (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, p_times[i], p_intervals[i])) {
+            queued++;
+        }
+    }
+    return queued;
 }
 
 void AnimationBatchProcessor::_prepare_entry(Entry *entry) {

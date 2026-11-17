@@ -60,6 +60,9 @@ public:
 
 private:
 	struct BonePose {
+		// Cached rest components so the bone mask costs field copies, not basis decomposition.
+		Vector3 rest_position, rest_scale = Vector3(1, 1, 1);
+		Quaternion rest_rotation;
 		int parent = -1, offset = 0, span = 0;
 		bool enabled = true, modified = false;
 		Vector3 skin_scale = Vector3(1, 1, 1);
@@ -176,6 +179,7 @@ private:
 	LocalVector<Socket> sockets;
 	String fallback_reason;
 	LocalVector<BonePose> bones;
+	LocalVector<uint8_t> bone_mask;
 	LocalVector<int> order;
 	LocalVector<bool> dirty;
 	LocalVector<Modifier> modifiers;
@@ -223,6 +227,11 @@ public:
 	void set_ik_ground_motion_input(bool p_left_hit, const Vector3 &p_left_position, const Vector3 &p_left_normal, const Vector3 &p_left_smoothed_normal, bool p_right_hit, const Vector3 &p_right_position, const Vector3 &p_right_normal, const Vector3 &p_right_smoothed_normal);
 	void configure_copy_source(const Ref<SkeletonAnimationPose> &p_source, int p_source_bone, int p_target_bone);
 	void set_bone_components(int p_bone, const Vector3 &p_position, const Quaternion &p_rotation, const Vector3 &p_scale, int p_mask);
+	// Distant-LOD bone reduction: masked bones hold their rest components and skip
+	// transform-track sampling. The mask is applied on the main thread only.
+	void set_bone_mask(const PackedByteArray &p_mask);
+	bool is_bone_masked(int p_bone) const { return p_bone >= 0 && p_bone < int(bone_mask.size()) && bone_mask[p_bone] != 0; }
+	bool has_bone_mask() const { return !bone_mask.is_empty(); }
 	void evaluate();
 	bool publish();
 	Transform3D get_global_pose(int p_bone);

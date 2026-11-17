@@ -101,6 +101,8 @@ public:
     void unregister_tree(int64_t p_handle);
     bool queue_update(int64_t p_handle, double p_delta);
     bool queue_update_with_options(int64_t p_handle, double p_delta, bool p_sample, bool p_display, bool p_exact, double p_time, double p_interval);
+    // One managed/native crossing for a whole frame's queue; flags bits: 1=sample, 2=display, 4=exact.
+    int64_t queue_updates_batch(const PackedInt64Array &p_handles, const PackedFloat64Array &p_deltas, const PackedByteArray &p_flags, const PackedFloat64Array &p_times, const PackedFloat64Array &p_intervals);
     int64_t submit(int p_batch_size = 8, int p_max_workers = 8);
     void complete_batch(int64_t p_handle);
     // Main-thread join and publication of every remaining entry in registration order.
