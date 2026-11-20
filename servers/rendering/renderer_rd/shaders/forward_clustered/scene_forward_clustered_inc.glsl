@@ -13,6 +13,12 @@
 #include "../oct_inc.glsl"
 #include "../scene_data_inc.glsl"
 
+#ifdef MODE_RENDER_NORMAL_ROUGHNESS
+#define SCENE_IN_NORMAL_ROUGHNESS_PASS true
+#else
+#define SCENE_IN_NORMAL_ROUGHNESS_PASS false
+#endif
+
 #if !defined(MODE_RENDER_DEPTH) || defined(MODE_RENDER_MATERIAL) || defined(MODE_RENDER_SDF) || defined(MODE_RENDER_NORMAL_ROUGHNESS) || defined(MODE_RENDER_VOXEL_GI) || defined(TANGENT_USED) || defined(NORMAL_MAP_USED) || defined(BENT_NORMAL_MAP_USED) || defined(LIGHT_ANISOTROPY_USED)
 #ifndef NORMAL_USED
 #define NORMAL_USED
