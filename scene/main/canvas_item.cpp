@@ -104,6 +104,7 @@ void CanvasItem::_handle_visibility_change(bool p_visible) {
 	notification(NOTIFICATION_VISIBILITY_CHANGED);
 
 	if (p_visible) {
+		_update_oversampling(false);
 		queue_redraw();
 	} else {
 		emit_signal(SceneStringName(hidden));
@@ -1156,6 +1157,23 @@ void CanvasItem::_notify_transform_deferred() {
 	}
 }
 
+void CanvasItem::_propagate_oversampling_update() {
+	// Unlike the transform notification itself, oversampling cannot skip
+	// an already dirty subtree: the transform that produced the pending
+	// notification may have changed again, so refresh every scale-aware
+	// item against its latest global transform.
+	if (is_oversampling_with_scale_cache || oversampling_override > 0) {
+		_update_oversampling(false);
+	}
+
+	for (uint32_t n = 0; n < data.canvas_item_children.size(); n++) {
+		CanvasItem *ci = data.canvas_item_children[n];
+		if (!ci->top_level) {
+			ci->_propagate_oversampling_update();
+		}
+	}
+}
+
 void CanvasItem::_notify_transform(CanvasItem *p_node) {
 	/* This check exists to avoid re-propagating the transform
 	 * notification down the tree on dirty nodes. It provides
@@ -1163,13 +1181,16 @@ void CanvasItem::_notify_transform(CanvasItem *p_node) {
 	 * notification anyway).
 	 */
 
-	_update_oversampling(false);
-
 	if (/*p_node->xform_change.in_list() &&*/ p_node->_is_global_invalid()) {
+		p_node->_propagate_oversampling_update();
 		return; //nothing to do
 	}
 
 	p_node->_set_global_invalid(true);
+
+	if (p_node->is_oversampling_with_scale_cache || p_node->oversampling_override > 0) {
+		p_node->_update_oversampling(false);
+	}
 
 	if (p_node->notify_transform && !p_node->xform_change.in_list()) {
 		if (!p_node->block_transform_notify) {

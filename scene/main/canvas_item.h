@@ -135,6 +135,7 @@ private:
 	double oversampling_override_cache = -1.0;
 
 	void _update_oversampling(bool p_propagate = false);
+	void _propagate_oversampling_update();
 	bool _is_oversampling_with_scale() const;
 
 	ClipChildrenMode clip_children_mode = CLIP_CHILDREN_DISABLED;
