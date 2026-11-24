@@ -38,6 +38,9 @@
 class RenderDataRD : public RenderData {
 	GDCLASS(RenderDataRD, RenderData);
 
+protected:
+	static void _bind_methods();
+
 public:
 	// Access methods to expose data externally
 	virtual Ref<RenderSceneBuffers> get_render_scene_buffers() const override { return render_buffers; }
@@ -45,6 +48,9 @@ public:
 
 	virtual RID get_environment() const override { return environment; }
 	virtual RID get_camera_attributes() const override { return camera_attributes; }
+	RID get_directional_shadow_atlas() const;
+	RID get_directional_light_buffer() const;
+	int get_directional_light_index(RID p_light) const;
 
 	// Members are publicly accessible within the render engine.
 	Ref<RenderSceneBuffersRD> render_buffers;
@@ -71,6 +77,7 @@ public:
 	uint32_t cluster_max_elements = 0;
 
 	uint32_t directional_light_count = 0;
+	RID directional_light_bases[RendererSceneRender::MAX_DIRECTIONAL_LIGHTS];
 	bool directional_light_soft_shadows = false;
 
 	bool lightmap_bicubic_filter = false;

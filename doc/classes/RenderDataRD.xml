@@ -9,4 +9,25 @@
 	</description>
 	<tutorials>
 	</tutorials>
+	<methods>
+		<method name="get_directional_light_buffer" qualifiers="const">
+			<return type="RID" />
+			<description>
+				Returns the RenderingDevice uniform buffer containing this view's directional lights, or an invalid RID if no directional lights were submitted. Its layout matches [code]DirectionalLightData[/code] in the renderer's [code]light_data_inc.glsl[/code]. Read it during the current compositor callback, after scene lighting has been prepared. The renderer owns this buffer.
+			</description>
+		</method>
+		<method name="get_directional_light_index" qualifiers="const">
+			<return type="int" />
+			<param index="0" name="light" type="RID" />
+			<description>
+				Returns the index of [param light] in [method get_directional_light_buffer] for this view, or [code]-1[/code] if it was not submitted. Pass the light resource RID returned by [method VisualInstance3D.get_base] on a [DirectionalLight3D].
+			</description>
+		</method>
+		<method name="get_directional_shadow_atlas" qualifiers="const">
+			<return type="RID" />
+			<description>
+				Returns the RenderingDevice depth texture containing the directional shadow cascades used by this view, or an invalid RID if no directional shadows are available. Sample it with the corresponding view-space shadow transforms from [method get_directional_light_buffer] during the current compositor callback. The renderer owns this texture.
+			</description>
+		</method>
+	</methods>
 </class>

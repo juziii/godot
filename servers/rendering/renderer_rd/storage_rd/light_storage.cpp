@@ -757,6 +757,7 @@ void LightStorage::update_light_buffers(RenderDataRD *p_render_data, const Paged
 					continue;
 				}
 
+				p_render_data->directional_light_bases[r_directional_light_count] = light_instance->light;
 				DirectionalLightData &light_data = directional_lights[r_directional_light_count];
 
 				Transform3D light_transform = light_instance->transform;
